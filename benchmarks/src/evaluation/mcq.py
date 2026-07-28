@@ -335,6 +335,7 @@ def mcq_eval(model, data, epoch, args, tokenizer=None):
             results['msrvtt-mcq-wrong_answer_percentages'] = list(msrvtt_mcq['wrong_answer_percentages'].items())
             results['msrvtt-mcq-predictions_by_type'] = msrvtt_mcq['predictions_by_type']
             results['msrvtt-mcq-wrong_answers_by_question_type'] = msrvtt_mcq['wrong_answers_by_question_type']
+            results["msrvtt-mcq-sample_results"] = msrvtt_mcq["sample_results"]
 
     else:
         if 'synthetic-mcq' in data:
@@ -348,6 +349,7 @@ def mcq_eval(model, data, epoch, args, tokenizer=None):
             results['synthetic-mcq-wrong_answer_percentages'] = list(synthetic_mcq['wrong_answer_percentages'].items())
             results['synthetic-mcq-predictions_by_type'] = synthetic_mcq['predictions_by_type']
             results['synthetic-mcq-wrong_answers_by_question_type'] = synthetic_mcq['wrong_answers_by_question_type']
+            results["synthetic-mcq-sample_results"] = synthetic_mcq["sample_results"]
 
         if 'coco-mcq' in data:
             logging.info('Evaluating on the COCO MCQ task')
@@ -373,16 +375,19 @@ def mcq_eval(model, data, epoch, args, tokenizer=None):
             results['voc2007-mcq-wrong_answer_percentages'] = list(voc_mcq['wrong_answer_percentages'].items())
             results['voc2007-mcq-predictions_by_type'] = voc_mcq['predictions_by_type']
             results['voc2007-mcq-wrong_answers_by_question_type'] = voc_mcq['wrong_answers_by_question_type']
+            results["voc2007-mcq-sample_results"] = voc_mcq["sample_results"]
 
         if 'chexpert-binary-mcq' in data:
             logging.info('Evaluating on the CheXpert Binary MCQ task')
             chexpert_binary_mcq = evaluate_binary_mcq_model(model, data['chexpert-binary-mcq'].dataloader, args, tokenizer=tokenizer)
             results['chexpert-binary-mcq-total_accuracy'] = chexpert_binary_mcq['total_accuracy']
+            results["chexpert-binary-mcq-sample_results"] = chexpert_binary_mcq["sample_results"]
 
         if 'chexpert-affirmation-binary-mcq' in data:
             logging.info('Evaluating on the CheXpert Binary Affirmation MCQ task')
             chexpert_binary_affirmation_mcq = evaluate_binary_mcq_model(model, data['chexpert-affirmation-binary-mcq'].dataloader, args, tokenizer=tokenizer)
             results['chexpert-affirmation-binary-mcq-total_accuracy'] = chexpert_binary_affirmation_mcq['total_accuracy']
+            results["chexpert-affirmation-binary-mcq-sample_results"] = chexpert_binary_affirmation_mcq["sample_results"]
 
         if 'ham10000-mcq' in data:
             logging.info('Evaluating on the HAM10000 MCQ task')
@@ -395,6 +400,7 @@ def mcq_eval(model, data, epoch, args, tokenizer=None):
             results['ham10000-mcq-wrong_answer_percentages'] = list(ham10000_mcq['wrong_answer_percentages'].items())
             results['ham10000-mcq-predictions_by_type'] = ham10000_mcq['predictions_by_type']
             results['ham10000-mcq-wrong_answers_by_question_type'] = ham10000_mcq['wrong_answers_by_question_type']
+            results["ham10000-mcq-sample_results"] = ham10000_mcq["sample_results"]
 
         if 'ham10000-affirmation-mcq' in data:
             logging.info('Evaluating on the HAM10000 Affirmation MCQ task')
@@ -403,6 +409,7 @@ def mcq_eval(model, data, epoch, args, tokenizer=None):
             results['ham10000-affirmation-mcq-positive_accuracy'] = ham10000_affirmation_mcq['positive_accuracy']
             results['ham10000-affirmation-mcq-negative_accuracy'] = ham10000_affirmation_mcq['negative_accuracy']
             results['ham10000-affirmation-mcq-hybrid_accuracy'] = ham10000_affirmation_mcq['hybrid_accuracy']
+            results["ham10000-affirmation-mcq-sample_results"] = ham10000_affirmation_mcq["sample_results"]
         
         if 'chexpert-mcq' in data:
             logging.info('Evaluating on the CheXpert MCQ task')
@@ -415,6 +422,7 @@ def mcq_eval(model, data, epoch, args, tokenizer=None):
             results['chexpert-mcq-wrong_answer_percentages'] = list(chexpert_mcq['wrong_answer_percentages'].items())
             results['chexpert-mcq-predictions_by_type'] = chexpert_mcq['predictions_by_type']
             results['chexpert-mcq-wrong_answers_by_question_type'] = chexpert_mcq['wrong_answers_by_question_type']
+            results["chexpert-mcq-sample_results"] = chexpert_mcq["sample_results"]
 
         if 'chexpert-affirmation-mcq' in data:
             logging.info('Evaluating on the CheXpert Affirmation MCQ task')
@@ -423,5 +431,6 @@ def mcq_eval(model, data, epoch, args, tokenizer=None):
             results['chexpert-affirmation-mcq-positive_accuracy'] = chexpert_affirmation_mcq['positive_accuracy']
             results['chexpert-affirmation-mcq-negative_accuracy'] = chexpert_affirmation_mcq['negative_accuracy']
             results['chexpert-affirmation-mcq-hybrid_accuracy'] = chexpert_affirmation_mcq['hybrid_accuracy']
+            results["chexpert-affirmation-mcq-sample_results"] = chexpert_affirmation_mcq["sample_results"]
 
     return results

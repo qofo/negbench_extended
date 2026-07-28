@@ -31,26 +31,18 @@ def evaluate(model, data, epoch, args, tb_writer=None, tokenizer=None):
     mcq_metrics = mcq_eval(model, data, epoch, args, tokenizer=tokenizer)
     metrics.update(mcq_metrics)
 
-    # [ADD] Save per-sample prediction results (COCO only)
-
-    if "coco-mcq-sample_results" in mcq_metrics:
-
+    # Save per-sample prediction CSVs for all evaluated MCQ datasets
+    sample_result_keys = [k for k in list(mcq_metrics.keys()) if k.endswith("-sample_results")]
+    if sample_result_keys:
         prediction_dir = os.path.join(args.logs, args.name, "predictions")
         os.makedirs(prediction_dir, exist_ok=True)
-
-        df = pd.DataFrame(mcq_metrics["coco-mcq-sample_results"])
-
-        csv_path = os.path.join(
-            prediction_dir,
-            "coco-mcq_predictions.csv"
-        )
-
-        df.to_csv(csv_path, index=False)
-
-        logging.info(f"Saved prediction CSV to {csv_path}")
-
-        # remove sample_results from metrics
-        metrics.pop("coco-mcq-sample_results", None)
+        for key in sample_result_keys:
+            dataset_name = key.replace("-sample_results", "")
+            df = pd.DataFrame(mcq_metrics[key])
+            csv_path = os.path.join(prediction_dir, f"{dataset_name}_predictions.csv")
+            df.to_csv(csv_path, index=False)
+            logging.info(f"Saved prediction CSV to {csv_path}")
+            metrics.pop(key, None)
 
     print("Evaluating Retrieval")
     retrieval_metrics = retrieval_eval(model, data, args, tokenizer=tokenizer)
@@ -110,6 +102,19 @@ def evaluate_video(model, data, epoch, args, tb_writer=None, tokenizer=None):
     print("Evaluating MCQ")
     mcq_metrics = mcq_eval(model, data, epoch, args, tokenizer=tokenizer)
     metrics.update(mcq_metrics)
+
+    # Save per-sample prediction CSVs for all evaluated MCQ datasets
+    sample_result_keys = [k for k in list(mcq_metrics.keys()) if k.endswith("-sample_results")]
+    if sample_result_keys:
+        prediction_dir = os.path.join(args.logs, args.name, "predictions")
+        os.makedirs(prediction_dir, exist_ok=True)
+        for key in sample_result_keys:
+            dataset_name = key.replace("-sample_results", "")
+            df = pd.DataFrame(mcq_metrics[key])
+            csv_path = os.path.join(prediction_dir, f"{dataset_name}_predictions.csv")
+            df.to_csv(csv_path, index=False)
+            logging.info(f"Saved prediction CSV to {csv_path}")
+            metrics.pop(key, None)
 
     print("Evaluating Video Retrieval")
     retrieval_metrics = retrieval_eval(model, data, args, tokenizer=tokenizer)
