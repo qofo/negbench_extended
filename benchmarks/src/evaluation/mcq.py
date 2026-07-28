@@ -61,21 +61,28 @@ def evaluate_model(model, dataloader, args, tokenizer=None, is_synthetic=False):
 
     with torch.no_grad():
         for batch in tqdm(dataloader, unit_scale=args.batch_size):
-            # [UPDATE] Support both old (5-tuple) and new (6-tuple with caption_types) dataset format.
+            # Support 4-tuple (video MCQ without image_path), 5-tuple (old MCQ), and 6-tuple (shuffled MCQ with caption_types)
             if len(batch) == 6:
                 image_tensor, captions, correct_answer, correct_answer_type, image_path, caption_types_batch = batch
-            else:
+            elif len(batch) == 5:
                 image_tensor, captions, correct_answer, correct_answer_type, image_path = batch
-                # [ADD] Reconstruct caption_types_batch in the same (num_options, batch_size) layout
-                # that DataLoader's default_collate produces for the 6-tuple path.
-                # Synthetic datasets have a different canonical option order.
                 if is_synthetic:
                     canonical = ['positive', 'hybrid', 'hybrid', 'negative']
                 else:
-                    canonical = list(CsvMCQDataset.CAPTION_TYPES)  # ['gt','hybrid','positive','negative']
+                    canonical = list(CsvMCQDataset.CAPTION_TYPES)
                 batch_size_local = image_tensor.size(0)
-                # Shape: (num_options, batch_size) — one list of B identical strings per slot
                 caption_types_batch = [[t] * batch_size_local for t in canonical]
+            elif len(batch) == 4:
+                image_tensor, captions, correct_answer, correct_answer_type = batch
+                image_path = [""] * image_tensor.size(0)
+                if is_synthetic:
+                    canonical = ['positive', 'hybrid', 'hybrid', 'negative']
+                else:
+                    canonical = list(CsvMCQDataset.CAPTION_TYPES)
+                batch_size_local = image_tensor.size(0)
+                caption_types_batch = [[t] * batch_size_local for t in canonical]
+            else:
+                raise ValueError(f"Unexpected batch size/structure with {len(batch)} elements.")
 
             batch_size, num_options = image_tensor.size(0), len(captions)
 
