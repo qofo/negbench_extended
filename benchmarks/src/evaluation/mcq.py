@@ -103,7 +103,10 @@ def evaluate_model(model, dataloader, args, tokenizer=None, is_synthetic=False):
             text_features = text_features.view(num_options, batch_size, -1)
 
             # Compute logits w.r.t. corresponding choices
-            logits = torch.einsum('bf,nbf->bn', image_features, text_features)
+            if hasattr(model, "compute_similarity"):
+                logits = model.compute_similarity(image_features, text_features)
+            else:
+                logits = torch.einsum('bf,nbf->bn', image_features, text_features)
 
             predicted_answer = torch.argmax(logits, dim=1)
             correct_predictions = (predicted_answer == correct_answer).sum().item()
@@ -264,7 +267,10 @@ def evaluate_binary_mcq_model(model, dataloader, args, tokenizer=None):
             text_features = text_features.view(2, batch_size, -1)
 
             # Compute logits between the image and the two text captions
-            logits = torch.einsum('bf,nbf->bn', image_features, text_features)
+            if hasattr(model, "compute_similarity"):
+                logits = model.compute_similarity(image_features, text_features)
+            else:
+                logits = torch.einsum('bf,nbf->bn', image_features, text_features)
 
             # Predict the answer (either 0 or 1)
             predicted_answer = torch.argmax(logits, dim=1)

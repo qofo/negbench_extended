@@ -151,7 +151,9 @@ def main(args):
             subspace_basis_path=getattr(args, "subspace_basis_path", None),
             hyperplane_weight_path=getattr(args, "hyperplane_weight_path", None),
             hyperplane_lambda=getattr(args, "hyperplane_lambda", 0.5),
-            bilinear_alpha=getattr(args, "bilinear_alpha", 0.5)
+            bilinear_alpha=getattr(args, "bilinear_alpha", 0.5),
+            scorer_checkpoint=getattr(args, "scorer_checkpoint", None),
+            scorer_type=getattr(args, "scorer_type", "deep_mlp")
         )
 
     random_seed(args.seed, args.rank)

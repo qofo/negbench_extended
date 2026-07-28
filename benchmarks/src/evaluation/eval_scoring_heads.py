@@ -341,6 +341,49 @@ def plot_scoring_head_comparison(results: Dict[str, Dict[str, Any]], output_dir:
     print(f"✅ Saved comparison bar plot to: {plot_path}")
 
 
+def train_and_save_full_scorer(
+    model_name: str,
+    img_embeds: torch.Tensor,
+    text_embeds: torch.Tensor,
+    targets: torch.Tensor,
+    save_path: str,
+    device: str = "cuda",
+    epochs: int = 15,
+    lr: float = 1e-3,
+    batch_size: int = 64
+):
+    """Train a full-dataset scorer model and export state_dict checkpoint."""
+    feature_dim = img_embeds.shape[1]
+    scorer = build_scorer(model_name, feature_dim).to(device)
+    if isinstance(scorer, CosineScorer):
+        print("CosineScorer has no trainable parameters to save.")
+        return
+
+    train_ds = TensorDataset(img_embeds, text_embeds, targets)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+    optimizer = torch.optim.AdamW(scorer.parameters(), lr=lr, weight_decay=1e-4)
+    criterion = nn.CrossEntropyLoss()
+
+    print(f"\nTraining full-dataset '{model_name}' scorer for checkpoint export...")
+    for epoch in range(epochs):
+        scorer.train()
+        for imgs, texts, y in train_loader:
+            imgs, texts, y = imgs.to(device), texts.to(device), y.to(device)
+            optimizer.zero_grad()
+            scores = scorer(imgs, texts)
+            loss = criterion(scores, y)
+            loss.backward()
+            optimizer.step()
+
+    os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+    torch.save({
+        "state_dict": scorer.state_dict(),
+        "model_name": model_name,
+        "feature_dim": feature_dim
+    }, save_path)
+    print(f"✅ Saved trained '{model_name}' scorer checkpoint to: {save_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate Expressive Scoring Heads on CLIP MCQ Evaluation")
     parser.add_argument("--model", type=str, default="ViT-B-32", help="OpenCLIP model architecture")
@@ -348,6 +391,8 @@ def main():
     parser.add_argument("--coco-mcq", type=str, default="COCO_val_mcq_llama3.1_rephrased.csv", help="Path to MCQ CSV file")
     parser.add_argument("--image-root", type=str, default="", help="Root directory containing images")
     parser.add_argument("--output-dir", type=str, default="logs/evaluation/scoring_head_experiments", help="Output directory")
+    parser.add_argument("--save-scorer-path", type=str, default=None, help="Path to save trained scorer checkpoint (.pt)")
+    parser.add_argument("--save-scorer-model", type=str, default="Deep MLP", help="Scorer model architecture to save")
     parser.add_argument("--n-splits", type=int, default=5, help="Number of Cross-Validation folds")
     parser.add_argument("--batch-size", type=int, default=64, help="Mini-batch size")
     parser.add_argument("--epochs", type=int, default=15, help="Training epochs per fold")
@@ -424,8 +469,19 @@ def main():
     # Step 4: Generate Plot
     plot_scoring_head_comparison(results, args.output_dir)
 
-    print(f"\n✅ All results and comparison plots successfully saved to: {args.output_dir}")
+    # Step 5: Save trained scorer checkpoint if requested
+    save_checkpoint_path = args.save_scorer_path
+    if not save_checkpoint_path:
+        save_checkpoint_path = os.path.join(args.output_dir, "checkpoints", "deep_mlp_scorer.pt")
+
+    train_and_save_full_scorer(
+        args.save_scorer_model, img_embeds, text_embeds, targets, save_checkpoint_path,
+        device=device, epochs=args.epochs, lr=args.lr, batch_size=args.batch_size
+    )
+
+    print(f"\n✅ All results, comparison plots, and scorer checkpoints successfully saved to: {args.output_dir}")
 
 
 if __name__ == "__main__":
     main()
+

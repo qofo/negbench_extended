@@ -20,7 +20,7 @@ from typing import Optional, Union, Any
 
 class NegationAwareCLIPWrapper(nn.Module):
     """
-    Wrapper around OpenCLIP model implementing 4 hypothesis test modes.
+    Wrapper around OpenCLIP model implementing 4 hypothesis test modes and trained Scoring Heads.
     """
 
     def __init__(
@@ -30,7 +30,10 @@ class NegationAwareCLIPWrapper(nn.Module):
         subspace_basis_path: Optional[str] = None,
         hyperplane_weight_path: Optional[str] = None,
         hyperplane_lambda: float = 0.5,
-        bilinear_alpha: float = 0.5
+        bilinear_alpha: float = 0.5,
+        scorer_checkpoint: Optional[str] = None,
+        scorer_type: str = "deep_mlp",
+        feature_dim: int = 512
     ):
         super().__init__()
         self.base_model = base_model
@@ -44,10 +47,11 @@ class NegationAwareCLIPWrapper(nn.Module):
         self.register_buffer("b_hyperplane", torch.tensor(0.0))
         self.register_buffer("U_neg", None)
 
-        self._initialize_resources(subspace_basis_path, hyperplane_weight_path)
+        self.scorer = None
+        self._initialize_resources(subspace_basis_path, hyperplane_weight_path, scorer_checkpoint, scorer_type, feature_dim)
 
-    def _initialize_resources(self, subspace_path: Optional[str], probe_path: Optional[str]):
-        """Load pre-computed basis matrices and probe weights if provided."""
+    def _initialize_resources(self, subspace_path: Optional[str], probe_path: Optional[str], scorer_ckpt: Optional[str], scorer_type: str, feature_dim: int):
+        """Load pre-computed basis matrices, probe weights, and trained scoring head checkpoints."""
         text_tower = getattr(self.base_model, 'text', self.base_model)
         text_proj = getattr(text_tower, 'text_projection', None)
 
@@ -78,6 +82,78 @@ class NegationAwareCLIPWrapper(nn.Module):
         if subspace_path and os.path.exists(subspace_path):
             U_np = np.load(subspace_path) # Shape (k, D)
             self.U_neg = torch.from_numpy(U_np).float()
+
+        # Load trained Scoring Head Checkpoint
+        if self.negation_method in ["scoring_head", "trained_scorer"] or scorer_ckpt is not None:
+            if scorer_ckpt and os.path.exists(scorer_ckpt):
+                from src.evaluation.scoring_heads import build_scorer
+                checkpoint = torch.load(scorer_ckpt, map_location="cpu")
+                
+                ckpt_type = checkpoint.get("model_name", scorer_type) if isinstance(checkpoint, dict) else scorer_type
+                ckpt_dim = checkpoint.get("feature_dim", feature_dim) if isinstance(checkpoint, dict) else feature_dim
+                state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+
+                self.scorer = build_scorer(ckpt_type, ckpt_dim)
+                self.scorer.load_state_dict(state_dict)
+                print(f"✅ Loaded trained Scoring Head '{ckpt_type}' from: {scorer_ckpt}")
+
+    def compute_similarity(self, img_feats: torch.Tensor, text_feats: torch.Tensor) -> torch.Tensor:
+        """
+        Compute similarity scores for MCQ options.
+        img_feats: (B, D)
+        text_feats: (B, K, D) or (K, B, D)
+        """
+        if self.scorer is not None:
+            if text_feats.dim() == 3 and text_feats.shape[1] != img_feats.shape[0] and text_feats.shape[0] != img_feats.shape[0]:
+                # Transpose if text_feats is (K, B, D)
+                text_feats = text_feats.transpose(0, 1)
+            
+            device = next(self.parameters()).device
+            self.scorer = self.scorer.to(device)
+            return self.scorer(img_feats.to(device), text_feats.to(device))
+        
+        # Default cosine / einsum similarity
+        if text_feats.dim() == 3 and text_feats.shape[0] != img_feats.shape[0]:
+            # (K, B, D)
+            return torch.einsum('bf,nbf->bn', img_feats, text_feats)
+        else:
+            # (B, K, D)
+            return torch.sum(img_feats.unsqueeze(1) * text_feats, dim=-1)
+
+    def compute_retrieval_similarity(self, texts_emb: torch.Tensor, images_emb: torch.Tensor, batch_size: int = 256) -> torch.Tensor:
+        """
+        Compute pairwise similarity matrix S (N_txt, N_img) for Retrieval using trained scorer.
+        """
+        if self.scorer is None:
+            return texts_emb @ images_emb.T
+
+        N_txt = texts_emb.shape[0]
+        N_img = images_emb.shape[0]
+        device = next(self.parameters()).device
+        self.scorer = self.scorer.to(device)
+        self.scorer.eval()
+
+        scores = torch.zeros(N_txt, N_img, device="cpu")
+
+        with torch.no_grad():
+            for start_t in range(0, N_txt, batch_size):
+                end_t = min(start_t + batch_size, N_txt)
+                t_batch = texts_emb[start_t:end_t].to(device) # (B_t, D)
+
+                for start_i in range(0, N_img, batch_size):
+                    end_i = min(start_i + batch_size, N_img)
+                    i_batch = images_emb[start_i:end_i].to(device) # (B_i, D)
+
+                    B_t = t_batch.shape[0]
+                    B_i = i_batch.shape[0]
+
+                    i_exp = i_batch.unsqueeze(0).expand(B_t, B_i, -1) # (B_t, B_i, D)
+                    t_exp = t_batch.unsqueeze(1).expand(B_t, B_i, -1) # (B_t, B_i, D)
+
+                    sub_scores = self.scorer(i_exp, t_exp) # (B_t, B_i)
+                    scores[start_t:end_t, start_i:end_i] = sub_scores.cpu()
+
+        return scores
 
     def encode_image(self, image: torch.Tensor, normalize: bool = True) -> torch.Tensor:
         """Encode image tensor using base model."""
@@ -167,3 +243,4 @@ class NegationAwareCLIPWrapper(nn.Module):
         image_features = self.encode_image(image) if image is not None else None
         text_features = self.encode_text(text) if text is not None else None
         return image_features, text_features
+
