@@ -140,6 +140,20 @@ def main(args):
             **model_kwargs,
         )
 
+    # Wrap model with NegationAwareCLIPWrapper if hypothesis testing method is specified
+    from src.evaluation.modified_clip import NegationAwareCLIPWrapper
+    negation_method = getattr(args, "negation_method", "baseline")
+    if negation_method != "baseline":
+        print(f"Wrapping model with NegationAwareCLIPWrapper (Method: {negation_method})")
+        model = NegationAwareCLIPWrapper(
+            model,
+            negation_method=negation_method,
+            subspace_basis_path=getattr(args, "subspace_basis_path", None),
+            hyperplane_weight_path=getattr(args, "hyperplane_weight_path", None),
+            hyperplane_lambda=getattr(args, "hyperplane_lambda", 0.5),
+            bilinear_alpha=getattr(args, "bilinear_alpha", 0.5)
+        )
+
     random_seed(args.seed, args.rank)
     if is_master(args):
         logging.info("Model:")

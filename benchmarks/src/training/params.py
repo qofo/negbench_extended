@@ -645,6 +645,39 @@ def parse_args(args):
         help="Weight for synthetic batch loss term."
     )
 
+    # Arguments for Negation Hypothesis Testing Methods
+    parser.add_argument(
+        "--negation-method",
+        type=str,
+        default="baseline",
+        choices=["baseline", "procrustes_orthogonal", "hyperplane_projection", "subspace_bilinear"],
+        help="Hypothesis test mode for negation-aware evaluation."
+    )
+    parser.add_argument(
+        "--subspace-basis-path",
+        type=str,
+        default=None,
+        help="Path to saved negation subspace basis matrix U_neg (.npy file)."
+    )
+    parser.add_argument(
+        "--hyperplane-weight-path",
+        type=str,
+        default=None,
+        help="Path to saved linear probe weights w (.npz file)."
+    )
+    parser.add_argument(
+        "--hyperplane-lambda",
+        type=float,
+        default=0.5,
+        help="Weight multiplier for hyperplane projection metric (H2)."
+    )
+    parser.add_argument(
+        "--bilinear-alpha",
+        type=float,
+        default=0.5,
+        help="Alpha multiplier for subspace-constrained bilinear tensor (H4)."
+    )
+
     args = parser.parse_args(args)
 
     # If some params are not passed, we use the default values based on model name.
