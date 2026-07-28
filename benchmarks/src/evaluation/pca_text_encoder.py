@@ -34,6 +34,198 @@ import open_clip
 
 
 # ==============================================================================
+# Layer-wise Representation Extraction & PCA Scatter Plot Analysis
+# ==============================================================================
+
+def extract_layer_representations(
+    model: nn.Module,
+    tokenizer: Any,
+    texts: List[str],
+    device: str = "cpu",
+    target_token: str = "eot",
+    batch_size: int = 256
+) -> List[np.ndarray]:
+    """
+    Extract layer-wise representations for all Transformer layers (Layer 0 = Input Embedding to Layer L).
+
+    Args:
+        model: CLIP model instance.
+        tokenizer: OpenCLIP tokenizer.
+        texts: List of text strings.
+        device: 'cuda' or 'cpu'.
+        target_token: Token aggregation strategy ('eot', 'mean', 'all').
+        batch_size: Inference batch size.
+
+    Returns:
+        List of numpy arrays, where index i corresponds to Layer i hidden states of shape (N, Dim).
+    """
+    model.eval()
+    all_tokens = tokenizer(texts).to(device)
+
+    text_tower = getattr(model, 'text', model)
+    token_embedding = text_tower.token_embedding
+    positional_embedding = text_tower.positional_embedding
+    transformer = text_tower.transformer
+    attn_mask = getattr(text_tower, 'attn_mask', None)
+
+    resblocks = transformer.resblocks
+    num_layers = 1 + len(resblocks)
+    layer_batches = [[] for _ in range(num_layers)]
+
+    for start in range(0, len(texts), batch_size):
+        end = min(start + batch_size, len(texts))
+        batch_tokens = all_tokens[start:end]
+
+        with torch.no_grad():
+            cast_dtype = transformer.get_cast_dtype()
+            eot_indices = batch_tokens.argmax(dim=-1).cpu()
+            batch_idx = torch.arange(batch_tokens.shape[0])
+
+            # Layer 0: Embedding
+            x = token_embedding(batch_tokens).to(cast_dtype)
+            seq_len = batch_tokens.shape[1]
+            x = x + positional_embedding[:seq_len].to(cast_dtype)
+
+            hidden_states = [x]
+
+            # Pass through each Transformer resblock
+            x_perm = x.permute(1, 0, 2)
+            for block in resblocks:
+                x_perm = block(x_perm, attn_mask=attn_mask)
+                hidden_states.append(x_perm.permute(1, 0, 2))
+
+            for l_idx, hs in enumerate(hidden_states):
+                hs_cpu = hs.float().cpu()
+                if target_token == "eot":
+                    feat = hs_cpu[batch_idx, eot_indices].numpy()
+                elif target_token == "mean":
+                    feat = hs_cpu.mean(dim=1).numpy()
+                elif target_token == "all":
+                    feat = hs_cpu.reshape(-1, hs_cpu.shape[-1]).numpy()
+                else:
+                    feat = hs_cpu[batch_idx, eot_indices].numpy()
+                layer_batches[l_idx].append(feat)
+
+    return [np.concatenate(b, axis=0) for b in layer_batches]
+
+
+def analyze_and_plot_pca(
+    model: nn.Module,
+    tokenizer: Any,
+    pos_texts: List[str],
+    neg_texts: List[str],
+    output_dir: str,
+    device: str = "cpu",
+    target_token: str = "eot",
+    batch_size: int = 256
+) -> Dict[str, Any]:
+    """
+    Perform layer-wise PCA on positive vs negative texts across all layers (Layer 0 to Layer L),
+    plot single-canvas comparative grid figure (pca_grid_{target_token}.png),
+    and generate analytical summary report (pca_report_{target_token}.txt).
+    """
+    print("\n" + "="*60)
+    print(f"Layer-wise PCA Grid Analysis & Visualization (Target Token Strategy: '{target_token}')")
+    print("="*60)
+
+    pos_layer_feats = extract_layer_representations(model, tokenizer, pos_texts, device, target_token, batch_size)
+    neg_layer_feats = extract_layer_representations(model, tokenizer, neg_texts, device, target_token, batch_size)
+
+    num_layers = len(pos_layer_feats)
+    n_pos = len(pos_texts)
+    n_neg = len(neg_texts)
+
+    cols = min(4, num_layers)
+    rows = (num_layers + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 4.5 * rows))
+    if num_layers == 1:
+        axes = np.array([axes])
+    axes = axes.flatten()
+
+    analysis_report = [
+        "=== CLIP Text Encoder Layer-wise PCA Analysis Report ===",
+        f"Target Token Strategy: {target_token}",
+        f"Positive samples: {n_pos}, Negative samples: {n_neg}",
+        f"Total Layers analyzed: {num_layers} (Layer 0 = Input Embedding)\n"
+    ]
+
+    pca_data_per_layer = []
+
+    for l_idx in range(num_layers):
+        pos_f = pos_layer_feats[l_idx]
+        neg_f = neg_layer_feats[l_idx]
+
+        combined = np.vstack([pos_f, neg_f])
+
+        pca = PCA(n_components=min(combined.shape[0], combined.shape[1], 2))
+        combined_pca = pca.fit_transform(combined)
+
+        pos_pca = combined_pca[:n_pos]
+        neg_pca = combined_pca[n_pos:]
+
+        var_ratio = pca.explained_variance_ratio_
+        total_var_2d = float(np.sum(var_ratio[:2])) if len(var_ratio) >= 2 else float(np.sum(var_ratio))
+
+        pos_mean_orig = pos_f.mean(axis=0)
+        neg_mean_orig = neg_f.mean(axis=0)
+        centroid_dist_orig = float(np.linalg.norm(pos_mean_orig - neg_mean_orig))
+
+        pos_mean_pca = pos_pca.mean(axis=0)
+        neg_mean_pca = neg_pca.mean(axis=0)
+        centroid_dist_pca = float(np.linalg.norm(pos_mean_pca - neg_mean_pca))
+
+        layer_name = "Embedding" if l_idx == 0 else f"Layer {l_idx}"
+
+        layer_info = {
+            "layer_index": l_idx,
+            "layer_name": layer_name,
+            "explained_variance_ratio": var_ratio.tolist(),
+            "total_explained_variance_2d": total_var_2d,
+            "centroid_distance_orig": centroid_dist_orig,
+            "centroid_distance_pca": centroid_dist_pca
+        }
+        pca_data_per_layer.append(layer_info)
+
+        report_str = (f"[{layer_name}] 2D Explained Variance: {total_var_2d*100:.2f}% "
+                      f"(PC1: {var_ratio[0]*100:.1f}%, PC2: {var_ratio[1]*100:.1f}%) | "
+                      f"Group Centroid Dist (Orig Dim): {centroid_dist_orig:.4f}")
+        analysis_report.append(report_str)
+
+        ax = axes[l_idx]
+        ax.scatter(pos_pca[:, 0], pos_pca[:, 1], c="dodgerblue", label="Positive", alpha=0.75, edgecolors="k", linewidth=0.5, s=40)
+        ax.scatter(neg_pca[:, 0], neg_pca[:, 1], c="crimson", label="Negative", alpha=0.75, edgecolors="k", linewidth=0.5, marker="^", s=40)
+
+        # Centroids
+        ax.scatter(pos_mean_pca[0], pos_mean_pca[1], c="navy", s=120, marker="X", label="Pos Centroid", edgecolors="w")
+        ax.scatter(neg_mean_pca[0], neg_mean_pca[1], c="darkred", s=120, marker="X", label="Neg Centroid", edgecolors="w")
+
+        ax.set_title(f"{layer_name}\n(Var: {total_var_2d*100:.1f}%)", fontsize=11, fontweight="bold")
+        ax.set_xlabel("PC 1", fontsize=9)
+        ax.set_ylabel("PC 2", fontsize=9)
+        ax.grid(True, linestyle="--", alpha=0.5)
+
+        if l_idx == 0:
+            ax.legend(fontsize=8, loc="best")
+
+    for l_idx in range(num_layers, len(axes)):
+        fig.delaxes(axes[l_idx])
+
+    plt.tight_layout()
+    plot_filename = os.path.join(output_dir, f"pca_grid_{target_token}.png")
+    plt.savefig(plot_filename, dpi=300, bbox_inches="tight")
+    plt.close()
+
+    report_filename = os.path.join(output_dir, f"pca_report_{target_token}.txt")
+    with open(report_filename, "w", encoding="utf-8") as f:
+        f.write("\n".join(analysis_report))
+
+    print(f"Saved PCA Plot: {plot_filename}")
+    print(f"Saved PCA Report: {report_filename}")
+
+    return {"plot_filename": plot_filename, "report_filename": report_filename, "layer_data": pca_data_per_layer}
+
+
+# ==============================================================================
 # Granular 5-Step Pipeline Feature Extraction
 # ==============================================================================
 
@@ -716,6 +908,9 @@ if __name__ == "__main__":
     model, preprocess, _ = open_clip.create_model_and_transforms(args.model, pretrained=args.pretrained)
     tokenizer = open_clip.get_tokenizer(args.model)
     model = model.to(device)
+
+    # Layer-wise PCA Grid Analysis & Scatter Plot Visualization
+    analyze_and_plot_pca(model, tokenizer, pos_texts, neg_texts, args.output_dir, device, args.target_token, args.batch_size)
 
     # Stage 1-A. Pipeline 5-Step Breakdown Analysis
     analyze_pipeline_breakdown(model, tokenizer, pos_texts, neg_texts, args.output_dir, device, args.batch_size)
