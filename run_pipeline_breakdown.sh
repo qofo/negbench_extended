@@ -1,3 +1,4 @@
+
 #!/bin/bash
 
 # ==============================================================================
@@ -11,7 +12,7 @@
 #   Stage 3  : Text-side Projection Causal Ablation (Original vs Identity vs Orthogonal Q)
 # ==============================================================================
 
-PAIRED_CSV="COCO_val_full_paired.csv"
+PAIRED_CSV="benchmarks/data/images/COCO_val_full_paired.csv"
 if [ ! -f "${PAIRED_CSV}" ]; then
     PAIRED_CSV="COCO_val_mcq_top100_paired.csv"
 fi
@@ -20,11 +21,11 @@ OUTPUT_DIR="logs/pipeline_breakdown/openai_vit_b32"
 MODEL_NAME="ViT-B-32"
 PRETRAINED="openai"
 TARGET_TOKEN="eot"
-MAX_SAMPLES=60000
+MAX_SAMPLES=5000
 BATCH_SIZE=256
 
 # 이미지 저장 서버인 경우 경로 지정 (예: IMAGE_ROOT=".")
-IMAGE_ROOT=""
+IMAGE_ROOT="benchmarks"
 
 echo "=========================================================="
 echo "  Executing Stage-by-Stage CLIP Negation Analysis"
