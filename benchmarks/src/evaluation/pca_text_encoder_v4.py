@@ -159,39 +159,45 @@ def extract_all_features_unified(
                 if 1 <= l_idx < len(resblocks):
                     inter_layer_batches[f"Layer{l_idx}"].append(feat)
 
-            # Extract 5 Pipeline steps
+            # Extract 5 Pipeline steps (computed on tensor device)
             def extract_step_token(tensor_b_l_d):
-                t_cpu = tensor_b_l_d.float().cpu()
                 if target_token == "eot":
-                    return t_cpu[batch_idx, eot_indices]
+                    return tensor_b_l_d[batch_idx.to(tensor_b_l_d.device), eot_indices.to(tensor_b_l_d.device)]
                 elif target_token == "mean":
-                    return t_cpu.mean(dim=1)
+                    return tensor_b_l_d.mean(dim=1)
                 else:
-                    return t_cpu[batch_idx, eot_indices]
+                    return tensor_b_l_d[batch_idx.to(tensor_b_l_d.device), eot_indices.to(tensor_b_l_d.device)]
 
-            step0 = extract_step_token(hidden_states[0])
-            step1 = extract_step_token(hidden_states[-1])
+            step0_dev = extract_step_token(hidden_states[0])
+            step1_dev = extract_step_token(hidden_states[-1])
 
             x_ln = ln_final(hidden_states[-1])
-            step2 = extract_step_token(x_ln)
+            step2_dev = extract_step_token(x_ln)
 
-            # Step 3: Projection
+            # Step 3: Projection (on device)
             if custom_projection is not None:
                 if isinstance(custom_projection, str) and custom_projection == "identity":
-                    step3 = step2.clone()
+                    step3_dev = step2_dev.clone()
                 else:
-                    W_custom = torch.from_numpy(custom_projection).float().cpu()
-                    step3 = step2 @ W_custom
+                    W_custom = torch.from_numpy(custom_projection).to(device=step2_dev.device, dtype=step2_dev.dtype)
+                    step3_dev = step2_dev @ W_custom
             elif text_projection is not None:
                 if isinstance(text_projection, nn.Linear):
-                    step3 = text_projection(step2.to(text_projection.weight.dtype)).float().cpu()
+                    step3_dev = text_projection(step2_dev.to(text_projection.weight.dtype))
                 else:
-                    step3 = (step2.to(text_projection.dtype) @ text_projection).float().cpu()
+                    step3_dev = step2_dev.to(text_projection.dtype) @ text_projection
             else:
-                step3 = step2.clone()
+                step3_dev = step2_dev.clone()
 
-            # Step 4: Final L2 Normalization
-            step4 = F.normalize(step3, dim=-1).cpu()
+            # Step 4: Final L2 Normalization (on device)
+            step4_dev = F.normalize(step3_dev.float(), dim=-1)
+
+            # Move all step features to CPU
+            step0 = step0_dev.float().cpu()
+            step1 = step1_dev.float().cpu()
+            step2 = step2_dev.float().cpu()
+            step3 = step3_dev.float().cpu()
+            step4 = step4_dev.float().cpu()
 
             pipeline_batches[PipelineStep.EMBEDDING.value].append(step0.numpy())
             pipeline_batches[PipelineStep.LAYER12_RAW.value].append(step1.numpy())
