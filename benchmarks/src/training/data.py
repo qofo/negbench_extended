@@ -110,8 +110,24 @@ class CsvMCQDataset(Dataset):
         """
         self.df = pd.read_csv(csv_file, sep=',')
         self.transforms = transforms
-        self.num_answers = num_answers
-        self.path = path
+        
+        # Dynamically detect num_answers from CSV columns if caption_* exist
+        caption_cols = [c for c in self.df.columns if c.startswith("caption_")]
+        if caption_cols:
+            self.num_answers = len(caption_cols)
+        else:
+            self.num_answers = num_answers if num_answers is not None else 4
+
+        # Dynamically check path column name
+        if path in self.df.columns:
+            self.path = path
+        elif "filepath" in self.df.columns:
+            self.path = "filepath"
+        elif "image_path" in self.df.columns:
+            self.path = "image_path"
+        else:
+            self.path = self.df.columns[0]
+
         self.tokenizer = tokenizer
         self.shuffle_options = shuffle_options
         self.is_synthetic = is_synthetic
@@ -124,17 +140,19 @@ class CsvMCQDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        image_path = row[self.path]
-        captions = [row[f"caption_{i}"] for i in range(self.num_answers)]
-        correct_answer = int(row["correct_answer"])          # always 0 in CSVs
-        correct_answer_template = row["correct_answer_template"]
+        image_path = str(row[self.path])
+        captions = [str(row[f"caption_{i}"]) for i in range(self.num_answers)]
+        correct_answer = int(row["correct_answer"]) if "correct_answer" in row else 0
+        correct_answer_template = str(row["correct_answer_template"]) if "correct_answer_template" in row else "mcq"
 
         # caption_types tracks the semantic role of each caption slot.
         # Original order depends on whether the dataset is synthetic or not.
         if self.is_synthetic:
-            caption_types = list(self.SYNTHETIC_CAPTION_TYPES)
+            caption_types = list(self.SYNTHETIC_CAPTION_TYPES[:self.num_answers])
         else:
-            caption_types = list(self.CAPTION_TYPES)
+            caption_types = list(self.CAPTION_TYPES[:self.num_answers])
+        while len(caption_types) < self.num_answers:
+            caption_types.append(f"option_{len(caption_types)}")
 
         if self.shuffle_options:
             perm = list(range(self.num_answers))

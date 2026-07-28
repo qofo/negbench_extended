@@ -154,7 +154,7 @@ def evaluate_model(model, dataloader, args, tokenizer=None, is_synthetic=False):
             # Update counts for each answer type and track predictions
             for i in range(batch_size):
                 answer_type = correct_answer_type[i]
-                total_questions_by_type[answer_type] += 1
+                total_questions_by_type[answer_type] = total_questions_by_type.get(answer_type, 0) + 1
                 predicted_idx = predicted_answer[i].item()
                 correct_idx = correct_answer[i].item()
 
@@ -164,28 +164,30 @@ def evaluate_model(model, dataloader, args, tokenizer=None, is_synthetic=False):
                 predicted_caption_type = sample_caption_types[predicted_idx]  # e.g. 'gt', 'hybrid', 'positive', 'negative'
 
                 if predicted_idx == correct_idx:
-                    correct_answers_by_type[answer_type] += 1
-                    predictions_by_type[answer_type] += 1
+                    correct_answers_by_type[answer_type] = correct_answers_by_type.get(answer_type, 0) + 1
+                    predictions_by_type[answer_type] = predictions_by_type.get(answer_type, 0) + 1
                 else:
                     # predicted_caption_type is one of 'hybrid', 'positive', 'negative'
                     # ('gt' only appears when the prediction is correct, so it won't show here)
                     wrong_type = predicted_caption_type
                     wrong_answer_counts_by_type[wrong_type] = wrong_answer_counts_by_type.get(wrong_type, 0) + 1
                     predictions_by_type[wrong_type] = predictions_by_type.get(wrong_type, 0) + 1
+                    if answer_type not in wrong_answers_by_question_type:
+                        wrong_answers_by_question_type[answer_type] = {}
                     wrong_answers_by_question_type[answer_type][wrong_type] = \
                         wrong_answers_by_question_type[answer_type].get(wrong_type, 0) + 1
 
     # Compute overall accuracy
-    total_accuracy = correct_answers_sum / total_questions
+    total_accuracy = correct_answers_sum / total_questions if total_questions > 0 else 0.0
 
     # Compute accuracy per type
     # if no questions of this type, the accuracy is meaningless, so we set it to nan
-    positive_accuracy = correct_answers_by_type['positive'] / total_questions_by_type['positive'] if total_questions_by_type['positive'] > 0 else float('nan')
-    negative_accuracy = correct_answers_by_type['negative'] / total_questions_by_type['negative'] if total_questions_by_type['negative'] > 0 else float('nan')
-    hybrid_accuracy = correct_answers_by_type['hybrid'] / total_questions_by_type['hybrid'] if total_questions_by_type['hybrid'] > 0 else float('nan')
+    positive_accuracy = correct_answers_by_type.get('positive', 0) / total_questions_by_type.get('positive', 0) if total_questions_by_type.get('positive', 0) > 0 else float('nan')
+    negative_accuracy = correct_answers_by_type.get('negative', 0) / total_questions_by_type.get('negative', 0) if total_questions_by_type.get('negative', 0) > 0 else float('nan')
+    hybrid_accuracy = correct_answers_by_type.get('hybrid', 0) / total_questions_by_type.get('hybrid', 0) if total_questions_by_type.get('hybrid', 0) > 0 else float('nan')
 
     # Compute the most common wrong answer type
-    most_common_wrong_answer_type = max(wrong_answer_counts_by_type, key=wrong_answer_counts_by_type.get)
+    most_common_wrong_answer_type = max(wrong_answer_counts_by_type, key=wrong_answer_counts_by_type.get) if wrong_answer_counts_by_type else "none"
 
     # Compute total number of wrong answers and the percentage of each error type
     total_wrong_answers = sum(wrong_answer_counts_by_type.values())
