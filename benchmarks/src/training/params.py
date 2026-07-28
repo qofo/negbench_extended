@@ -650,7 +650,7 @@ def parse_args(args):
         "--negation-method",
         type=str,
         default="baseline",
-        choices=["baseline", "procrustes_orthogonal", "hyperplane_projection", "subspace_bilinear"],
+        choices=["baseline", "layer12_raw", "procrustes_orthogonal", "hyperplane_projection", "subspace_bilinear"],
         help="Hypothesis test mode for negation-aware evaluation."
     )
     parser.add_argument(

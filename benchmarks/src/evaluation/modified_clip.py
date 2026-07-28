@@ -111,8 +111,8 @@ class NegationAwareCLIPWrapper(nn.Module):
         transformer = text_tower.transformer
         ln_final = text_tower.ln_final
 
-        if self.negation_method == "procrustes_orthogonal":
-            # H1 Mode: Extract Layer 12 LN features and apply Orthogonal Procrustes Q
+        if self.negation_method in ["procrustes_orthogonal", "layer12_raw"]:
+            # H1 Mode & Zero-Projection Ablation: Extract Layer 12 LN features
             with torch.no_grad():
                 cast_dtype = transformer.get_cast_dtype()
                 x = token_emb(text).to(cast_dtype) + pos_emb[:text.shape[1]].to(cast_dtype)
@@ -125,8 +125,14 @@ class NegationAwareCLIPWrapper(nn.Module):
                 batch_idx = torch.arange(text.shape[0])
                 step2_ln = x_final[batch_idx, eot_idx].float()
 
-                Q = self.Q_ortho.to(device=step2_ln.device, dtype=step2_ln.dtype)
-                text_feats = step2_ln @ Q
+                if self.negation_method == "layer12_raw":
+                    # Pure Projection Removal (No W_proj, no Q)
+                    text_feats = step2_ln
+                else:
+                    # Procrustes Orthogonal Alignment Q (Q^T Q = I)
+                    Q = self.Q_ortho.to(device=step2_ln.device, dtype=step2_ln.dtype)
+                    text_feats = step2_ln @ Q
+
                 if normalize:
                     text_feats = F.normalize(text_feats, dim=-1)
                 return text_feats

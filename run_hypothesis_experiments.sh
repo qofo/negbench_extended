@@ -74,10 +74,30 @@ PROBE_WEIGHTS="${SUBSPACE_DIR}/linear_probe_weights.npz"
 cd "${ROOT_DIR}/benchmarks"
 
 # ------------------------------------------------------------------------------
-# Stage 1-B: H1 Procrustes Orthogonal Causal Alignment (Isometric Test)
+# Stage 1-B1: Pure Projection Removal Ablation (Layer 12 Raw)
 # ------------------------------------------------------------------------------
 echo ""
-echo ">>> [Stage 1-B] Evaluating H1: Procrustes Orthogonal Alignment..."
+echo ">>> [Stage 1-B1] Evaluating Pure Projection Removal (Layer 12 Raw)..."
+CUDA_VISIBLE_DEVICES=0 python -m src.evaluation.eval_negation \
+    --model "${MODEL}" \
+    --pretrained "${PRETRAINED}" \
+    --name "h1_pure_layer12_raw" \
+    --logs "${LOGS_DIR}" \
+    --dataset-type csv \
+    --csv-separator=, \
+    --csv-img-key filepath \
+    --csv-caption-key caption \
+    --coco-mcq "${COCO_MCQ}" \
+    --coco-retrieval "${COCO_RETRIEVAL}" \
+    --coco-negated-retrieval "${COCO_NEGATED_RETRIEVAL}" \
+    --negation-method layer12_raw \
+    --batch-size 64
+
+# ------------------------------------------------------------------------------
+# Stage 1-B2: H1 Procrustes Orthogonal Causal Alignment (Isometric Test)
+# ------------------------------------------------------------------------------
+echo ""
+echo ">>> [Stage 1-B2] Evaluating H1: Procrustes Orthogonal Alignment..."
 CUDA_VISIBLE_DEVICES=0 python -m src.evaluation.eval_negation \
     --model "${MODEL}" \
     --pretrained "${PRETRAINED}" \
