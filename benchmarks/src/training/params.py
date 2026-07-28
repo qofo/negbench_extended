@@ -650,7 +650,7 @@ def parse_args(args):
         "--negation-method",
         type=str,
         default="baseline",
-        choices=["baseline", "layer12_raw", "procrustes_orthogonal", "hyperplane_projection", "subspace_bilinear"],
+        choices=["baseline", "layer12_raw", "procrustes_orthogonal", "hyperplane_projection", "subspace_bilinear", "scoring_head", "trained_scorer"],
         help="Hypothesis test mode for negation-aware evaluation."
     )
     parser.add_argument(
@@ -676,6 +676,18 @@ def parse_args(args):
         type=float,
         default=0.5,
         help="Alpha multiplier for subspace-constrained bilinear tensor (H4)."
+    )
+    parser.add_argument(
+        "--scorer-checkpoint",
+        type=str,
+        default=None,
+        help="Path to trained PyTorch Scoring Head checkpoint (.pt file)."
+    )
+    parser.add_argument(
+        "--scorer-type",
+        type=str,
+        default="deep_mlp",
+        help="Scorer model architecture name (e.g. deep_mlp, bilinear, etc.)."
     )
 
     args = parser.parse_args(args)
