@@ -186,41 +186,39 @@ def parse_args(args):
     parser.add_argument(
         "--chexpert-mcq",
         type=str,
-        default="/data/healthy-ml/scratch/kumail/projects/data/negation/chexpert_mcq.csv",
+        default=None,
         help="Path to CheXpert dataset holdout set for conducting MCQ evaluation.",
     )
     parser.add_argument(
         "--chexpert-affirmation-mcq",
         type=str,
-        default="/data/healthy-ml/scratch/kumail/projects/data/negation/chexpert_mcq_no_negation.csv",
+        default=None,
         help="Path to CheXpert dataset holdout set for conducting affirmation MCQ evaluation.",
     )
     # chexpert-binary-mcq
     parser.add_argument(
         "--chexpert-binary-mcq",
         type=str,
-        # default="/data/healthy-ml/scratch/kumail/projects/data/negation/chexpert_binary_mcq.csv",
-        default="~/projects/data/negation/chexpert_binary_mcq_random.csv",
+        default=None,
         help="Path to CheXpert dataset holdout set for conducting binary MCQ evaluation.",
     )
     # chexpert-affirmation-binary-mcq
     parser.add_argument(
         "--chexpert-affirmation-binary-mcq",
         type=str,
-        # default="/data/healthy-ml/scratch/kumail/projects/data/negation/chexpert_binary_mcq_no_negation.csv",
-        default="~/projects/data/negation/chexpert_binary_mcq_no_negation_random.csv",
+        default=None,
         help="Path to CheXpert dataset holdout set for conducting affirmation binary MCQ evaluation.",
     )
     parser.add_argument(
         "--ham10000-mcq",
         type=str,
-        default="/data/healthy-ml/scratch/kumail/projects/data/negation/ham10000_mcq.csv",
+        default=None,
         help="Path to HAM10000 dataset holdout set for conducting MCQ evaluation.",
     )
     parser.add_argument(
         "--ham10000-affirmation-mcq",
         type=str,
-        default="/data/healthy-ml/scratch/kumail/projects/data/negation/ham10000_mcq_no_negation.csv",
+        default=None,
         help="Path to HAM10000 dataset holdout set for conducting affirmation MCQ evaluation.",
     )
     parser.add_argument(

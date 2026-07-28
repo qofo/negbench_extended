@@ -1042,24 +1042,24 @@ def get_data(args, preprocess_fns, epoch=0, tokenizer=None):
 
         return data
 
-    if args.cxr_dataset: # TODO: rename to something more intuitive, like args.medical_dataset
-        if args.chexpert_mcq:
+    if args.cxr_dataset or args.chexpert_mcq or args.chexpert_binary_mcq or args.ham10000_mcq:
+        if args.chexpert_mcq and os.path.exists(args.chexpert_mcq):
             data["chexpert-mcq"] = get_eval_dataset(args, args.chexpert_mcq, preprocess_val, 'mcq')
 
-        if args.chexpert_affirmation_mcq:
+        if args.chexpert_affirmation_mcq and os.path.exists(args.chexpert_affirmation_mcq):
             data["chexpert-affirmation-mcq"] = get_eval_dataset(args, args.chexpert_affirmation_mcq, preprocess_val, 'mcq')
 
-        if args.chexpert_binary_mcq:
-            data["chexpert-binary-mcq"] = get_eval_dataset(args, args.chexpert_binary_mcq, preprocess_val, 'binary_mcq') # TODO
+        if args.chexpert_binary_mcq and os.path.exists(args.chexpert_binary_mcq):
+            data["chexpert-binary-mcq"] = get_eval_dataset(args, args.chexpert_binary_mcq, preprocess_val, 'binary_mcq')
+
+        if args.chexpert_affirmation_binary_mcq and os.path.exists(args.chexpert_affirmation_binary_mcq):
             data["chexpert-affirmation-binary-mcq"] = get_eval_dataset(args, args.chexpert_affirmation_binary_mcq, preprocess_val, 'binary_mcq')
 
-        if args.ham10000_mcq:
+        if args.ham10000_mcq and os.path.exists(args.ham10000_mcq):
             data["ham10000-mcq"] = get_eval_dataset(args, args.ham10000_mcq, preprocess_val, 'mcq')
 
-        if args.ham10000_affirmation_mcq:
+        if args.ham10000_affirmation_mcq and os.path.exists(args.ham10000_affirmation_mcq):
             data["ham10000-affirmation-mcq"] = get_eval_dataset(args, args.ham10000_affirmation_mcq, preprocess_val, 'mcq')
-
-        return data
 
     if args.train_data or args.dataset_type == "synthetic":
         data["train"] = get_dataset_fn(args.train_data, args.dataset_type)(
