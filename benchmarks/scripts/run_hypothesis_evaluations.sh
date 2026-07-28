@@ -7,9 +7,17 @@
 set -e
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$BASE_DIR/.."
 DATA_DIR="$BASE_DIR/data"
 LOGS_DIR="$BASE_DIR/../logs/evaluation/hypothesis_experiments"
 SUBSPACE_DIR="$BASE_DIR/../logs/subspace_analysis"
+
+# Symlink root 'data' to 'benchmarks/data' if missing
+if [ ! -e "$ROOT_DIR/data" ] && [ -d "$DATA_DIR" ]; then
+    ln -sf "$DATA_DIR" "$ROOT_DIR/data" || true
+fi
+
+export PYTHONPATH="$BASE_DIR:$ROOT_DIR:$PYTHONPATH"
 
 MODEL="ViT-B-32"
 PRETRAINED="openai"
@@ -26,6 +34,7 @@ cd "$BASE_DIR"
 echo "=========================================================="
 echo "  Executing 3-Stage Hypothesis Verification Pipeline"
 echo "  Base Directory: $BASE_DIR"
+echo "  PYTHONPATH    : $PYTHONPATH"
 echo "  Logs Directory: $LOGS_DIR"
 echo "=========================================================="
 
@@ -82,7 +91,7 @@ CUDA_VISIBLE_DEVICES=0 python -m src.evaluation.eval_negation \
     --batch-size=64
 
 # ------------------------------------------------------------------------------
-# Stage 3: Subspace-Constrained Bilinear Interface (H4)
+# Stage 3: Subspace-Constrained Bilinear Metric Tensor (H4)
 # ------------------------------------------------------------------------------
 echo ""
 echo ">>> [Stage 3] Evaluating H4: Subspace-Constrained Bilinear Metric Tensor..."
