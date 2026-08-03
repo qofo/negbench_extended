@@ -58,7 +58,10 @@ def evaluate_model(model, dataloader, args, tokenizer, recall_k_list=[5]):
     texts_emb = torch.cat(batch_texts_emb_list)
 
     # Compute the scores
-    scores = texts_emb @ images_emb.t()
+    if hasattr(model, "compute_retrieval_similarity"):
+        scores = model.compute_retrieval_similarity(texts_emb, images_emb)
+    else:
+        scores = texts_emb @ images_emb.t()
     positive_pairs = torch.zeros_like(scores, dtype=bool)
     positive_pairs[torch.arange(len(scores)), texts_image_index] = True
     metrics = {}

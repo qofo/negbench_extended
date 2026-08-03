@@ -133,4 +133,5 @@ class CsvVideoMCQDataset(BaseCsvVideoDataset):
         captions = [row[f"caption_{i}"] for i in range(self.num_answers)]
         correct_answer = row["correct_answer"]
         correct_answer_template = row["correct_answer_template"]
-        return transformed_frames, captions, correct_answer, correct_answer_template
+        video_path = row[self.video_key] if self.video_key in row else (row["image_path"] if "image_path" in row else "")
+        return transformed_frames, captions, correct_answer, correct_answer_template, video_path

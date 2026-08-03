@@ -186,41 +186,39 @@ def parse_args(args):
     parser.add_argument(
         "--chexpert-mcq",
         type=str,
-        default="/data/healthy-ml/scratch/kumail/projects/data/negation/chexpert_mcq.csv",
+        default=None,
         help="Path to CheXpert dataset holdout set for conducting MCQ evaluation.",
     )
     parser.add_argument(
         "--chexpert-affirmation-mcq",
         type=str,
-        default="/data/healthy-ml/scratch/kumail/projects/data/negation/chexpert_mcq_no_negation.csv",
+        default=None,
         help="Path to CheXpert dataset holdout set for conducting affirmation MCQ evaluation.",
     )
     # chexpert-binary-mcq
     parser.add_argument(
         "--chexpert-binary-mcq",
         type=str,
-        # default="/data/healthy-ml/scratch/kumail/projects/data/negation/chexpert_binary_mcq.csv",
-        default="~/projects/data/negation/chexpert_binary_mcq_random.csv",
+        default=None,
         help="Path to CheXpert dataset holdout set for conducting binary MCQ evaluation.",
     )
     # chexpert-affirmation-binary-mcq
     parser.add_argument(
         "--chexpert-affirmation-binary-mcq",
         type=str,
-        # default="/data/healthy-ml/scratch/kumail/projects/data/negation/chexpert_binary_mcq_no_negation.csv",
-        default="~/projects/data/negation/chexpert_binary_mcq_no_negation_random.csv",
+        default=None,
         help="Path to CheXpert dataset holdout set for conducting affirmation binary MCQ evaluation.",
     )
     parser.add_argument(
         "--ham10000-mcq",
         type=str,
-        default="/data/healthy-ml/scratch/kumail/projects/data/negation/ham10000_mcq.csv",
+        default=None,
         help="Path to HAM10000 dataset holdout set for conducting MCQ evaluation.",
     )
     parser.add_argument(
         "--ham10000-affirmation-mcq",
         type=str,
-        default="/data/healthy-ml/scratch/kumail/projects/data/negation/ham10000_mcq_no_negation.csv",
+        default=None,
         help="Path to HAM10000 dataset holdout set for conducting affirmation MCQ evaluation.",
     )
     parser.add_argument(
@@ -645,6 +643,51 @@ def parse_args(args):
         type=float,
         default=1.0,
         help="Weight for synthetic batch loss term."
+    )
+
+    # Arguments for Negation Hypothesis Testing Methods
+    parser.add_argument(
+        "--negation-method",
+        type=str,
+        default="baseline",
+        choices=["baseline", "layer12_raw", "procrustes_orthogonal", "hyperplane_projection", "subspace_bilinear", "scoring_head", "trained_scorer"],
+        help="Hypothesis test mode for negation-aware evaluation."
+    )
+    parser.add_argument(
+        "--subspace-basis-path",
+        type=str,
+        default=None,
+        help="Path to saved negation subspace basis matrix U_neg (.npy file)."
+    )
+    parser.add_argument(
+        "--hyperplane-weight-path",
+        type=str,
+        default=None,
+        help="Path to saved linear probe weights w (.npz file)."
+    )
+    parser.add_argument(
+        "--hyperplane-lambda",
+        type=float,
+        default=0.5,
+        help="Weight multiplier for hyperplane projection metric (H2)."
+    )
+    parser.add_argument(
+        "--bilinear-alpha",
+        type=float,
+        default=0.5,
+        help="Alpha multiplier for subspace-constrained bilinear tensor (H4)."
+    )
+    parser.add_argument(
+        "--scorer-checkpoint",
+        type=str,
+        default=None,
+        help="Path to trained PyTorch Scoring Head checkpoint (.pt file)."
+    )
+    parser.add_argument(
+        "--scorer-type",
+        type=str,
+        default="deep_mlp",
+        help="Scorer model architecture name (e.g. deep_mlp, bilinear, etc.)."
     )
 
     args = parser.parse_args(args)

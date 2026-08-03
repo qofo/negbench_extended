@@ -110,8 +110,24 @@ class CsvMCQDataset(Dataset):
         """
         self.df = pd.read_csv(csv_file, sep=',')
         self.transforms = transforms
-        self.num_answers = num_answers
-        self.path = path
+        
+        # Dynamically detect num_answers from CSV columns if caption_* exist
+        caption_cols = [c for c in self.df.columns if c.startswith("caption_")]
+        if caption_cols:
+            self.num_answers = len(caption_cols)
+        else:
+            self.num_answers = num_answers if num_answers is not None else 4
+
+        # Dynamically check path column name
+        if path in self.df.columns:
+            self.path = path
+        elif "filepath" in self.df.columns:
+            self.path = "filepath"
+        elif "image_path" in self.df.columns:
+            self.path = "image_path"
+        else:
+            self.path = self.df.columns[0]
+
         self.tokenizer = tokenizer
         self.shuffle_options = shuffle_options
         self.is_synthetic = is_synthetic
@@ -124,17 +140,19 @@ class CsvMCQDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        image_path = row[self.path]
-        captions = [row[f"caption_{i}"] for i in range(self.num_answers)]
-        correct_answer = int(row["correct_answer"])          # always 0 in CSVs
-        correct_answer_template = row["correct_answer_template"]
+        image_path = str(row[self.path])
+        captions = [str(row[f"caption_{i}"]) for i in range(self.num_answers)]
+        correct_answer = int(row["correct_answer"]) if "correct_answer" in row else 0
+        correct_answer_template = str(row["correct_answer_template"]) if "correct_answer_template" in row else "mcq"
 
         # caption_types tracks the semantic role of each caption slot.
         # Original order depends on whether the dataset is synthetic or not.
         if self.is_synthetic:
-            caption_types = list(self.SYNTHETIC_CAPTION_TYPES)
+            caption_types = list(self.SYNTHETIC_CAPTION_TYPES[:self.num_answers])
         else:
-            caption_types = list(self.CAPTION_TYPES)
+            caption_types = list(self.CAPTION_TYPES[:self.num_answers])
+        while len(caption_types) < self.num_answers:
+            caption_types.append(f"option_{len(caption_types)}")
 
         if self.shuffle_options:
             perm = list(range(self.num_answers))
@@ -1042,24 +1060,24 @@ def get_data(args, preprocess_fns, epoch=0, tokenizer=None):
 
         return data
 
-    if args.cxr_dataset: # TODO: rename to something more intuitive, like args.medical_dataset
-        if args.chexpert_mcq:
+    if args.cxr_dataset or args.chexpert_mcq or args.chexpert_binary_mcq or args.ham10000_mcq:
+        if args.chexpert_mcq and os.path.exists(args.chexpert_mcq):
             data["chexpert-mcq"] = get_eval_dataset(args, args.chexpert_mcq, preprocess_val, 'mcq')
 
-        if args.chexpert_affirmation_mcq:
+        if args.chexpert_affirmation_mcq and os.path.exists(args.chexpert_affirmation_mcq):
             data["chexpert-affirmation-mcq"] = get_eval_dataset(args, args.chexpert_affirmation_mcq, preprocess_val, 'mcq')
 
-        if args.chexpert_binary_mcq:
-            data["chexpert-binary-mcq"] = get_eval_dataset(args, args.chexpert_binary_mcq, preprocess_val, 'binary_mcq') # TODO
+        if args.chexpert_binary_mcq and os.path.exists(args.chexpert_binary_mcq):
+            data["chexpert-binary-mcq"] = get_eval_dataset(args, args.chexpert_binary_mcq, preprocess_val, 'binary_mcq')
+
+        if args.chexpert_affirmation_binary_mcq and os.path.exists(args.chexpert_affirmation_binary_mcq):
             data["chexpert-affirmation-binary-mcq"] = get_eval_dataset(args, args.chexpert_affirmation_binary_mcq, preprocess_val, 'binary_mcq')
 
-        if args.ham10000_mcq:
+        if args.ham10000_mcq and os.path.exists(args.ham10000_mcq):
             data["ham10000-mcq"] = get_eval_dataset(args, args.ham10000_mcq, preprocess_val, 'mcq')
 
-        if args.ham10000_affirmation_mcq:
+        if args.ham10000_affirmation_mcq and os.path.exists(args.ham10000_affirmation_mcq):
             data["ham10000-affirmation-mcq"] = get_eval_dataset(args, args.ham10000_affirmation_mcq, preprocess_val, 'mcq')
-
-        return data
 
     if args.train_data or args.dataset_type == "synthetic":
         data["train"] = get_dataset_fn(args.train_data, args.dataset_type)(

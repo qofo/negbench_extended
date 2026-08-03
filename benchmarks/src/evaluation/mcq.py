@@ -61,21 +61,28 @@ def evaluate_model(model, dataloader, args, tokenizer=None, is_synthetic=False):
 
     with torch.no_grad():
         for batch in tqdm(dataloader, unit_scale=args.batch_size):
-            # [UPDATE] Support both old (5-tuple) and new (6-tuple with caption_types) dataset format.
+            # Support 4-tuple (video MCQ without image_path), 5-tuple (old MCQ), and 6-tuple (shuffled MCQ with caption_types)
             if len(batch) == 6:
                 image_tensor, captions, correct_answer, correct_answer_type, image_path, caption_types_batch = batch
-            else:
+            elif len(batch) == 5:
                 image_tensor, captions, correct_answer, correct_answer_type, image_path = batch
-                # [ADD] Reconstruct caption_types_batch in the same (num_options, batch_size) layout
-                # that DataLoader's default_collate produces for the 6-tuple path.
-                # Synthetic datasets have a different canonical option order.
                 if is_synthetic:
                     canonical = ['positive', 'hybrid', 'hybrid', 'negative']
                 else:
-                    canonical = list(CsvMCQDataset.CAPTION_TYPES)  # ['gt','hybrid','positive','negative']
+                    canonical = list(CsvMCQDataset.CAPTION_TYPES)
                 batch_size_local = image_tensor.size(0)
-                # Shape: (num_options, batch_size) — one list of B identical strings per slot
                 caption_types_batch = [[t] * batch_size_local for t in canonical]
+            elif len(batch) == 4:
+                image_tensor, captions, correct_answer, correct_answer_type = batch
+                image_path = [""] * image_tensor.size(0)
+                if is_synthetic:
+                    canonical = ['positive', 'hybrid', 'hybrid', 'negative']
+                else:
+                    canonical = list(CsvMCQDataset.CAPTION_TYPES)
+                batch_size_local = image_tensor.size(0)
+                caption_types_batch = [[t] * batch_size_local for t in canonical]
+            else:
+                raise ValueError(f"Unexpected batch size/structure with {len(batch)} elements.")
 
             batch_size, num_options = image_tensor.size(0), len(captions)
 
@@ -96,7 +103,10 @@ def evaluate_model(model, dataloader, args, tokenizer=None, is_synthetic=False):
             text_features = text_features.view(num_options, batch_size, -1)
 
             # Compute logits w.r.t. corresponding choices
-            logits = torch.einsum('bf,nbf->bn', image_features, text_features)
+            if hasattr(model, "compute_similarity"):
+                logits = model.compute_similarity(image_features, text_features)
+            else:
+                logits = torch.einsum('bf,nbf->bn', image_features, text_features)
 
             predicted_answer = torch.argmax(logits, dim=1)
             correct_predictions = (predicted_answer == correct_answer).sum().item()
@@ -147,7 +157,7 @@ def evaluate_model(model, dataloader, args, tokenizer=None, is_synthetic=False):
             # Update counts for each answer type and track predictions
             for i in range(batch_size):
                 answer_type = correct_answer_type[i]
-                total_questions_by_type[answer_type] += 1
+                total_questions_by_type[answer_type] = total_questions_by_type.get(answer_type, 0) + 1
                 predicted_idx = predicted_answer[i].item()
                 correct_idx = correct_answer[i].item()
 
@@ -157,28 +167,30 @@ def evaluate_model(model, dataloader, args, tokenizer=None, is_synthetic=False):
                 predicted_caption_type = sample_caption_types[predicted_idx]  # e.g. 'gt', 'hybrid', 'positive', 'negative'
 
                 if predicted_idx == correct_idx:
-                    correct_answers_by_type[answer_type] += 1
-                    predictions_by_type[answer_type] += 1
+                    correct_answers_by_type[answer_type] = correct_answers_by_type.get(answer_type, 0) + 1
+                    predictions_by_type[answer_type] = predictions_by_type.get(answer_type, 0) + 1
                 else:
                     # predicted_caption_type is one of 'hybrid', 'positive', 'negative'
                     # ('gt' only appears when the prediction is correct, so it won't show here)
                     wrong_type = predicted_caption_type
                     wrong_answer_counts_by_type[wrong_type] = wrong_answer_counts_by_type.get(wrong_type, 0) + 1
                     predictions_by_type[wrong_type] = predictions_by_type.get(wrong_type, 0) + 1
+                    if answer_type not in wrong_answers_by_question_type:
+                        wrong_answers_by_question_type[answer_type] = {}
                     wrong_answers_by_question_type[answer_type][wrong_type] = \
                         wrong_answers_by_question_type[answer_type].get(wrong_type, 0) + 1
 
     # Compute overall accuracy
-    total_accuracy = correct_answers_sum / total_questions
+    total_accuracy = correct_answers_sum / total_questions if total_questions > 0 else 0.0
 
     # Compute accuracy per type
     # if no questions of this type, the accuracy is meaningless, so we set it to nan
-    positive_accuracy = correct_answers_by_type['positive'] / total_questions_by_type['positive'] if total_questions_by_type['positive'] > 0 else float('nan')
-    negative_accuracy = correct_answers_by_type['negative'] / total_questions_by_type['negative'] if total_questions_by_type['negative'] > 0 else float('nan')
-    hybrid_accuracy = correct_answers_by_type['hybrid'] / total_questions_by_type['hybrid'] if total_questions_by_type['hybrid'] > 0 else float('nan')
+    positive_accuracy = correct_answers_by_type.get('positive', 0) / total_questions_by_type.get('positive', 0) if total_questions_by_type.get('positive', 0) > 0 else float('nan')
+    negative_accuracy = correct_answers_by_type.get('negative', 0) / total_questions_by_type.get('negative', 0) if total_questions_by_type.get('negative', 0) > 0 else float('nan')
+    hybrid_accuracy = correct_answers_by_type.get('hybrid', 0) / total_questions_by_type.get('hybrid', 0) if total_questions_by_type.get('hybrid', 0) > 0 else float('nan')
 
     # Compute the most common wrong answer type
-    most_common_wrong_answer_type = max(wrong_answer_counts_by_type, key=wrong_answer_counts_by_type.get)
+    most_common_wrong_answer_type = max(wrong_answer_counts_by_type, key=wrong_answer_counts_by_type.get) if wrong_answer_counts_by_type else "none"
 
     # Compute total number of wrong answers and the percentage of each error type
     total_wrong_answers = sum(wrong_answer_counts_by_type.values())
@@ -255,7 +267,10 @@ def evaluate_binary_mcq_model(model, dataloader, args, tokenizer=None):
             text_features = text_features.view(2, batch_size, -1)
 
             # Compute logits between the image and the two text captions
-            logits = torch.einsum('bf,nbf->bn', image_features, text_features)
+            if hasattr(model, "compute_similarity"):
+                logits = model.compute_similarity(image_features, text_features)
+            else:
+                logits = torch.einsum('bf,nbf->bn', image_features, text_features)
 
             # Predict the answer (either 0 or 1)
             predicted_answer = torch.argmax(logits, dim=1)
@@ -335,6 +350,7 @@ def mcq_eval(model, data, epoch, args, tokenizer=None):
             results['msrvtt-mcq-wrong_answer_percentages'] = list(msrvtt_mcq['wrong_answer_percentages'].items())
             results['msrvtt-mcq-predictions_by_type'] = msrvtt_mcq['predictions_by_type']
             results['msrvtt-mcq-wrong_answers_by_question_type'] = msrvtt_mcq['wrong_answers_by_question_type']
+            results["msrvtt-mcq-sample_results"] = msrvtt_mcq["sample_results"]
 
     else:
         if 'synthetic-mcq' in data:
@@ -348,6 +364,7 @@ def mcq_eval(model, data, epoch, args, tokenizer=None):
             results['synthetic-mcq-wrong_answer_percentages'] = list(synthetic_mcq['wrong_answer_percentages'].items())
             results['synthetic-mcq-predictions_by_type'] = synthetic_mcq['predictions_by_type']
             results['synthetic-mcq-wrong_answers_by_question_type'] = synthetic_mcq['wrong_answers_by_question_type']
+            results["synthetic-mcq-sample_results"] = synthetic_mcq["sample_results"]
 
         if 'coco-mcq' in data:
             logging.info('Evaluating on the COCO MCQ task')
@@ -373,16 +390,19 @@ def mcq_eval(model, data, epoch, args, tokenizer=None):
             results['voc2007-mcq-wrong_answer_percentages'] = list(voc_mcq['wrong_answer_percentages'].items())
             results['voc2007-mcq-predictions_by_type'] = voc_mcq['predictions_by_type']
             results['voc2007-mcq-wrong_answers_by_question_type'] = voc_mcq['wrong_answers_by_question_type']
+            results["voc2007-mcq-sample_results"] = voc_mcq["sample_results"]
 
         if 'chexpert-binary-mcq' in data:
             logging.info('Evaluating on the CheXpert Binary MCQ task')
             chexpert_binary_mcq = evaluate_binary_mcq_model(model, data['chexpert-binary-mcq'].dataloader, args, tokenizer=tokenizer)
             results['chexpert-binary-mcq-total_accuracy'] = chexpert_binary_mcq['total_accuracy']
+            results["chexpert-binary-mcq-sample_results"] = chexpert_binary_mcq["sample_results"]
 
         if 'chexpert-affirmation-binary-mcq' in data:
             logging.info('Evaluating on the CheXpert Binary Affirmation MCQ task')
             chexpert_binary_affirmation_mcq = evaluate_binary_mcq_model(model, data['chexpert-affirmation-binary-mcq'].dataloader, args, tokenizer=tokenizer)
             results['chexpert-affirmation-binary-mcq-total_accuracy'] = chexpert_binary_affirmation_mcq['total_accuracy']
+            results["chexpert-affirmation-binary-mcq-sample_results"] = chexpert_binary_affirmation_mcq["sample_results"]
 
         if 'ham10000-mcq' in data:
             logging.info('Evaluating on the HAM10000 MCQ task')
@@ -395,6 +415,7 @@ def mcq_eval(model, data, epoch, args, tokenizer=None):
             results['ham10000-mcq-wrong_answer_percentages'] = list(ham10000_mcq['wrong_answer_percentages'].items())
             results['ham10000-mcq-predictions_by_type'] = ham10000_mcq['predictions_by_type']
             results['ham10000-mcq-wrong_answers_by_question_type'] = ham10000_mcq['wrong_answers_by_question_type']
+            results["ham10000-mcq-sample_results"] = ham10000_mcq["sample_results"]
 
         if 'ham10000-affirmation-mcq' in data:
             logging.info('Evaluating on the HAM10000 Affirmation MCQ task')
@@ -403,6 +424,7 @@ def mcq_eval(model, data, epoch, args, tokenizer=None):
             results['ham10000-affirmation-mcq-positive_accuracy'] = ham10000_affirmation_mcq['positive_accuracy']
             results['ham10000-affirmation-mcq-negative_accuracy'] = ham10000_affirmation_mcq['negative_accuracy']
             results['ham10000-affirmation-mcq-hybrid_accuracy'] = ham10000_affirmation_mcq['hybrid_accuracy']
+            results["ham10000-affirmation-mcq-sample_results"] = ham10000_affirmation_mcq["sample_results"]
         
         if 'chexpert-mcq' in data:
             logging.info('Evaluating on the CheXpert MCQ task')
@@ -415,6 +437,7 @@ def mcq_eval(model, data, epoch, args, tokenizer=None):
             results['chexpert-mcq-wrong_answer_percentages'] = list(chexpert_mcq['wrong_answer_percentages'].items())
             results['chexpert-mcq-predictions_by_type'] = chexpert_mcq['predictions_by_type']
             results['chexpert-mcq-wrong_answers_by_question_type'] = chexpert_mcq['wrong_answers_by_question_type']
+            results["chexpert-mcq-sample_results"] = chexpert_mcq["sample_results"]
 
         if 'chexpert-affirmation-mcq' in data:
             logging.info('Evaluating on the CheXpert Affirmation MCQ task')
@@ -423,5 +446,6 @@ def mcq_eval(model, data, epoch, args, tokenizer=None):
             results['chexpert-affirmation-mcq-positive_accuracy'] = chexpert_affirmation_mcq['positive_accuracy']
             results['chexpert-affirmation-mcq-negative_accuracy'] = chexpert_affirmation_mcq['negative_accuracy']
             results['chexpert-affirmation-mcq-hybrid_accuracy'] = chexpert_affirmation_mcq['hybrid_accuracy']
+            results["chexpert-affirmation-mcq-sample_results"] = chexpert_affirmation_mcq["sample_results"]
 
     return results

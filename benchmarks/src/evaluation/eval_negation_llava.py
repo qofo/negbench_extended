@@ -103,6 +103,8 @@ def parse_args(args):
                         help="Path to VOC2007 MCQ CSV.")
     parser.add_argument("--synthetic-mcq", type=str, default=None,
                         help="Path to Synthetic MCQ CSV.")
+    parser.add_argument("--chexpert-mcq", type=str, default=None,
+                        help="Path to CheXpert MCQ CSV.")
 
     # --- shuffle ---
     parser.add_argument(
@@ -237,6 +239,7 @@ def main(args):
         (args.coco_mcq,       "coco-mcq"),
         (args.voc2007_mcq,    "voc2007-mcq"),
         (args.synthetic_mcq,  "synthetic-mcq"),
+        (args.chexpert_mcq,   "chexpert-mcq"),
     ]
     for csv_path, name in dataset_configs:
         if csv_path is None:
