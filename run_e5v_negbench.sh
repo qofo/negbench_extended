@@ -41,7 +41,7 @@ echo "  Output      : ${OUTPUT_DIR}/${NAME}"
 echo "=========================================================="
 
 # Build command
-CMD="python -m e5v_analysis.eval_negbench_e5v \
+CMD="PYTHONPATH=benchmarks python -m src.e5v_analysis.eval_negbench_e5v \
     --model-name ${MODEL_NAME} \
     --device ${DEVICE} \
     --dtype ${DTYPE} \

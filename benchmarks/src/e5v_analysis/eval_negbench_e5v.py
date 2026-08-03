@@ -39,8 +39,8 @@ import torch.nn.functional as F
 from PIL import Image
 from tqdm import tqdm
 
-from e5v_analysis.e5v_wrapper import E5VWrapper
-from e5v_analysis.utils import resolve_image_path, setup_logging
+from .e5v_wrapper import E5VWrapper
+from .utils import resolve_image_path, setup_logging
 
 
 # ---------------------------------------------------------------------------

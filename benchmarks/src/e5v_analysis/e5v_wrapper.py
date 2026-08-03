@@ -18,7 +18,7 @@ from typing import List, Optional, Dict
 from PIL import Image
 
 from transformers import LlavaNextProcessor, LlavaNextForConditionalGeneration
-from e5v_analysis.utils import build_text_prompts, build_img_prompts
+from .utils import build_text_prompts, build_img_prompts
 
 
 class E5VWrapper(torch.nn.Module):
