@@ -8,18 +8,18 @@
 #   llava  - LLaVA-1.5 / LLaVA-NeXT (HuggingFace local checkpoints)
 
 # Select model type
-MODEL_TYPE="clip"   # Change to "clip" or "llava"
+#MODEL_TYPE="clip"   # Change to "clip" or "llava"
 
 # Set the base directory for data and logs. Users should update this to their directory structure.
-BASE_DIR="/content/negbench"  # Change this to your base directory
+BASE_DIR="/home/junseolee/negbench"  # Change this to your base directory
 DATA_DIR="$BASE_DIR/benchmarks/data"  # Change this to your data directory
 LOGS_DIR="$BASE_DIR/logs"
-MODELS_DIR="$BASE_DIR/benchmarks/models"  # Change this to your models directory
+MODELS_DIR="/home/junseolee/negbench/benchmarks/models"  # Change this to your models directory
 
 # CLIP settings (used when MODEL_TYPE=clip)
 MODEL="ViT-B-32"
-MODEL_NAME="ViT_B_32_openai"
-PRETRAINED_MODEL="openai"
+#MODEL_NAME="ViT_B_32_openai"
+#PRETRAINED_MODEL="openai"
 # NegCLIP example:
 #   MODEL_NAME="NegCLIP"
 #   PRETRAINED_MODEL="$MODELS_DIR/NegCLIP/negclip.pth"
@@ -29,6 +29,7 @@ PRETRAINED_MODEL="openai"
 
 # LLaVA settings (used when MODEL_TYPE=llava)
 # Path to the downloaded LLaVA checkpoint from HuggingFace
+MODEL_TYPE="llava"                                     # llava 로 변경
 LLAVA_MODEL_PATH="$MODELS_DIR/llava-1.5-7b-hf"
 LLAVA_MODEL_NAME="llava_1.5_7b"
 # Vision encoder swap (optional):
@@ -42,13 +43,16 @@ MAX_NEW_TOKENS=16
 #   int4  : ~4-5 GB VRAM  (recommended for GPUs with 8-12 GB)
 #   int8  : ~7-8 GB VRAM
 #   ""    : no quantization (requires ~14 GB for LLaVA-1.5-7b in float16)
-QUANTIZE="int4"
+#QUANTIZE="int4"
 
 # Dataset paths for images
-COCO_MCQ="$DATA_DIR/images/COCO_val_mcq_llama3.1_rephrased.csv"
+#COCO_MCQ="$DATA_DIR/images/COCO_val_mcq_llama3.1_rephrased.csv"
+COCO_MCQ="$DATA_DIR/images/COCO_val_mcq_top100_uncovered.csv"
 VOC_MCQ="$DATA_DIR/images/VOC2007_mcq_llama3.1_rephrased.csv"
 COCO_RETRIEVAL="$DATA_DIR/images/COCO_val_retrieval.csv"
 COCO_NEGATED_RETRIEVAL="$DATA_DIR/images/COCO_val_negated_retrieval_llama3.1_rephrased_affneg_true.csv"
+
+CHEXPERT_MCQ="$DATA_DIR/images/chexpert_binary_mcq_control_valid_only.csv"
 
 # Dataset paths for videos
 MSRVTT_RETRIEVAL="$DATA_DIR/videos/MSRVTT/msr_vtt_retrieval.csv"
@@ -76,7 +80,7 @@ if [ "$MODEL_TYPE" = "clip" ]; then
     echo "Pretrained: $PRETRAINED_MODEL"
     echo "Logs: $RUN_LOGS_DIR"
 
-    CUDA_VISIBLE_DEVICES=0 python -m src.evaluation.eval_negation \
+    CUDA_VISIBLE_DEVICES=0,1 python -m src.evaluation.eval_negation \
         --model "$MODEL" \
         --pretrained "$PRETRAINED_MODEL" \
         --name "image_${MODEL_NAME}" \
@@ -114,20 +118,20 @@ elif [ "$MODEL_TYPE" = "llava" ]; then
     if [ -n "$QUANTIZE" ]; then
         QUANTIZE_FLAG="--quantize $QUANTIZE"
     fi
-
-    CUDA_VISIBLE_DEVICES=0 python -m src.evaluation.eval_negation_llava \
+    #       
+    echo "test llava starting"  
+    CUDA_VISIBLE_DEVICES=0,1 python -m src.evaluation.eval_negation_llava \
         --llava-model-path "$LLAVA_MODEL_PATH" \
-        $ENCODER_FLAGS \
-        $QUANTIZE_FLAG \
         --name "mcq_${LLAVA_MODEL_NAME}" \
         --logs="$RUN_LOGS_DIR" \
-        --coco-mcq="$COCO_MCQ" \
+        --chexpert-mcq="$CHEXPERT_MCQ" \
         --voc2007-mcq="$VOC_MCQ" \
-        --shuffle-mcq-options \
         --seed 42 \
         --device cuda \
         --dtype "$DTYPE" \
+        --shuffle-mcq-options \
         --max-new-tokens "$MAX_NEW_TOKENS"
+        
 
 else
     echo "Error: Unknown MODEL_TYPE='$MODEL_TYPE'." >&2
