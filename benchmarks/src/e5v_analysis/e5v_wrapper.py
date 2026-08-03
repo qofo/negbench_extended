@@ -74,6 +74,8 @@ class E5VWrapper(torch.nn.Module):
                 load_in_8bit=True,
             )
             model_kwargs["device_map"] = "auto"
+        elif device == "auto":
+            model_kwargs["device_map"] = "auto"
         else:
             # No quantization: load to specified device
             model_kwargs["device_map"] = None
@@ -92,6 +94,9 @@ class E5VWrapper(torch.nn.Module):
         # Move to device if not using device_map="auto"
         if model_kwargs.get("device_map") is None:
             self.model = self.model.to(device)
+            self.target_device = device
+        else:
+            self.target_device = self.model.device
 
         self.model.eval()
 
@@ -122,7 +127,7 @@ class E5VWrapper(torch.nn.Module):
                 text=batch_prompts,
                 return_tensors="pt",
                 padding=True,
-            ).to(self.device)
+            ).to(self.target_device)
 
             outputs = self.model(
                 **inputs,
@@ -169,7 +174,7 @@ class E5VWrapper(torch.nn.Module):
                 images=batch_images,
                 return_tensors="pt",
                 padding=True,
-            ).to(self.device)
+            ).to(self.target_device)
 
             outputs = self.model(
                 **inputs,
@@ -213,7 +218,7 @@ class E5VWrapper(torch.nn.Module):
                 text=prompts,
                 return_tensors="pt",
                 padding=True,
-            ).to(self.device)
+            ).to(self.target_device)
 
             outputs = self.model(
                 **inputs,
