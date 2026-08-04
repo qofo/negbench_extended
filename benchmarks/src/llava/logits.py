@@ -8,7 +8,7 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-from src.llava.parser import OPTION_LABELS
+from llava.parser import OPTION_LABELS
 
 def get_option_token_ids(tokenizer, option_labels: List[str] = None) -> Dict[str, int]:
     if option_labels is None:

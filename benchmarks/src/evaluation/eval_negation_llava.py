@@ -47,8 +47,8 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
-from src.llava.llava_evaluator import LLaVAModularEvaluator
-from src.llava.metrics import compute_mcq_metrics
+from llava.llava_evaluator import LLaVAModularEvaluator
+from llava.metrics import compute_mcq_metrics
 from training.data import CsvMCQDataset
 
 

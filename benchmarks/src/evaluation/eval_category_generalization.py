@@ -36,12 +36,12 @@ from PIL import Image
 
 import open_clip
 
-# Import existing modules without modification
-from src.evaluation.scoring_heads import (
+# Import existing modules
+from evaluation.scoring_heads import (
     BaseScorer,
     build_scorer
 )
-from src.evaluation.eval_scoring_heads import (
+from evaluation.eval_scoring_heads import (
     set_seed,
     train_and_eval_fold,
     compute_mcq_accuracy_breakdown

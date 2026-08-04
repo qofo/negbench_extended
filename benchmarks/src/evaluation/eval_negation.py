@@ -23,7 +23,7 @@ from training.distributed import is_master, init_distributed_device
 from training.logger import setup_logging
 from training.params import parse_args
 
-from src.evaluation.utils import evaluate, evaluate_video
+from evaluation.utils import evaluate, evaluate_video
 
 import torch.multiprocessing
 torch.multiprocessing.set_sharing_strategy('file_descriptor')
@@ -141,7 +141,7 @@ def main(args):
         )
 
     # Wrap model with NegationAwareCLIPWrapper if hypothesis testing method is specified
-    from src.evaluation.modified_clip import NegationAwareCLIPWrapper
+    from evaluation.modified_clip import NegationAwareCLIPWrapper
     negation_method = getattr(args, "negation_method", "baseline")
     if negation_method != "baseline":
         print(f"Wrapping model with NegationAwareCLIPWrapper (Method: {negation_method})")

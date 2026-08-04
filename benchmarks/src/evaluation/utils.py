@@ -2,8 +2,8 @@ import json
 import logging
 import torch
 import wandb
-from src.evaluation.mcq import mcq_eval
-from src.evaluation.retrieval import retrieval_eval
+from evaluation.mcq import mcq_eval
+from evaluation.retrieval import retrieval_eval
 import os
 import pandas as pd
 

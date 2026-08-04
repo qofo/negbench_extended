@@ -86,7 +86,7 @@ class NegationAwareCLIPWrapper(nn.Module):
         # Load trained Scoring Head Checkpoint
         if self.negation_method in ["scoring_head", "trained_scorer"] or scorer_ckpt is not None:
             if scorer_ckpt and os.path.exists(scorer_ckpt):
-                from src.evaluation.scoring_heads import build_scorer
+                from evaluation.scoring_heads import build_scorer
                 checkpoint = torch.load(scorer_ckpt, map_location="cpu")
                 
                 ckpt_type = checkpoint.get("model_name", scorer_type) if isinstance(checkpoint, dict) else scorer_type
