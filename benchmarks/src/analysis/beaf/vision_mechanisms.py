@@ -272,19 +272,22 @@ def compute_vision_svd_sweep(
         print("  [Notice] Vision tower has no explicit proj tensor. Skipping Vision SVD Sweep.")
         return {}
 
-    if isinstance(proj, nn.Linear):
-        W = proj.weight.detach().cpu().numpy().T
-    elif isinstance(proj, torch.Tensor):
-        W = proj.detach().cpu().numpy()
-    else:
-        return {}
-
-    U, S, Vt = np.linalg.svd(W, full_matrices=False)
-
     f_pre_orig = vis_orig["pre_proj"]
     f_pre_cf   = vis_cf["pre_proj"]
     diff_pre   = f_pre_orig - f_pre_cf
     diff_norm  = l2_normalize(diff_pre)
+
+    if isinstance(proj, nn.Linear):
+        W = proj.weight.detach().cpu().numpy().T
+    elif hasattr(proj, "detach"):
+        W = proj.detach().cpu().numpy()
+    else:
+        return {}
+
+    if W.ndim == 2 and f_pre_orig.ndim == 2 and W.shape[0] != f_pre_orig.shape[1]:
+        W = W.T
+
+    U, S, Vt = np.linalg.svd(W, full_matrices=False)
 
     alignments = np.abs(diff_norm @ U)
     mean_alignments = np.mean(alignments, axis=0)
@@ -294,9 +297,9 @@ def compute_vision_svd_sweep(
     sweep_results = []
     ratios = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
-    d_in = W.shape[0]
+    num_sv = len(S)
     for r in ratios:
-        k = max(1, int(d_in * r))
+        k = max(1, min(num_sv, int(num_sv * r)))
 
         W_top = U[:, :k] @ np.diag(S[:k]) @ Vt[:k, :]
         p_orig_top = l2_normalize(f_pre_orig @ W_top)
@@ -387,8 +390,36 @@ def compute_vision_linear_probe(
     with open(os.path.join(output_dir, "beaf_vision_linear_probe.json"), "w", encoding="utf-8") as f:
         json.dump(probe_results, f, indent=2)
 
-    print("  Saved: beaf_vision_linear_probe.json")
+    # Plot Layer-wise & Pipeline-step Linear Probe Accuracy Line Plot
+    fig, ax = plt.subplots(figsize=(12, 6))
+    layers = list(probe_results.keys())
+    accs = [item["mean_accuracy_pct"] for item in probe_results.values()]
+    stds = [item["std_accuracy_pct"] for item in probe_results.values()]
+
+    x_coords = list(range(len(layers)))
+    ax.plot(x_coords, accs, "o-", color="#1f77b4", lw=2.5, ms=7, label="5-Fold CV Accuracy (%)")
+
+    if "Layer 12" in layers:
+        l12_idx = layers.index("Layer 12")
+        ax.axvline(x=l12_idx + 0.5, color="crimson", ls="--", alpha=0.7, label="Post-Layer 12 Transformations")
+
+    ax.set_ylabel("Linear Probe Accuracy (%)", fontsize=12)
+    ax.set_xlabel("Transformer Layer / Pipeline Step", fontsize=12)
+    ax.set_title("CLIP Vision Encoder Layer-wise & Pipeline-step Linear Probe Accuracy", fontsize=13, fontweight="bold")
+    ax.set_xticks(x_coords)
+    ax.set_xticklabels(layers, rotation=35, ha="right", fontsize=10)
+    ax.set_ylim(min(accs) - 5, min(100, max(accs) + 5))
+    ax.grid(True, ls="--", alpha=0.5)
+    ax.legend(fontsize=11)
+    plt.tight_layout()
+
+    plot_path = os.path.join(output_dir, "beaf_vision_linear_probe.png")
+    plt.savefig(plot_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+    print("  Saved: beaf_vision_linear_probe.json & .png")
     return probe_results
+
 
 
 def compute_vision_direction_preservation(
