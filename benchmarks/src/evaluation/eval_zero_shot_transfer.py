@@ -162,7 +162,17 @@ def main():
             "Hybrid_Accuracy_Pct": mdata["hybrid_accuracy"],
             "Total_Samples": mdata["total_samples"]
         })
-    pd.DataFrame(rows).to_csv(os.path.join(args.output_dir, "zero_shot_transfer_summary.csv"), index=False)
+
+    summary_csv_path = os.path.join(args.output_dir, "zero_shot_transfer_summary.csv")
+    new_df = pd.DataFrame(rows)
+    if os.path.exists(summary_csv_path):
+        old_df = pd.read_csv(summary_csv_path)
+        combined_df = pd.concat([old_df, new_df], ignore_index=True)
+        # Drop duplicates by Model and Target_Dataset
+        combined_df = combined_df.drop_duplicates(subset=["Model", "Target_Dataset"], keep="last")
+        combined_df.to_csv(summary_csv_path, index=False)
+    else:
+        new_df.to_csv(summary_csv_path, index=False)
 
     print(f"\n✅ Zero-shot transfer evaluation complete! Results saved to: {args.output_dir}")
 

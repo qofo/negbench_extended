@@ -123,9 +123,22 @@ def extract_mcq_embeddings(
         except Exception as e:
             continue
 
-        captions = [str(row[f"caption_{i}"]) for i in range(num_answers)]
-        correct_answer = int(row["correct_answer"]) if "correct_answer" in row else 0
-        q_type = str(row["correct_answer_template"]) if "correct_answer_template" in row else "mcq"
+        # Auto-detect caption column format (MCQ caption_0..N vs Paired positive_caption/negative_caption)
+        if caption_cols:
+            captions = [str(row[c]) for c in caption_cols]
+            correct_answer = int(row["correct_answer"]) if "correct_answer" in row else 0
+            q_type = str(row["correct_answer_template"]) if "correct_answer_template" in row else "mcq"
+        elif "positive_caption" in row and "negative_caption" in row:
+            captions = [str(row["positive_caption"]), str(row["negative_caption"])]
+            # If object_in_image is True, ground truth is positive (0), else negative (1)
+            obj_in_img = str(row.get("object_in_image", "True")).strip().lower() in ["true", "1", "t", "yes"]
+            correct_answer = 0 if obj_in_img else 1
+            q_type = "positive" if obj_in_img else "negative"
+        else:
+            # Fallback for caption_i
+            captions = [str(row[f"caption_{i}"]) for i in range(num_answers)]
+            correct_answer = int(row["correct_answer"]) if "correct_answer" in row else 0
+            q_type = str(row["correct_answer_template"]) if "correct_answer_template" in row else "mcq"
 
         # Encode image
         with torch.no_grad():
