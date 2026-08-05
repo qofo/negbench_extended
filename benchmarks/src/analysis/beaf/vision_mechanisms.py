@@ -355,20 +355,12 @@ def compute_vision_svd_sweep(
 def compute_vision_linear_probe(
     vis_orig: Dict[str, Any],
     vis_cf: Dict[str, Any],
-    output_dir: str,
-    orig_paths: Optional[List[str]] = None
+    output_dir: str
 ) -> Dict[str, Any]:
     """Train 5-fold cross-validated Linear Probe on Vision Transformer features to classify object_in_image."""
     n_orig = len(vis_orig["pre_proj"])
     n_cf   = len(vis_cf["pre_proj"])
     y = np.array([1] * n_orig + [0] * n_cf)
-    
-    if orig_paths is not None and len(orig_paths) == n_orig:
-        unique_img_map = {p: i for i, p in enumerate(set(orig_paths))}
-        base_groups = [unique_img_map[p] for p in orig_paths]
-        groups = np.array(base_groups + base_groups)
-    else:
-        groups = np.array(list(range(n_orig)) + list(range(n_cf)))
 
     probe_results = {}
 
@@ -387,8 +379,8 @@ def compute_vision_linear_probe(
         X_norm = l2_normalize(X)
 
         clf = LogisticRegression(max_iter=1000, random_state=42)
-        cv = GroupKFold(n_splits=5)
-        scores = cross_val_score(clf, X_norm, y, cv=cv, groups=groups, scoring="accuracy")
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        scores = cross_val_score(clf, X_norm, y, cv=cv, scoring="accuracy")
 
         probe_results[l_name] = {
             "mean_accuracy_pct": float(np.mean(scores) * 100),
@@ -477,12 +469,11 @@ def compute_vision_non_linear_probe(
     vis_orig: Dict[str, Any],
     vis_cf: Dict[str, Any],
     output_dir: str,
-    seed: int = 42,
-    orig_paths: Optional[List[str]] = None
+    seed: int = 42
 ) -> Dict[str, Any]:
     """
-    Train 5-fold cross-validated Non-Linear & Polynomial Probes on Vision Transformer features.
-    Uses GroupKFold on unique base image_path to prevent paired scene background leakage.
+    Train 5-fold cross-validated Non-Linear & Polynomial Probes on Visual Edit Difference Vectors.
+    Classifies True Object Removal Shift Vector (class 1) vs Control Random Shift Vector (class 0).
     Sweeps:
     1. Polynomial Kernel SVM (degree = 1, 2, 3, 4 with coef0=1.0)
     2. RBF Kernel SVM (gamma = 1e-4, 1e-3, 1e-2, 1e-1, 1.0)
@@ -490,15 +481,8 @@ def compute_vision_non_linear_probe(
     4. Low-Rank TruncatedSVD + LogisticRegression (rank = 1, 2, 4, 8, 16, 32, 64, 128, 256, 512)
     """
     n_orig = len(vis_orig["pre_proj"])
-    n_cf   = len(vis_cf["pre_proj"])
-    y = np.array([1] * n_orig + [0] * n_cf)
-
-    if orig_paths is not None and len(orig_paths) == n_orig:
-        unique_img_map = {p: i for i, p in enumerate(set(orig_paths))}
-        base_groups = [unique_img_map[p] for p in orig_paths]
-        groups = np.array(base_groups + base_groups)
-    else:
-        groups = np.array(list(range(n_orig)) + list(range(n_cf)))
+    rng = np.random.default_rng(seed=seed)
+    rand_idx = (np.arange(n_orig) + rng.integers(1, n_orig, size=n_orig)) % n_orig
 
     stages = ["Pre-Projection", "+Final L2Norm"]
 
@@ -511,21 +495,24 @@ def compute_vision_non_linear_probe(
 
     for stage_name in stages:
         if stage_name == "Pre-Projection":
-            X_orig = vis_orig["pre_proj"]
-            X_cf   = vis_cf["pre_proj"]
+            f_orig = vis_orig["pre_proj"]
+            f_cf   = vis_cf["pre_proj"]
         else:
-            X_orig = vis_orig["final_l2norm"]
-            X_cf   = vis_cf["final_l2norm"]
+            f_orig = vis_orig["final_l2norm"]
+            f_cf   = vis_cf["final_l2norm"]
 
-        X = np.vstack([X_orig, X_cf])
-        X_norm = l2_normalize(X)
-        cv = GroupKFold(n_splits=5)
+        diff_real = f_orig - f_cf
+        diff_ctrl = f_orig - f_orig[rand_idx]
+
+        X_diff = np.vstack([l2_normalize(diff_real), l2_normalize(diff_ctrl)])
+        y_diff = np.array([1] * n_orig + [0] * n_orig)
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
 
         # 1. Polynomial Kernel Sweep (Degree 1 to 4, with coef0=1.0)
         poly_results = {}
         for deg in [1, 2, 3, 4]:
             clf = SVC(kernel="poly", degree=deg, coef0=1.0, C=1.0, random_state=seed)
-            scores = cross_val_score(clf, X_norm, y, cv=cv, groups=groups, scoring="accuracy")
+            scores = cross_val_score(clf, X_diff, y_diff, cv=cv, scoring="accuracy")
             poly_results[f"degree_{deg}"] = {
                 "mean_acc": float(np.mean(scores) * 100),
                 "std_acc": float(np.std(scores) * 100)
@@ -536,7 +523,7 @@ def compute_vision_non_linear_probe(
         rbf_results = {}
         for g in [1e-4, 1e-3, 1e-2, 1e-1, 1.0]:
             clf = SVC(kernel="rbf", gamma=g, C=1.0, random_state=seed)
-            scores = cross_val_score(clf, X_norm, y, cv=cv, groups=groups, scoring="accuracy")
+            scores = cross_val_score(clf, X_diff, y_diff, cv=cv, scoring="accuracy")
             rbf_results[f"gamma_{g}"] = {
                 "mean_acc": float(np.mean(scores) * 100),
                 "std_acc": float(np.std(scores) * 100)
@@ -547,7 +534,7 @@ def compute_vision_non_linear_probe(
         mlp_results = {}
         for h in [8, 16, 32, 64, 128, 256, 512]:
             clf = MLPClassifier(hidden_layer_sizes=(h,), activation="relu", max_iter=500, random_state=seed)
-            scores = cross_val_score(clf, X_norm, y, cv=cv, groups=groups, scoring="accuracy")
+            scores = cross_val_score(clf, X_diff, y_diff, cv=cv, scoring="accuracy")
             mlp_results[f"hidden_{h}"] = {
                 "mean_acc": float(np.mean(scores) * 100),
                 "std_acc": float(np.std(scores) * 100)
@@ -556,14 +543,14 @@ def compute_vision_non_linear_probe(
 
         # 4. Low-Rank Subspace Sweep
         rank_results = {}
-        max_r = min(X_norm.shape[1], X_norm.shape[0])
+        max_r = min(X_diff.shape[1], X_diff.shape[0])
         for r in [1, 2, 4, 8, 16, 32, 64, 128, 256, min(512, max_r)]:
             if r > max_r or r < 1:
                 continue
             svd = TruncatedSVD(n_components=r, random_state=seed)
-            X_red = svd.fit_transform(X_norm)
+            X_red = svd.fit_transform(X_diff)
             clf = LogisticRegression(max_iter=1000, random_state=seed)
-            scores = cross_val_score(clf, X_red, y, cv=cv, groups=groups, scoring="accuracy")
+            scores = cross_val_score(clf, X_red, y_diff, cv=cv, scoring="accuracy")
             rank_results[f"rank_{r}"] = {
                 "mean_acc": float(np.mean(scores) * 100),
                 "std_acc": float(np.std(scores) * 100)
