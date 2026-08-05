@@ -1,28 +1,33 @@
 #!/bin/bash
 # ==============================================================================
-# Master Script to Run Zero-Shot Transfer Across ALL Negation Benchmarks
+# Master Script to Run Zero-Shot Transfer Across ALL NegBench Benchmarks
+# (COCO, VOC2007, CheXpert Medical, MSRVTT Video, BEAF Counterfactual)
+# Evaluates ALL 7 Trained Scorer Checkpoints (Low-Rank, Bilinear, MLP, LogReg, etc.)
 # ==============================================================================
 
 set -e
 
-# Scorer Checkpoint and Output Directory Settings
-SCORER_CKPT="logs/evaluation/scoring_head_experiments/checkpoints/deep_mlp_scorer.pt"
+# Base and Data Directory Settings
+BASE_DIR="."
+DATA_DIR="${BASE_DIR}/benchmarks/data"
+SCORER_DIR="logs/evaluation/scoring_head_experiments/checkpoints"
 OUTPUT_DIR="logs/evaluation/all_benchmarks_transfer"
 MODEL="ViT-B-32"
 PRETRAINED="openai"
 
-# Array of all target benchmark CSV files available in the workspace
+# Real benchmark CSV files existing in NegBench repository
 BENCHMARKS=(
-    "COCO_val_mcq_llama3.1_rephrased.csv"
-    "beaf_counterfactual_6col.csv"
-    "COCO_val_full_paired_v2.csv"
-    "COCO_val_negated_retrieval_llama3.1_rephrased_affneg_true.csv"
-    "COCO_val_retrieval.csv"
+    "${DATA_DIR}/images/COCO_val_mcq_llama3.1_rephrased.csv"
+    "${DATA_DIR}/images/VOC2007_mcq_llama3.1_rephrased.csv"
+    "${DATA_DIR}/images/chexpert_binary_mcq_control_valid_only.csv"
+    "${DATA_DIR}/images/beaf_counterfactual_6col.csv"
+    "${DATA_DIR}/images/COCO_val_retrieval.csv"
 )
 
 echo "======================================================================"
-echo "Master Evaluation: Running Zero-Shot Transfer Across ALL Benchmarks"
-echo " Scorer Checkpoint: ${SCORER_CKPT}"
+echo "Master Evaluation: Zero-Shot Transfer for ALL Trained Scorers"
+echo " Checkpoint Directory: ${SCORER_DIR}"
+echo " Output Directory:     ${OUTPUT_DIR}"
 echo " Total Benchmarks to Evaluate: ${#BENCHMARKS[@]}"
 echo "======================================================================"
 
@@ -36,7 +41,7 @@ for csv in "${BENCHMARKS[@]}"; do
         python -m benchmarks.src.evaluation.eval_zero_shot_transfer \
             --model ${MODEL} \
             --pretrained ${PRETRAINED} \
-            --scorer-ckpt ${SCORER_CKPT} \
+            --scorer-dir ${SCORER_DIR} \
             --target-mcq ${csv} \
             --output-dir ${OUTPUT_DIR}
     else

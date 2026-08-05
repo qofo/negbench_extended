@@ -397,6 +397,44 @@ def train_and_save_full_scorer(
     print(f"✅ Saved trained '{model_name}' scorer checkpoint to: {save_path}")
 
 
+def train_and_save_all_scorers(
+    img_embeds: torch.Tensor,
+    text_embeds: torch.Tensor,
+    targets: torch.Tensor,
+    checkpoint_dir: str,
+    device: str = "cuda",
+    epochs: int = 15,
+    lr: float = 1e-3,
+    batch_size: int = 64
+):
+    """Train all 7 trainable scorer models on full dataset and export their .pt checkpoints."""
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    models_to_export = [
+        ("Weighted Cosine", "weighted_cosine", 32),
+        ("Full Bilinear", "bilinear", 32),
+        ("Logistic Regression", "logistic_regression", 32),
+        ("Shallow MLP", "shallow_mlp", 32),
+        ("Deep MLP", "deep_mlp", 32),
+        ("LowRank Bilinear (k=32)", "low_rank_bilinear", 32),
+        ("NonLinear BiEncoder (k=32)", "nonlinear_biencoder", 32),
+    ]
+
+    print("\n" + "="*80)
+    print(f"EXPORTING ALL {len(models_to_export)} TRAINABLE SCORER CHECKPOINTS TO: {checkpoint_dir}")
+    print("="*80)
+
+    for display_name, mtype, r in models_to_export:
+        filename = mtype.replace(" ", "_") + "_scorer.pt"
+        save_path = os.path.join(checkpoint_dir, filename)
+        train_and_save_full_scorer(
+            mtype, img_embeds, text_embeds, targets, save_path,
+            device=device, epochs=epochs, lr=lr, batch_size=batch_size
+        )
+
+    print("="*80)
+    print("✅ All trained scorer checkpoints exported successfully!")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate Expressive Scoring Heads on CLIP MCQ Evaluation")
     parser.add_argument("--model", type=str, default="ViT-B-32", help="OpenCLIP model architecture")
@@ -406,6 +444,7 @@ def main():
     parser.add_argument("--output-dir", type=str, default="logs/evaluation/scoring_head_experiments", help="Output directory")
     parser.add_argument("--save-scorer-path", type=str, default=None, help="Path to save trained scorer checkpoint (.pt)")
     parser.add_argument("--save-scorer-model", type=str, default="Deep MLP", help="Scorer model architecture to save")
+    parser.add_argument("--save-all-scorers", action="store_true", default=True, help="Save checkpoints for ALL trained scorer models")
     parser.add_argument("--n-splits", type=int, default=5, help="Number of Cross-Validation folds")
     parser.add_argument("--batch-size", type=int, default=64, help="Mini-batch size")
     parser.add_argument("--epochs", type=int, default=15, help="Training epochs per fold")
@@ -482,15 +521,22 @@ def main():
     # Step 4: Generate Plot
     plot_scoring_head_comparison(results, args.output_dir)
 
-    # Step 5: Save trained scorer checkpoint if requested
-    save_checkpoint_path = args.save_scorer_path
-    if not save_checkpoint_path:
-        save_checkpoint_path = os.path.join(args.output_dir, "checkpoints", "deep_mlp_scorer.pt")
+    # Step 5: Save trained ALL scorer checkpoints if requested
+    checkpoint_dir = os.path.join(args.output_dir, "checkpoints")
+    if args.save_all_scorers:
+        train_and_save_all_scorers(
+            img_embeds, text_embeds, targets, checkpoint_dir,
+            device=device, epochs=args.epochs, lr=args.lr, batch_size=args.batch_size
+        )
+    else:
+        save_checkpoint_path = args.save_scorer_path
+        if not save_checkpoint_path:
+            save_checkpoint_path = os.path.join(checkpoint_dir, "deep_mlp_scorer.pt")
 
-    train_and_save_full_scorer(
-        args.save_scorer_model, img_embeds, text_embeds, targets, save_checkpoint_path,
-        device=device, epochs=args.epochs, lr=args.lr, batch_size=args.batch_size
-    )
+        train_and_save_full_scorer(
+            args.save_scorer_model, img_embeds, text_embeds, targets, save_checkpoint_path,
+            device=device, epochs=args.epochs, lr=args.lr, batch_size=args.batch_size
+        )
 
     print(f"\n✅ All results, comparison plots, and scorer checkpoints successfully saved to: {args.output_dir}")
 
