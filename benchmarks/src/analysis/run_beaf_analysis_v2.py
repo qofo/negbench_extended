@@ -52,6 +52,7 @@ from analysis.beaf import (
     compute_vision_pipeline_breakdown,
     compute_vision_svd_sweep,
     compute_vision_linear_probe,
+    compute_vision_non_linear_probe,
     compute_vision_direction_preservation,
 )
 
@@ -390,6 +391,7 @@ def main():
     vis_breakdown = compute_vision_pipeline_breakdown(vis_orig, vis_cf, args.output_dir)
     vis_svd       = compute_vision_svd_sweep(model, vis_orig, vis_cf, args.output_dir)
     vis_probe     = compute_vision_linear_probe(vis_orig, vis_cf, args.output_dir)
+    vis_nl_probe  = compute_vision_non_linear_probe(vis_orig, vis_cf, args.output_dir, seed=args.seed)
     vis_dir_pres  = compute_vision_direction_preservation(vis_orig, vis_cf, args.output_dir, seed=args.seed)
 
     # 7. Part A — Axis 1: Text <-> Text

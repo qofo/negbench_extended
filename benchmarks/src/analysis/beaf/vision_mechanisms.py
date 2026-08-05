@@ -19,6 +19,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from scipy import stats
 from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.neural_network import MLPClassifier
+from sklearn.decomposition import TruncatedSVD
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 from PIL import Image
 import matplotlib
@@ -429,3 +432,158 @@ def compute_vision_direction_preservation(
 
     print("  Saved: beaf_vision_direction_preservation.json")
     return report
+
+
+def compute_vision_non_linear_probe(
+    vis_orig: Dict[str, Any],
+    vis_cf: Dict[str, Any],
+    output_dir: str,
+    seed: int = 42
+) -> Dict[str, Any]:
+    """
+    Train 5-fold cross-validated Non-Linear & Polynomial Probes on Vision Transformer features.
+    Sweeps:
+    1. Polynomial Kernel SVM (degree = 1, 2, 3, 4)
+    2. RBF Kernel SVM (gamma = 1e-4, 1e-3, 1e-2, 1e-1, 1.0)
+    3. MLP Classifier (hidden_dim = 8, 16, 32, 64, 128, 256, 512)
+    4. Low-Rank TruncatedSVD + LogisticRegression (rank = 1, 2, 4, 8, 16, 32, 64, 128, 256, 512)
+    """
+    n_orig = len(vis_orig["pre_proj"])
+    n_cf   = len(vis_cf["pre_proj"])
+    y = np.array([1] * n_orig + [0] * n_cf)
+
+    stages = ["Pre-Projection", "+Final L2Norm"]
+
+    report = {
+        "polynomial_kernel": {},
+        "rbf_kernel": {},
+        "mlp_capacity": {},
+        "low_rank_bilinear": {}
+    }
+
+    for stage_name in stages:
+        if stage_name == "Pre-Projection":
+            X_orig = vis_orig["pre_proj"]
+            X_cf   = vis_cf["pre_proj"]
+        else:
+            X_orig = vis_orig["final_l2norm"]
+            X_cf   = vis_cf["final_l2norm"]
+
+        X = np.vstack([X_orig, X_cf])
+        X_norm = l2_normalize(X)
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
+
+        # 1. Polynomial Kernel Sweep (Degree 1 to 4)
+        poly_results = {}
+        for deg in [1, 2, 3, 4]:
+            clf = SVC(kernel="poly", degree=deg, C=1.0, random_state=seed)
+            scores = cross_val_score(clf, X_norm, y, cv=cv, scoring="accuracy")
+            poly_results[f"degree_{deg}"] = {
+                "mean_acc": float(np.mean(scores) * 100),
+                "std_acc": float(np.std(scores) * 100)
+            }
+        report["polynomial_kernel"][stage_name] = poly_results
+
+        # 2. RBF Kernel Sweep (Gamma 1e-4 to 1.0)
+        rbf_results = {}
+        for g in [1e-4, 1e-3, 1e-2, 1e-1, 1.0]:
+            clf = SVC(kernel="rbf", gamma=g, C=1.0, random_state=seed)
+            scores = cross_val_score(clf, X_norm, y, cv=cv, scoring="accuracy")
+            rbf_results[f"gamma_{g}"] = {
+                "mean_acc": float(np.mean(scores) * 100),
+                "std_acc": float(np.std(scores) * 100)
+            }
+        report["rbf_kernel"][stage_name] = rbf_results
+
+        # 3. MLP Capacity Sweep (Hidden Dim 8 to 512)
+        mlp_results = {}
+        for h in [8, 16, 32, 64, 128, 256, 512]:
+            clf = MLPClassifier(hidden_layer_sizes=(h,), activation="relu", max_iter=500, random_state=seed)
+            scores = cross_val_score(clf, X_norm, y, cv=cv, scoring="accuracy")
+            mlp_results[f"hidden_{h}"] = {
+                "mean_acc": float(np.mean(scores) * 100),
+                "std_acc": float(np.std(scores) * 100)
+            }
+        report["mlp_capacity"][stage_name] = mlp_results
+
+        # 4. Low-Rank Subspace Sweep
+        rank_results = {}
+        max_r = min(X_norm.shape[1], X_norm.shape[0])
+        for r in [1, 2, 4, 8, 16, 32, 64, 128, 256, min(512, max_r)]:
+            if r > max_r or r < 1:
+                continue
+            svd = TruncatedSVD(n_components=r, random_state=seed)
+            X_red = svd.fit_transform(X_norm)
+            clf = LogisticRegression(max_iter=1000, random_state=seed)
+            scores = cross_val_score(clf, X_red, y, cv=cv, scoring="accuracy")
+            rank_results[f"rank_{r}"] = {
+                "mean_acc": float(np.mean(scores) * 100),
+                "std_acc": float(np.std(scores) * 100)
+            }
+        report["low_rank_bilinear"][stage_name] = rank_results
+
+    # Save JSON
+    json_path = os.path.join(output_dir, "beaf_vision_non_linear_probe.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+
+    # Plot
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    # Poly plot
+    ax = axes[0, 0]
+    for stage_name in stages:
+        degs = [1, 2, 3, 4]
+        accs = [report["polynomial_kernel"][stage_name][f"degree_{d}"]["mean_acc"] for d in degs]
+        ax.plot(degs, accs, marker="o", label=stage_name)
+    ax.set_title("Polynomial Kernel Interaction Order Sweep", fontweight="bold")
+    ax.set_xlabel("Polynomial Degree (Interaction Order)")
+    ax.set_ylabel("Accuracy (%)")
+    ax.set_xticks([1, 2, 3, 4])
+    ax.grid(True, linestyle="--", alpha=0.6)
+    ax.legend()
+
+    # RBF plot
+    ax = axes[0, 1]
+    for stage_name in stages:
+        gammas = [1e-4, 1e-3, 1e-2, 1e-1, 1.0]
+        accs = [report["rbf_kernel"][stage_name][f"gamma_{g}"]["mean_acc"] for g in gammas]
+        ax.plot([str(g) for g in gammas], accs, marker="s", label=stage_name)
+    ax.set_title("RBF Kernel Non-Linearity Curvature Sweep", fontweight="bold")
+    ax.set_xlabel("RBF Gamma (Boundary Curvature)")
+    ax.set_ylabel("Accuracy (%)")
+    ax.grid(True, linestyle="--", alpha=0.6)
+    ax.legend()
+
+    # MLP plot
+    ax = axes[1, 0]
+    for stage_name in stages:
+        hdims = [8, 16, 32, 64, 128, 256, 512]
+        accs = [report["mlp_capacity"][stage_name][f"hidden_{h}"]["mean_acc"] for h in hdims]
+        ax.plot([str(h) for h in hdims], accs, marker="^", label=stage_name)
+    ax.set_title("MLP Capacity Sweep (Hidden Dim)", fontweight="bold")
+    ax.set_xlabel("Hidden Layer Units")
+    ax.set_ylabel("Accuracy (%)")
+    ax.grid(True, linestyle="--", alpha=0.6)
+    ax.legend()
+
+    # Low-Rank plot
+    ax = axes[1, 1]
+    for stage_name in stages:
+        ranks = list(report["low_rank_bilinear"][stage_name].keys())
+        r_vals = [int(k.replace("rank_", "")) for k in ranks]
+        accs = [report["low_rank_bilinear"][stage_name][k]["mean_acc"] for k in ranks]
+        ax.plot([str(r) for r in r_vals], accs, marker="d", label=stage_name)
+    ax.set_title("Low-Rank Subspace Dimension Sweep", fontweight="bold")
+    ax.set_xlabel("Subspace Rank (Truncated SVD Dim)")
+    ax.set_ylabel("Accuracy (%)")
+    ax.grid(True, linestyle="--", alpha=0.6)
+    ax.legend()
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "beaf_vision_non_linear_probe.png"), dpi=300, bbox_inches="tight")
+    plt.close()
+
+    print("  Saved: beaf_vision_non_linear_probe.json & .png")
+    return report
+

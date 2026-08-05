@@ -17,6 +17,7 @@ from analysis.beaf.vision_mechanisms import (
     compute_vision_pipeline_breakdown,
     compute_vision_svd_sweep,
     compute_vision_linear_probe,
+    compute_vision_non_linear_probe,
     compute_vision_direction_preservation,
 )
 
@@ -33,5 +34,6 @@ __all__ = [
     "compute_vision_pipeline_breakdown",
     "compute_vision_svd_sweep",
     "compute_vision_linear_probe",
+    "compute_vision_non_linear_probe",
     "compute_vision_direction_preservation",
 ]
