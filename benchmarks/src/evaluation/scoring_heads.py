@@ -1,13 +1,16 @@
 """
 Expressive Scoring Heads for Multimodal Image-Text MCQ Matching.
 
-This module provides 6 scoring models ranging from simple cosine similarity to deep non-linear MLPs:
+This module provides 8 scoring models ranging from simple cosine similarity to
+caching-preserving Non-Linear Bi-Encoders:
 1. CosineScorer: Baseline CLIP dot product / cosine similarity.
 2. WeightedCosineScorer: Feature-wise weighted cosine similarity (w * (v * t)).
 3. BilinearScorer: Full bilinear interaction tensor (v^T W t).
 4. LogisticRegressionScorer: Linear decision boundary over joint features [v, t, v*t, |v-t|].
 5. ShallowMLPScorer: 2-layer neural network with GELU non-linearity.
 6. DeepMLPScorer: 4-layer neural network with LayerNorm, GELU, and residual connections.
+7. LowRankBilinearScorer: Low-rank bilinear (Av).(Bt), O(1) offline caching preserved.
+8. NonLinearBiEncoderScorer: GELU(Av).GELU(Bt), O(1) offline caching + non-linearity.
 """
 
 import torch
@@ -237,10 +240,94 @@ class DeepMLPScorer(BaseScorer):
         return scores
 
 
-def build_scorer(model_type: str, feature_dim: int) -> BaseScorer:
-    """Factory function to build a scoring head model by name."""
+class LowRankBilinearScorer(BaseScorer):
+    """
+    7. Low-Rank Bilinear Scorer (Caching-Preserving).
+    Expressiveness: Medium (constrained to rank-k subspace)
+    Hypothesis: Does negation information live in a low-rank interaction subspace?
+    Formula: s(v, t) = (A v) . (B t) + b  where A, B in R^(k x d)
+    Key property: v' = Av and t' = Bt can be pre-computed independently
+                  -> O(1) offline caching for Bi-Encoder retrieval preserved.
+    """
+
+    def __init__(self, feature_dim: int, rank: int = 32):
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.rank = rank
+        # Initialize A, B near zero for stable early training
+        self.proj_v = nn.Linear(feature_dim, rank, bias=False)
+        self.proj_t = nn.Linear(feature_dim, rank, bias=False)
+        self.bias = nn.Parameter(torch.zeros(1))
+        nn.init.normal_(self.proj_v.weight, std=0.02)
+        nn.init.normal_(self.proj_t.weight, std=0.02)
+
+    def forward(self, img_emb: torch.Tensor, text_emb: torch.Tensor) -> torch.Tensor:
+        if img_emb.dim() == 2:
+            img_emb = img_emb.unsqueeze(1)  # (B, 1, D)
+
+        v_norm = F.normalize(img_emb, dim=-1)   # (B, 1, D)
+        t_norm = F.normalize(text_emb, dim=-1)  # (B, K, D)
+
+        # Independent projections -> offline cacheable
+        # (B, 1, D) @ (D, k) -> (B, 1, k)
+        Av = torch.matmul(v_norm, self.proj_v.weight.T)
+        # (B, K, D) @ (D, k) -> (B, K, k)
+        Bt = torch.matmul(t_norm, self.proj_t.weight.T)
+
+        # Inner product over rank dimension
+        scores = torch.sum(Av * Bt, dim=-1) + self.bias  # (B, K)
+        return scores
+
+
+class NonLinearBiEncoderScorer(BaseScorer):
+    """
+    8. Non-Linear Bi-Encoder Scorer (Caching-Preserving).
+    Expressiveness: High (non-linear projection, constrained to rank-k)
+    Hypothesis: Does non-linearity in the projection recover negation accuracy
+                while preserving O(1) Bi-Encoder retrieval caching?
+    Formula: s(v, t) = GELU(A v) . GELU(B t) + b
+    Key property: v' = GELU(Av) and t' = GELU(Bt) can be pre-computed independently
+                  -> O(1) offline caching preserved despite non-linearity.
+    """
+
+    def __init__(self, feature_dim: int, rank: int = 32):
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.rank = rank
+        self.proj_v = nn.Linear(feature_dim, rank, bias=True)
+        self.proj_t = nn.Linear(feature_dim, rank, bias=True)
+        self.act = nn.GELU()
+        self.bias = nn.Parameter(torch.zeros(1))
+        nn.init.normal_(self.proj_v.weight, std=0.02)
+        nn.init.normal_(self.proj_t.weight, std=0.02)
+
+    def forward(self, img_emb: torch.Tensor, text_emb: torch.Tensor) -> torch.Tensor:
+        if img_emb.dim() == 2:
+            img_emb = img_emb.unsqueeze(1)  # (B, 1, D)
+
+        v_norm = F.normalize(img_emb, dim=-1)   # (B, 1, D)
+        t_norm = F.normalize(text_emb, dim=-1)  # (B, K, D)
+
+        # Non-linear independent projections -> offline cacheable
+        # (B, 1, k)
+        Av = self.act(torch.matmul(v_norm, self.proj_v.weight.T) + self.proj_v.bias)
+        # (B, K, k)
+        Bt = self.act(torch.matmul(t_norm, self.proj_t.weight.T) + self.proj_t.bias)
+
+        scores = torch.sum(Av * Bt, dim=-1) + self.bias  # (B, K)
+        return scores
+
+
+def build_scorer(model_type: str, feature_dim: int, rank: int = 32) -> BaseScorer:
+    """Factory function to build a scoring head model by name.
+
+    Args:
+        model_type: Name of the scoring head (e.g., 'cosine', 'bilinear', 'low_rank_bilinear').
+        feature_dim: Dimensionality of CLIP embeddings (typically 512).
+        rank: Rank k for LowRankBilinearScorer and NonLinearBiEncoderScorer (default 32).
+    """
     name_lower = model_type.lower().replace(" ", "_").replace("-", "_")
-    
+
     if name_lower in ["cosine", "cosine_similarity"]:
         return CosineScorer(feature_dim)
     elif name_lower in ["weighted_cosine", "weighted_cosine_similarity"]:
@@ -253,5 +340,11 @@ def build_scorer(model_type: str, feature_dim: int) -> BaseScorer:
         return ShallowMLPScorer(feature_dim)
     elif name_lower in ["deep_mlp", "mlp_deep"]:
         return DeepMLPScorer(feature_dim)
+    elif name_lower in ["low_rank_bilinear", "lr_bilinear", "low_rank"]:
+        return LowRankBilinearScorer(feature_dim, rank=rank)
+    elif name_lower in ["nonlinear_biencoder", "nl_biencoder", "nonlinear_bi", "nl_bi"]:
+        return NonLinearBiEncoderScorer(feature_dim, rank=rank)
     else:
-        raise ValueError(f"Unknown scoring model type: {model_type}")
+        raise ValueError(f"Unknown scoring model type: {model_type}. "
+                         f"Available: cosine, weighted_cosine, bilinear, logistic_regression, "
+                         f"shallow_mlp, deep_mlp, low_rank_bilinear, nonlinear_biencoder")
