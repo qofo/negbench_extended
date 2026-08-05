@@ -161,8 +161,8 @@ def train_and_eval_fold(
     """Train scoring model on train_loader and predict out-of-fold scores on val_loader."""
     scorer = scorer.to(device)
     
-    # Cosine scorer requires no training
-    if isinstance(scorer, CosineScorer):
+    # Cosine scorer or any zero-parameter scorer requires no training
+    if isinstance(scorer, CosineScorer) or len(list(scorer.parameters())) == 0:
         scorer.eval()
         oof_preds = []
         with torch.no_grad():
