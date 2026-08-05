@@ -387,11 +387,11 @@ def main():
     render_scatter_by_object_category(df_pairs, sim_orig_pos, sim_orig_neg, args.output_dir)
 
     # 6. Part B — Vision Encoder Mechanism Analyses
-    print("\n[Step 6] Part B — Vision Encoder Mechanism Analyses ...")
+    orig_paths_list = df_pairs["orig_path"].tolist()
     vis_breakdown = compute_vision_pipeline_breakdown(vis_orig, vis_cf, args.output_dir)
     vis_svd       = compute_vision_svd_sweep(model, vis_orig, vis_cf, args.output_dir)
-    vis_probe     = compute_vision_linear_probe(vis_orig, vis_cf, args.output_dir)
-    vis_nl_probe  = compute_vision_non_linear_probe(vis_orig, vis_cf, args.output_dir, seed=args.seed)
+    vis_probe     = compute_vision_linear_probe(vis_orig, vis_cf, args.output_dir, orig_paths=orig_paths_list)
+    vis_nl_probe  = compute_vision_non_linear_probe(vis_orig, vis_cf, args.output_dir, seed=args.seed, orig_paths=orig_paths_list)
     vis_dir_pres  = compute_vision_direction_preservation(vis_orig, vis_cf, args.output_dir, seed=args.seed)
 
     # 7. Part A — Axis 1: Text <-> Text
