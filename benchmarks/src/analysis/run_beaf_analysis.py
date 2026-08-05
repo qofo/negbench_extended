@@ -34,7 +34,6 @@ Usage:
 """
 
 import os
-import sys
 import json
 import argparse
 from typing import List, Dict, Any, Tuple, Optional
@@ -48,16 +47,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from PIL import Image
 
-# --------------------------------------------------------------------------- #
-# Path bootstrap (works both as a script and as a module)
-# --------------------------------------------------------------------------- #
-_FILE_DIR = os.path.dirname(os.path.abspath(__file__))
-_BENCHMARKS_SRC = os.path.abspath(os.path.join(_FILE_DIR, ".."))
-_PROJECT_ROOT = os.path.abspath(os.path.join(_FILE_DIR, "..", "..", ".."))
-for _p in [_BENCHMARKS_SRC, _PROJECT_ROOT]:
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
 import open_clip
 from analysis.config import (
     MetadataKey,
@@ -70,6 +59,7 @@ from analysis.metrics import (
     compute_pipeline_and_layer_breakdown,
     compute_image_text_retrieval_metrics,
 )
+
 
 
 # =========================================================================== #
