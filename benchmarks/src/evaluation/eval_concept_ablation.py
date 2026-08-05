@@ -236,6 +236,77 @@ def evaluate_scorers_on_embeds(
     return all_results
 
 
+def evaluate_intervention_ablation(
+    img_embeds: torch.Tensor,
+    text_embeds_orig: torch.Tensor,
+    text_embeds_ablated: torch.Tensor,
+    targets: torch.Tensor,
+    question_types: List[str],
+    scorer_configs: List[Tuple[str, str, int]],
+    device: str = "cuda",
+    n_splits: int = 5,
+    epochs: int = 15,
+    lr: float = 1e-3,
+    batch_size: int = 64,
+    seed: int = 42,
+) -> Dict[str, Dict]:
+    """
+    Mode A (Intervention Ablation):
+    Train Scorer on ORIGINAL text embeddings, but evaluate on ABLATED text embeddings.
+    Measures direct feature dependency of the pre-trained scorer on w_neg.
+    """
+    feature_dim = img_embeds.shape[1]
+    N = len(targets)
+    targets_np = targets.numpy()
+
+    unique_qtypes, qtype_indices = np.unique(question_types, return_inverse=True)
+    if len(unique_qtypes) < 2:
+        qtype_indices = targets_np
+
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    all_results = {}
+
+    for display_name, model_type, rank in scorer_configs:
+        print(f"\n  Evaluating Intervention Mode A: {display_name}")
+        oof_preds = np.zeros(N, dtype=int)
+
+        for fold_i, (train_idx, val_idx) in enumerate(
+            skf.split(np.zeros(N), qtype_indices)
+        ):
+            # Train on ORIGINAL text embeddings
+            train_imgs  = img_embeds[train_idx]
+            train_texts = text_embeds_orig[train_idx]
+            train_y     = targets[train_idx]
+
+            # Validate on ABLATED text embeddings (Intervention)
+            val_imgs    = img_embeds[val_idx]
+            val_texts   = text_embeds_ablated[val_idx]
+            val_y       = targets[val_idx]
+
+            train_ds = TensorDataset(train_imgs, train_texts, train_y)
+            val_ds   = TensorDataset(val_imgs,   val_texts,   val_y)
+
+            train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+            val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False)
+
+            scorer = build_scorer(model_type, feature_dim, rank=rank)
+            trained_scorer, fold_preds = train_and_eval_fold(
+                scorer, train_loader, val_loader,
+                device=device, epochs=epochs, lr=lr,
+            )
+            oof_preds[val_idx] = fold_preds
+
+        metrics = compute_mcq_accuracy_breakdown(oof_preds, targets_np, question_types)
+        all_results[display_name] = metrics
+        print(
+            f"    Intervention Total: {metrics['total_accuracy']:.2f}% | "
+            f"Pos: {metrics['positive_accuracy']:.2f}% | "
+            f"Neg: {metrics['negative_accuracy']:.2f}%"
+        )
+
+    return all_results
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Visualisation
 # ──────────────────────────────────────────────────────────────────────────────
@@ -363,11 +434,23 @@ def main():
         batch_size=args.batch_size, seed=args.seed,
     )
 
-    # ── Step 5: Evaluate on ABLATED embeddings ──────────────────────────────
+    # ── Step 5: Evaluate Mode A (Intervention: Train Original -> Test Ablated)
     print("\n" + "="*70)
-    print("EVALUATING: Ablated Text Embeddings (w_neg removed)")
+    print("EVALUATING Mode A: Intervention Ablation (Train Original -> Test Ablated)")
     print("="*70)
-    ablated_results = evaluate_scorers_on_embeds(
+    intervention_results = evaluate_intervention_ablation(
+        img_embeds, text_embeds, text_embeds_ablated, targets, question_types,
+        scorer_configs,
+        device=device, n_splits=args.n_splits,
+        epochs=args.epochs, lr=args.lr,
+        batch_size=args.batch_size, seed=args.seed,
+    )
+
+    # ── Step 6: Evaluate Mode B (Retrained: Train Ablated -> Test Ablated) ──
+    print("\n" + "="*70)
+    print("EVALUATING Mode B: Retrained Ablation (Train Ablated -> Test Ablated)")
+    print("="*70)
+    retrained_results = evaluate_scorers_on_embeds(
         img_embeds, text_embeds_ablated, targets, question_types,
         scorer_configs,
         device=device, n_splits=args.n_splits,
@@ -375,37 +458,40 @@ def main():
         batch_size=args.batch_size, seed=args.seed,
     )
 
-    # ── Step 6: Print delta summary ─────────────────────────────────────────
-    print("\n" + "="*70)
-    print("CONCEPT ABLATION SUMMARY (Original -> Ablated, Delta)")
-    print("="*70)
-    print(f"{'Scorer':30s} | {'Orig Total':10s} | {'Abl Total':10s} | {'Δ Total':8s} | "
-          f"{'Orig Neg':9s} | {'Abl Neg':8s} | {'Δ Neg':7s}")
-    print("-" * 100)
+    # ── Step 7: Print Summary Comparison Table ──────────────────────────────
+    print("\n" + "="*110)
+    print("CONCEPT ABLATION COMPREHENSIVE SUMMARY (Original vs. Intervention Mode A vs. Retrained Mode B)")
+    print("="*110)
+    print(f"{'Scorer':25s} | {'Original':9s} | {'Mode A (Interv)':15s} | {'Mode B (Retrain)':16s} | {'Interv Δ':9s} | {'Retrain Δ':9s}")
+    print("-" * 110)
 
     summary_rows = []
     for name in [cfg[0] for cfg in scorer_configs]:
         orig = original_results[name]
-        abl  = ablated_results[name]
-        d_total = abl["total_accuracy"]    - orig["total_accuracy"]
-        d_neg   = abl["negative_accuracy"] - orig["negative_accuracy"]
+        interv = intervention_results[name]
+        retrain = retrained_results[name]
+
+        d_interv = interv["total_accuracy"] - orig["total_accuracy"]
+        d_retrain = retrain["total_accuracy"] - orig["total_accuracy"]
+
         print(
-            f"{name:30s} | {orig['total_accuracy']:9.2f}% | {abl['total_accuracy']:9.2f}% | "
-            f"{d_total:+7.2f}% | {orig['negative_accuracy']:8.2f}% | "
-            f"{abl['negative_accuracy']:7.2f}% | {d_neg:+6.2f}%"
+            f"{name:25s} | {orig['total_accuracy']:8.2f}% | {interv['total_accuracy']:14.2f}% | "
+            f"{retrain['total_accuracy']:15.2f}% | {d_interv:+8.2f}% | {d_retrain:+8.2f}%"
         )
         summary_rows.append({
             "Scorer": name,
-            "Original_Total":    orig["total_accuracy"],
-            "Ablated_Total":     abl["total_accuracy"],
-            "Delta_Total":       d_total,
+            "Original_Total": orig["total_accuracy"],
+            "Intervention_ModeA_Total": interv["total_accuracy"],
+            "Retrained_ModeB_Total": retrain["total_accuracy"],
+            "Intervention_Delta": d_interv,
+            "Retrained_Delta": d_retrain,
             "Original_Negative": orig["negative_accuracy"],
-            "Ablated_Negative":  abl["negative_accuracy"],
-            "Delta_Negative":    d_neg,
+            "Intervention_Negative": interv["negative_accuracy"],
+            "Retrained_Negative": retrain["negative_accuracy"],
         })
-    print("="*100)
+    print("="*110)
 
-    # ── Step 7: Save results ─────────────────────────────────────────────────
+    # ── Step 8: Save results ─────────────────────────────────────────────────
     out_json = os.path.join(args.output_dir, "concept_ablation_results.json")
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump({
@@ -414,8 +500,9 @@ def main():
                 "w_neg_norm": float(w_neg.norm().item()),
             },
             "original": original_results,
-            "ablated":  ablated_results,
-            "summary":  summary_rows,
+            "intervention_mode_a": intervention_results,
+            "retrained_mode_b": retrained_results,
+            "summary": summary_rows,
         }, f, indent=2)
     print(f"\n✅ Saved ablation JSON: {out_json}")
 
@@ -423,8 +510,7 @@ def main():
         os.path.join(args.output_dir, "concept_ablation_summary.csv"), index=False
     )
 
-    # ── Step 8: Plot ─────────────────────────────────────────────────────────
-    plot_ablation_comparison(original_results, ablated_results, args.output_dir)
+    plot_ablation_comparison(original_results, retrained_results, args.output_dir)
     print(f"\n✅ Concept ablation experiment complete. Results saved to: {args.output_dir}")
 
 
