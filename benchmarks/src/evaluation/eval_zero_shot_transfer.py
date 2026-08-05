@@ -78,6 +78,20 @@ def extract_retrieval_embeddings(
     Extract frozen CLIP image embeddings (N_img, D), text embeddings (N_txt, D),
     and ground-truth image indices for Retrieval evaluation.
     """
+    cache_dir = "logs/evaluation/cached_embeddings"
+    os.makedirs(cache_dir, exist_ok=True)
+    csv_basename = os.path.basename(csv_file).replace(".csv", "")
+    cache_path = os.path.join(cache_dir, f"{csv_basename}_retrieval_embeds.pt")
+
+    if os.path.exists(cache_path):
+        print(f"\n⚡ Loading pre-cached Retrieval CLIP embeddings from disk cache: {cache_path}")
+        try:
+            cached = torch.load(cache_path, map_location="cpu")
+            print(f"✅ Loaded cached retrieval features: Images {cached['images_emb'].shape}, Texts {cached['texts_emb'].shape}")
+            return cached["images_emb"], cached["texts_emb"], cached["texts_image_index"]
+        except Exception as e:
+            print(f"⚠️ Failed to load cache file {cache_path}: {e}. Re-extracting...")
+
     model.eval()
     df = pd.read_csv(csv_file, sep=",")
 
@@ -139,6 +153,12 @@ def extract_retrieval_embeddings(
     images_emb = torch.cat(img_embed_list, dim=0) # (N_img, D)
     texts_emb = torch.cat(text_embed_list, dim=0)  # (N_txt, D)
 
+    torch.save({
+        "images_emb": images_emb,
+        "texts_emb": texts_emb,
+        "texts_image_index": texts_image_index
+    }, cache_path)
+    print(f"💾 Saved extracted retrieval embeddings to disk cache: {cache_path}")
     print(f"✅ Extracted Retrieval Features: Images {images_emb.shape}, Texts {texts_emb.shape}")
     return images_emb, texts_emb, texts_image_index
 

@@ -87,6 +87,27 @@ def extract_mcq_embeddings(
     img_embed_list = []
     text_embed_list = []
     target_list = []
+    # Check disk cache first
+    cache_dir = "logs/evaluation/cached_embeddings"
+    os.makedirs(cache_dir, exist_ok=True)
+    csv_basename = os.path.basename(csv_file).replace(".csv", "")
+    cache_path = os.path.join(cache_dir, f"{csv_basename}_embeds.pt")
+
+    if os.path.exists(cache_path):
+        print(f"\n⚡ Loading pre-cached CLIP embeddings from disk cache: {cache_path}")
+        try:
+            cached = torch.load(cache_path, map_location="cpu")
+            print(f"✅ Loaded cached embeddings for {cached['img_embeds'].shape[0]} samples (Dim: {cached['img_embeds'].shape[1]})")
+            return (
+                cached["img_embeds"],
+                cached["text_embeds"],
+                cached["targets"],
+                cached["question_types"],
+                cached["caption_types"]
+            )
+        except Exception as e:
+            print(f"⚠️ Failed to load cache file {cache_path}: {e}. Re-extracting...")
+
     q_type_list = []
     cap_type_list = []
 
@@ -130,7 +151,6 @@ def extract_mcq_embeddings(
             q_type = str(row["correct_answer_template"]) if "correct_answer_template" in row else "mcq"
         elif "positive_caption" in row and "negative_caption" in row:
             captions = [str(row["positive_caption"]), str(row["negative_caption"])]
-            # If object_in_image is True, ground truth is positive (0), else negative (1)
             obj_in_img = str(row.get("object_in_image", "True")).strip().lower() in ["true", "1", "t", "yes"]
             correct_answer = 0 if obj_in_img else 1
             q_type = "positive" if obj_in_img else "negative"
@@ -158,6 +178,15 @@ def extract_mcq_embeddings(
     all_text_embeds = torch.cat(text_embed_list, dim=0)  # (N, K, D)
     all_targets = torch.tensor(target_list, dtype=torch.long)  # (N,)
 
+    # Save to disk cache
+    torch.save({
+        "img_embeds": all_img_embeds,
+        "text_embeds": all_text_embeds,
+        "targets": all_targets,
+        "question_types": q_type_list,
+        "caption_types": cap_type_list
+    }, cache_path)
+    print(f"💾 Saved extracted embeddings to disk cache: {cache_path}")
     print(f"✅ Successfully cached embeddings for {all_img_embeds.shape[0]} valid samples (Dim: {all_img_embeds.shape[1]}, Options: {all_text_embeds.shape[1]})")
     return all_img_embeds, all_text_embeds, all_targets, q_type_list, cap_type_list
 
