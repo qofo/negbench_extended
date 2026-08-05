@@ -114,10 +114,25 @@ def build_counterfactual_pairs(df: pd.DataFrame) -> pd.DataFrame:
 def load_beaf_paired_dataset(csv_path: str, image_root: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Load beaf_counterfactual_6col.csv and construct exact 2n/2n+1 pairs."""
     df = pd.read_csv(csv_path)
-    if image_root:
-        df["abs_image_path"] = df["image_path"].apply(lambda p: os.path.join(image_root, p))
-    else:
-        df["abs_image_path"] = df["image_path"]
+    def _resolve_path(p: str, root: str) -> str:
+        p_str = str(p).strip()
+        if os.path.exists(p_str):
+            return p_str
+        if root:
+            candidate1 = os.path.join(root, p_str)
+            if os.path.exists(candidate1):
+                return candidate1
+            if p_str.startswith("data/images/"):
+                candidate2 = os.path.join(root, p_str[len("data/images/"):])
+                if os.path.exists(candidate2):
+                    return candidate2
+            if p_str.startswith("data/"):
+                candidate3 = os.path.join(root, p_str[len("data/"):])
+                if os.path.exists(candidate3):
+                    return candidate3
+        return os.path.join(root, p_str) if root else p_str
+
+    df["abs_image_path"] = df["image_path"].apply(lambda p: _resolve_path(p, image_root))
 
     def _to_bool(v) -> bool:
         if isinstance(v, bool):

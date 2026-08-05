@@ -72,6 +72,15 @@ def extract_vision_features_unified(
     final_l2_batches = []
     loaded_flags = []
 
+    # Check how many images exist on disk before processing
+    missing_paths = [p for p in image_paths if not os.path.exists(p)]
+    if len(missing_paths) > 0:
+        print(f"  ❌ [CRITICAL ERROR] {len(missing_paths)}/{len(image_paths)} image files DO NOT EXIST on disk!")
+        print(f"     Example missing path: '{missing_paths[0]}'")
+        print(f"     Please check --image_root path or CSV image_path values!")
+    else:
+        print(f"  ✅ All {len(image_paths)} image files found successfully on disk.")
+
     for start in range(0, len(image_paths), batch_size):
         batch_paths = image_paths[start : start + batch_size]
         tensors = []
@@ -363,6 +372,7 @@ def compute_vision_linear_probe(
     y = np.array([1] * n_orig + [0] * n_cf)
 
     probe_results = {}
+    print(f"\n  🔍 [Debug: Linear Probe] Samples: {n_orig} orig + {n_cf} cf = {len(y)} total")
 
     for l_name in list(vis_orig["layers"].keys()) + ["Pre-Projection", "+Final L2Norm"]:
         if l_name in vis_orig["layers"]:
@@ -382,10 +392,14 @@ def compute_vision_linear_probe(
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
         scores = cross_val_score(clf, X_norm, y, cv=cv, scoring="accuracy")
 
+        mean_acc = float(np.mean(scores) * 100)
+        std_acc  = float(np.std(scores) * 100)
+
         probe_results[l_name] = {
-            "mean_accuracy_pct": float(np.mean(scores) * 100),
-            "std_accuracy_pct":  float(np.std(scores) * 100),
+            "mean_accuracy_pct": mean_acc,
+            "std_accuracy_pct":  std_acc,
         }
+        print(f"     - [{l_name:16s}] Accuracy: {mean_acc:6.2f}% ± {std_acc:4.2f}%")
 
     with open(os.path.join(output_dir, "beaf_vision_linear_probe.json"), "w", encoding="utf-8") as f:
         json.dump(probe_results, f, indent=2)
@@ -493,7 +507,10 @@ def compute_vision_non_linear_probe(
         "low_rank_bilinear": {}
     }
 
+    print(f"\n  🔍 [Debug: Non-Linear Difference Probe] Pairs: {n_orig} real + {n_orig} ctrl = {n_orig * 2} vectors")
+
     for stage_name in stages:
+        print(f"\n  === Stage: {stage_name} ===")
         if stage_name == "Pre-Projection":
             f_orig = vis_orig["pre_proj"]
             f_cf   = vis_cf["pre_proj"]
@@ -504,44 +521,61 @@ def compute_vision_non_linear_probe(
         diff_real = f_orig - f_cf
         diff_ctrl = f_orig - f_orig[rand_idx]
 
+        norm_real = np.linalg.norm(diff_real, axis=1).mean()
+        norm_ctrl = np.linalg.norm(diff_ctrl, axis=1).mean()
+        print(f"     - Mean L2 Norm: Real removal shift = {norm_real:.4f} | Control random shift = {norm_ctrl:.4f}")
+
         X_diff = np.vstack([l2_normalize(diff_real), l2_normalize(diff_ctrl)])
         y_diff = np.array([1] * n_orig + [0] * n_orig)
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
 
         # 1. Polynomial Kernel Sweep (Degree 1 to 4, with coef0=1.0)
+        print("     [1/4] Polynomial Kernel Sweep (Degree 1..4):")
         poly_results = {}
         for deg in [1, 2, 3, 4]:
             clf = SVC(kernel="poly", degree=deg, coef0=1.0, C=1.0, random_state=seed)
             scores = cross_val_score(clf, X_diff, y_diff, cv=cv, scoring="accuracy")
+            mean_acc = float(np.mean(scores) * 100)
+            std_acc  = float(np.std(scores) * 100)
             poly_results[f"degree_{deg}"] = {
-                "mean_acc": float(np.mean(scores) * 100),
-                "std_acc": float(np.std(scores) * 100)
+                "mean_acc": mean_acc,
+                "std_acc": std_acc
             }
+            print(f"       * Degree {deg}: {mean_acc:6.2f}% ± {std_acc:4.2f}%")
         report["polynomial_kernel"][stage_name] = poly_results
 
         # 2. RBF Kernel Sweep (Gamma 1e-4 to 1.0)
+        print("     [2/4] RBF Kernel Sweep (Gamma 1e-4..1.0):")
         rbf_results = {}
         for g in [1e-4, 1e-3, 1e-2, 1e-1, 1.0]:
             clf = SVC(kernel="rbf", gamma=g, C=1.0, random_state=seed)
             scores = cross_val_score(clf, X_diff, y_diff, cv=cv, scoring="accuracy")
+            mean_acc = float(np.mean(scores) * 100)
+            std_acc  = float(np.std(scores) * 100)
             rbf_results[f"gamma_{g}"] = {
-                "mean_acc": float(np.mean(scores) * 100),
-                "std_acc": float(np.std(scores) * 100)
+                "mean_acc": mean_acc,
+                "std_acc": std_acc
             }
+            print(f"       * Gamma {g}: {mean_acc:6.2f}% ± {std_acc:4.2f}%")
         report["rbf_kernel"][stage_name] = rbf_results
 
         # 3. MLP Capacity Sweep (Hidden Dim 8 to 512)
+        print("     [3/4] MLP Capacity Sweep (Hidden Dim 8..512):")
         mlp_results = {}
         for h in [8, 16, 32, 64, 128, 256, 512]:
             clf = MLPClassifier(hidden_layer_sizes=(h,), activation="relu", max_iter=500, random_state=seed)
             scores = cross_val_score(clf, X_diff, y_diff, cv=cv, scoring="accuracy")
+            mean_acc = float(np.mean(scores) * 100)
+            std_acc  = float(np.std(scores) * 100)
             mlp_results[f"hidden_{h}"] = {
-                "mean_acc": float(np.mean(scores) * 100),
-                "std_acc": float(np.std(scores) * 100)
+                "mean_acc": mean_acc,
+                "std_acc": std_acc
             }
+            print(f"       * Hidden {h:3d}: {mean_acc:6.2f}% ± {std_acc:4.2f}%")
         report["mlp_capacity"][stage_name] = mlp_results
 
         # 4. Low-Rank Subspace Sweep
+        print("     [4/4] Low-Rank Subspace Sweep (Rank 1..512):")
         rank_results = {}
         max_r = min(X_diff.shape[1], X_diff.shape[0])
         for r in [1, 2, 4, 8, 16, 32, 64, 128, 256, min(512, max_r)]:
@@ -551,10 +585,13 @@ def compute_vision_non_linear_probe(
             X_red = svd.fit_transform(X_diff)
             clf = LogisticRegression(max_iter=1000, random_state=seed)
             scores = cross_val_score(clf, X_red, y_diff, cv=cv, scoring="accuracy")
+            mean_acc = float(np.mean(scores) * 100)
+            std_acc  = float(np.std(scores) * 100)
             rank_results[f"rank_{r}"] = {
-                "mean_acc": float(np.mean(scores) * 100),
-                "std_acc": float(np.std(scores) * 100)
+                "mean_acc": mean_acc,
+                "std_acc": std_acc
             }
+            print(f"       * Rank {r:3d}: {mean_acc:6.2f}% ± {std_acc:4.2f}%")
         report["low_rank_bilinear"][stage_name] = rank_results
 
     # Save JSON
