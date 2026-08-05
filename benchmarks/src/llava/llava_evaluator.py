@@ -98,7 +98,7 @@ def _load_openclip_vision_encoder(
 
 # Main class
 
-from src.llava.parser import parse_option_robust
+from llava.parser import parse_option_robust
 
 
 class LLaVAModularEvaluator:
@@ -403,7 +403,7 @@ class LLaVAModularEvaluator:
         option_probs = None
         if hasattr(outputs, "scores") and len(outputs.scores) > 0:
             if not hasattr(self, "_option_token_ids"):
-                from src.llava.logits import get_option_token_ids
+                from llava.logits import get_option_token_ids
                 self._option_token_ids = get_option_token_ids(self.processor.tokenizer, option_labels)
 
             first_logits = outputs.scores[0][0]

@@ -56,7 +56,7 @@ import torch.nn.functional as F
 from PIL import Image
 from tqdm import tqdm
 
-from src.llava.metrics import compute_mcq_metrics
+from llava.metrics import compute_mcq_metrics
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,9 +64,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from src.llava.parser import OPTION_LABELS, parse_option_robust
-from src.llava.dataset_utils import build_dataset_index, restore_original_order, build_perm
-from src.llava.logits import get_option_token_ids, extract_option_logits
+from llava.parser import OPTION_LABELS, parse_option_robust
+from llava.dataset_utils import build_dataset_index, restore_original_order, build_perm
+from llava.logits import get_option_token_ids, extract_option_logits
 
 
 # Main pipeline
@@ -130,7 +130,7 @@ def main(args):
 
     if args.llava_model_path is not None:
         logger.info("Loading LLaVA model for logit extraction from %s ...", args.llava_model_path)
-        from src.llava.llava_evaluator import LLaVAModularEvaluator
+        from llava.llava_evaluator import LLaVAModularEvaluator
         evaluator = LLaVAModularEvaluator(
             model_path=args.llava_model_path,
             device=device,

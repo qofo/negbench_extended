@@ -30,7 +30,7 @@ from PIL import Image
 import open_clip
 
 # Import scoring heads
-from src.evaluation.scoring_heads import (
+from evaluation.scoring_heads import (
     BaseScorer,
     CosineScorer,
     WeightedCosineScorer,
@@ -40,7 +40,7 @@ from src.evaluation.scoring_heads import (
     DeepMLPScorer,
     build_scorer
 )
-from src.training.data import CsvMCQDataset
+from training.data import CsvMCQDataset
 
 
 def set_seed(seed: int = 42):
