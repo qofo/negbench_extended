@@ -281,8 +281,12 @@ def render_scatter_by_object_category(
         max_v = max(sub["sim_pos"].max(), sub["sim_neg"].max()) + 0.01
         ax.plot([min_v, max_v], [min_v, max_v], color="crimson", ls="--", lw=1.2)
 
-        r_sub, _ = stats.pearsonr(sub["sim_pos"], sub["sim_neg"])
-        ax.set_title(f"Object: {obj} (n={len(sub)})\nPearson r={r_sub:.3f}", fontsize=11, fontweight="bold")
+        if len(sub) >= 2:
+            r_sub, _ = stats.pearsonr(sub["sim_pos"], sub["sim_neg"])
+            r_str = f"Pearson r={r_sub:.3f}"
+        else:
+            r_str = "n < 2"
+        ax.set_title(f"Object: {obj} (n={len(sub)})\n{r_str}", fontsize=11, fontweight="bold")
         ax.set_xlabel("sim(pos)", fontsize=9)
         ax.set_ylabel("sim(neg)", fontsize=9)
         ax.grid(True, ls="--", alpha=0.4)
@@ -292,3 +296,131 @@ def render_scatter_by_object_category(
     plt.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close()
     print("  Saved: beaf_scatter_by_object_category.png")
+
+
+def render_2x2_factorial_anova_plots(
+    anova_df: pd.DataFrame,
+    summary_anova: Dict[str, Any],
+    output_dir: str
+):
+    """Render 2x2 Factorial ANOVA Main Effects and Interaction Effect Distributions."""
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.2))
+
+    # 1. Text Main Effect
+    ax1 = axes[0]
+    ax1.hist(anova_df["text_main_effect"], bins=50, color="teal", alpha=0.8, edgecolor="white")
+    mean_t = summary_anova["text_main_effect"]["mean"]
+    ci_t_low = summary_anova["text_main_effect"]["ci_95_low"]
+    ci_t_high = summary_anova["text_main_effect"]["ci_95_high"]
+    ax1.axvline(mean_t, color="darkred", ls="--", lw=2, label=f"Mean = {mean_t:.4f}\n(95% CI: [{ci_t_low:.4f}, {ci_t_high:.4f}])")
+    ax1.axvline(0, color="gray", ls=":", lw=1.5)
+    ax1.set_title("1. Text Main Effect\n[((A-B) + (C-D)) / 2]", fontsize=11, fontweight="bold")
+    ax1.set_xlabel("Similarity Difference", fontsize=10)
+    ax1.set_ylabel("Frequency", fontsize=10)
+    ax1.legend(fontsize=9)
+    ax1.grid(True, ls="--", alpha=0.4)
+
+    # 2. Visual Main Effect
+    ax2 = axes[1]
+    ax2.hist(anova_df["visual_main_effect"], bins=50, color="darkorange", alpha=0.8, edgecolor="white")
+    mean_v = summary_anova["visual_main_effect"]["mean"]
+    ci_v_low = summary_anova["visual_main_effect"]["ci_95_low"]
+    ci_v_high = summary_anova["visual_main_effect"]["ci_95_high"]
+    ax2.axvline(mean_v, color="darkred", ls="--", lw=2, label=f"Mean = {mean_v:.4f}\n(95% CI: [{ci_v_low:.4f}, {ci_v_high:.4f}])")
+    ax2.axvline(0, color="gray", ls=":", lw=1.5)
+    ax2.set_title("2. Visual Main Effect\n[((A-C) + (B-D)) / 2]", fontsize=11, fontweight="bold")
+    ax2.set_xlabel("Similarity Difference", fontsize=10)
+    ax2.set_ylabel("Frequency", fontsize=10)
+    ax2.legend(fontsize=9)
+    ax2.grid(True, ls="--", alpha=0.4)
+
+    # 3. Interaction Effect
+    ax3 = axes[2]
+    ax3.hist(anova_df["interaction_effect"], bins=50, color="crimson", alpha=0.8, edgecolor="white")
+    mean_i = summary_anova["interaction_effect"]["mean"]
+    ci_i_low = summary_anova["interaction_effect"]["ci_95_low"]
+    ci_i_high = summary_anova["interaction_effect"]["ci_95_high"]
+    pct_neg = summary_anova["interaction_effect"]["negative_interaction_pct"]
+    ax3.axvline(mean_i, color="navy", ls="--", lw=2, label=f"Mean = {mean_i:.4f}\n(95% CI: [{ci_i_low:.4f}, {ci_i_high:.4f}])\nNeg. Inter. = {pct_neg:.1f}%")
+    ax3.axvline(0, color="black", ls="-", lw=1.5)
+    ax3.set_title("3. Interaction Effect (Core Claim)\n[(A-B) - (C-D)]", fontsize=11, fontweight="bold")
+    ax3.set_xlabel("Cross-Modal Interaction", fontsize=10)
+    ax3.set_ylabel("Frequency", fontsize=10)
+    ax3.legend(fontsize=9)
+    ax3.grid(True, ls="--", alpha=0.4)
+
+    plt.tight_layout()
+    out_path = os.path.join(output_dir, "beaf_2x2_factorial_anova.png")
+    plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print("  Saved: beaf_2x2_factorial_anova.png")
+
+
+def render_2d_margin_state_space(
+    sim_orig_pos: np.ndarray,
+    sim_orig_neg: np.ndarray,
+    sim_cf_pos: np.ndarray,
+    sim_cf_neg: np.ndarray,
+    output_dir: str
+):
+    """Render 2D Margin State Space (m_orig vs m_cf) Scatter plot with 4 Task Quadrants and Regression Line."""
+    m_orig = sim_orig_pos - sim_orig_neg
+    m_cf   = sim_cf_neg - sim_cf_pos
+
+    slope, intercept, r_value, p_value, std_err = stats.linregress(m_orig, m_cf)
+    r_pearson, _ = stats.pearsonr(m_orig, m_cf)
+
+    n_total = len(m_orig)
+    q1 = (m_orig > 0) & (m_cf > 0)
+    q2 = (m_orig <= 0) & (m_cf > 0)
+    q3 = (m_orig <= 0) & (m_cf <= 0)
+    q4 = (m_orig > 0) & (m_cf <= 0)
+
+    pct_q1 = (q1.sum() / n_total) * 100
+    pct_q2 = (q2.sum() / n_total) * 100
+    pct_q3 = (q3.sum() / n_total) * 100
+    pct_q4 = (q4.sum() / n_total) * 100
+    p_cond = (q1.sum() / (m_orig > 0).sum()) * 100
+
+    fig, ax = plt.subplots(figsize=(9, 8))
+
+    # Scatter points colored by quadrant
+    ax.scatter(m_orig[q4], m_cf[q4], c="crimson", alpha=0.55, s=28, label=f"Q4: Counterfactual Fail ({pct_q4:.1f}%)")
+    ax.scatter(m_orig[q1], m_cf[q1], c="mediumseagreen", alpha=0.7, s=32, label=f"Q1: Flip Success ({pct_q1:.1f}%)")
+    ax.scatter(m_orig[q2], m_cf[q2], c="royalblue", alpha=0.6, s=28, label=f"Q2: CF-Only Success ({pct_q2:.1f}%)")
+    ax.scatter(m_orig[q3], m_cf[q3], c="gray", alpha=0.6, s=28, label=f"Q3: Both Fail ({pct_q3:.1f}%)")
+
+    # Quadrant lines
+    ax.axhline(0, color="black", ls="--", lw=1.2, alpha=0.7)
+    ax.axvline(0, color="black", ls="--", lw=1.2, alpha=0.7)
+
+    # Regression Line
+    x_vals = np.linspace(m_orig.min() - 0.005, m_orig.max() + 0.005, 200)
+    y_vals = slope * x_vals + intercept
+    ax.plot(x_vals, y_vals, color="black", ls="-", lw=2.2,
+            label=f"Fit: m_cf = {slope:.3f}·m_orig + {intercept:.4f}\n(r = {r_pearson:.3f}, R² = {r_value**2:.3f})")
+
+    # Annotations & Titles
+    ax.set_title("2D Margin State Space: Counterfactual VLM Sensitivity\n(m_orig = A-B vs m_cf = D-C)", fontsize=12, fontweight="bold")
+    ax.set_xlabel("Original Image Preference Margin: m_orig = sim(orig, pos) - sim(orig, neg)", fontsize=11)
+    ax.set_ylabel("Counterfactual Image Preference Margin: m_cf = sim(cf, neg) - sim(cf, pos)", fontsize=11)
+
+    # Callout text box
+    stats_text = (
+        f"Joint State Space Stats (N = {n_total}):\n"
+        f"• Slope (α) = {slope:.4f}\n"
+        f"• Pearson r = {r_pearson:.4f} (R² = {r_value**2:.4f})\n"
+        f"• Conditional P(m_cf > 0 | m_orig > 0) = {p_cond:.2f}%\n"
+        f"• Q4 Counterfactual Fail = {pct_q4:.2f}% (1,422 pairs)"
+    )
+    ax.text(0.03, 0.04, stats_text, transform=ax.transAxes, fontsize=10,
+            verticalalignment="bottom", bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow", alpha=0.95, edgecolor="goldenrod"))
+
+    ax.legend(loc="upper right", fontsize=10, framealpha=0.95)
+    ax.grid(True, ls="--", alpha=0.4)
+
+    plt.tight_layout()
+    out_path = os.path.join(output_dir, "beaf_2d_margin_state_space.png")
+    plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print("  Saved: beaf_2d_margin_state_space.png")

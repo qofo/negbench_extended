@@ -203,7 +203,8 @@ def compute_vision_pipeline_breakdown(
     layer_results = []
     layer_names = list(vis_orig["layers"].keys())
 
-    for l_name in layer_names:
+    prev_delta = None
+    for l_idx, l_name in enumerate(layer_names):
         f_orig = vis_orig["layers"][l_name]
         f_cf   = vis_cf["layers"][l_name]
 
@@ -211,32 +212,50 @@ def compute_vision_pipeline_breakdown(
         l2_dists = batch_l2_distance(f_orig, f_cf)
         dot_prods = batch_dot_product(f_orig, f_cf)
 
+        delta_v = f_orig - f_cf
+        delta_norm = float(np.mean(np.linalg.norm(delta_v, axis=1)))
+
+        if prev_delta is not None:
+            dir_sim = float(batch_cosine_similarity(delta_v, prev_delta).mean())
+        else:
+            dir_sim = 1.0
+        prev_delta = delta_v
+
         layer_results.append({
             "layer": l_name,
             "mean_cosine_sim": float(np.mean(cos_sims)),
             "std_cosine_sim": float(np.std(cos_sims)),
             "mean_l2_distance": float(np.mean(l2_dists)),
-            "mean_dot_product": float(np.mean(dot_prods))
+            "mean_dot_product": float(np.mean(dot_prods)),
+            "delta_vector_norm": delta_norm,
+            "layer_to_layer_direction_sim": dir_sim,
         })
 
     cos_pre = batch_cosine_similarity(vis_orig["pre_proj"], vis_cf["pre_proj"])
     l2_pre  = batch_l2_distance(vis_orig["pre_proj"], vis_cf["pre_proj"])
+    delta_pre = vis_orig["pre_proj"] - vis_cf["pre_proj"]
+    dir_sim_pre = float(batch_cosine_similarity(delta_pre, prev_delta).mean()) if prev_delta is not None else 1.0
     layer_results.append({
         "layer": "Pre-Projection (LN)",
         "mean_cosine_sim": float(np.mean(cos_pre)),
         "std_cosine_sim": float(np.std(cos_pre)),
         "mean_l2_distance": float(np.mean(l2_pre)),
-        "mean_dot_product": float(np.mean(batch_dot_product(vis_orig["pre_proj"], vis_cf["pre_proj"])))
+        "mean_dot_product": float(np.mean(batch_dot_product(vis_orig["pre_proj"], vis_cf["pre_proj"]))),
+        "delta_vector_norm": float(np.mean(np.linalg.norm(delta_pre, axis=1))),
+        "layer_to_layer_direction_sim": dir_sim_pre,
     })
 
     cos_final = batch_cosine_similarity(vis_orig["final_l2norm"], vis_cf["final_l2norm"])
     l2_final  = batch_l2_distance(vis_orig["final_l2norm"], vis_cf["final_l2norm"])
+    delta_final = vis_orig["final_l2norm"] - vis_cf["final_l2norm"]
     layer_results.append({
         "layer": "+Final L2Norm",
         "mean_cosine_sim": float(np.mean(cos_final)),
         "std_cosine_sim": float(np.std(cos_final)),
         "mean_l2_distance": float(np.mean(l2_final)),
-        "mean_dot_product": float(np.mean(batch_dot_product(vis_orig["final_l2norm"], vis_cf["final_l2norm"])))
+        "mean_dot_product": float(np.mean(batch_dot_product(vis_orig["final_l2norm"], vis_cf["final_l2norm"]))),
+        "delta_vector_norm": float(np.mean(np.linalg.norm(delta_final, axis=1))),
+        "layer_to_layer_direction_sim": 1.0,
     })
 
     df_res = pd.DataFrame(layer_results)
@@ -490,6 +509,53 @@ def compute_vision_direction_preservation(
     return report
 
 
+class ElementWiseNonLinearPyTorch(nn.Module):
+    """Element-wise Non-linear Probe: f(x) = sum_d (w_d * GELU(x_d)) + b.
+    Guarantees 0% dimension mixing to isolate pure non-linearity from bilinear/MLP dimension cross-talk.
+    """
+    def __init__(self, d_in: int):
+        super().__init__()
+        self.w = nn.Parameter(torch.ones(d_in))
+        self.bias = nn.Parameter(torch.zeros(1))
+        self.act = nn.GELU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.act(x)
+        return torch.sum(h * self.w, dim=-1) + self.bias.squeeze(-1)
+
+
+def train_eval_element_wise_gelu(
+    X_train: np.ndarray, y_train: np.ndarray,
+    X_test: np.ndarray, y_test: np.ndarray,
+    seed: int = 42, epochs: int = 300, lr: float = 1e-2
+) -> float:
+    """Train PyTorch Element-wise Non-linear GELU Probe (Feature-wise, 0% Dimension Mixing Control)."""
+    torch.manual_seed(seed)
+    d_in = X_train.shape[1]
+    model = ElementWiseNonLinearPyTorch(d_in)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    criterion = nn.BCEWithLogitsLoss()
+
+    X_tr = torch.tensor(X_train, dtype=torch.float32)
+    y_tr = torch.tensor(y_train, dtype=torch.float32)
+    X_te = torch.tensor(X_test, dtype=torch.float32)
+    y_te = torch.tensor(y_test, dtype=torch.float32)
+
+    model.train()
+    for _ in range(epochs):
+        optimizer.zero_grad()
+        logits = model(X_tr)
+        loss = criterion(logits, y_tr)
+        loss.backward()
+        optimizer.step()
+
+    model.eval()
+    with torch.no_grad():
+        preds = (torch.sigmoid(model(X_te)) >= 0.5).float()
+        acc = float((preds == y_te).float().mean().item() * 100)
+    return acc
+
+
 class LowRankBilinearPyTorch(nn.Module):
     def __init__(self, d_in: int, rank: int):
         super().__init__()
@@ -561,6 +627,7 @@ def compute_vision_non_linear_probe(
     stages = ["Pre-Projection", "+Final L2Norm"]
 
     report = {
+        "elementwise_gelu": {},
         "linear_tuned": {},
         "polynomial_kernel": {},
         "low_rank_bilinear": {},
@@ -568,7 +635,7 @@ def compute_vision_non_linear_probe(
         "mlp_capacity": {}
     }
 
-    print(f"\n  🔍 [Debug: 5-Stage Step-by-Step Difference Probe] Pairs: {n_orig} real + {n_orig} ctrl = {n_orig * 2} vectors")
+    print(f"\n  🔍 [Debug: 6-Stage Step-by-Step Difference Probe] Pairs: {n_orig} real + {n_orig} ctrl = {n_orig * 2} vectors")
 
     for stage_name in stages:
         print(f"\n  === Stage: {stage_name} ===")
@@ -580,11 +647,17 @@ def compute_vision_non_linear_probe(
             f_cf   = vis_cf["final_l2norm"]
 
         diff_real = f_orig - f_cf
-        diff_ctrl = f_orig - f_orig[rand_idx]
+        # Norm-Matched Directional Control: Isotropic random directions with identical sample-wise L2 norm
+        d_in = diff_real.shape[1]
+        rng_ctrl = np.random.default_rng(seed=seed)
+        rand_dirs = rng_ctrl.normal(size=(n_orig, d_in))
+        rand_dirs = rand_dirs / np.linalg.norm(rand_dirs, axis=1, keepdims=True)
+        norms_real = np.linalg.norm(diff_real, axis=1, keepdims=True)
+        diff_ctrl = rand_dirs * norms_real
 
         norm_real = np.linalg.norm(diff_real, axis=1).mean()
         norm_ctrl = np.linalg.norm(diff_ctrl, axis=1).mean()
-        print(f"     - Mean L2 Norm: Real removal shift = {norm_real:.4f} | Control random shift = {norm_ctrl:.4f}")
+        print(f"     - Mean L2 Norm: Real removal shift = {norm_real:.4f} | Control (norm-matched random dir) = {norm_ctrl:.4f}")
 
         X_diff = np.vstack([l2_normalize(diff_real), l2_normalize(diff_ctrl)])
         y_diff = np.array([1] * n_orig + [0] * n_orig)
@@ -597,6 +670,23 @@ def compute_vision_non_linear_probe(
         else:
             skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
             cv_splits = list(skf.split(X_diff, y_diff))
+
+        # Stage 0: Element-wise Non-linear GELU Probe (Feature-wise, 0% Dimension Mixing Control)
+        print("     [Stage 0/5] Element-wise Non-linear GELU Probe (0% Dimension Mixing):")
+        gelu_results = {}
+        fold_accs = []
+        for train_idx, test_idx in cv_splits:
+            acc = train_eval_element_wise_gelu(
+                X_diff[train_idx], y_diff[train_idx],
+                X_diff[test_idx], y_diff[test_idx],
+                seed=seed
+            )
+            fold_accs.append(acc)
+        mean_acc = float(np.mean(fold_accs))
+        std_acc  = float(np.std(fold_accs))
+        gelu_results["gelu_elementwise"] = {"mean_acc": mean_acc, "std_acc": std_acc}
+        print(f"       * GELU Feature-wise (No Mixing): {mean_acc:6.2f}% ± {std_acc:4.2f}%")
+        report["elementwise_gelu"][stage_name] = gelu_results
 
         # Stage 1: Linear Probe Baseline (C Sweep)
         print("     [Stage 1/5] Linear Baseline (C Sweep 1e-3..100):")
@@ -625,7 +715,7 @@ def compute_vision_non_linear_probe(
         # Stage 3: Real Low-Rank Bilinear Probe: f(x) = x^T U V^T x + w_0^T x + b
         print("     [Stage 3/5] Real Low-Rank Bilinear f(x) = x^T U V^T x + w_0^T x + b (Rank 4, 8, 16, 32, 64):")
         bilinear_results = {}
-        r_list = [4, 8, 16, 32, 64]
+        r_list = [1,2,3,4,8,16,512]
         for r in r_list:
             fold_accs = []
             for train_idx, test_idx in cv_splits:
@@ -656,7 +746,7 @@ def compute_vision_non_linear_probe(
         # Stage 5: MLP Capacity Probe (Hidden 8, 16, 32, 64)
         print("     [Stage 5/5] MLP Capacity Probe (Hidden 8, 16, 32, 64):")
         mlp_results = {}
-        for h in [8, 16, 32, 64]:
+        for h in [1,2,3,4,8]:
             clf = MLPClassifier(hidden_layer_sizes=(h,), activation="relu", max_iter=1000, random_state=seed)
             scores = cross_val_score(clf, X_diff, y_diff, cv=cv_splits, scoring="accuracy")
             mean_acc = float(np.mean(scores) * 100)
@@ -700,7 +790,7 @@ def compute_vision_non_linear_probe(
     # Stage 3: Real Low-Rank Bilinear
     ax = axes[0, 2]
     for stage_name in stages:
-        ranks = [4, 8, 16, 32, 64]
+        ranks = [1,2,3,4, 8, 16,512]
         accs = [report["low_rank_bilinear"][stage_name][f"rank_{r}"]["mean_acc"] for r in ranks]
         ax.plot([str(r) for r in ranks], accs, marker="d", color="crimson" if stage_name=="+Final L2Norm" else "navy", lw=2, label=stage_name)
     ax.set_title("3. Low-Rank Bilinear (W = U V^T)", fontweight="bold")
@@ -724,7 +814,7 @@ def compute_vision_non_linear_probe(
     # Stage 5: MLP Capacity
     ax = axes[1, 1]
     for stage_name in stages:
-        hdims = [8, 16, 32, 64]
+        hdims = [1,2,3,4,8]
         accs = [report["mlp_capacity"][stage_name][f"hidden_{h}"]["mean_acc"] for h in hdims]
         ax.plot([str(h) for h in hdims], accs, marker="^", lw=2, label=stage_name)
     ax.set_title("5. MLP Capacity Probe (Hidden Dim)", fontweight="bold")

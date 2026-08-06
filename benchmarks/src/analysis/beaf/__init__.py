@@ -11,6 +11,8 @@ from analysis.beaf.visualizer import (
     render_scatter_delta_quadrant,
     render_scatter_img_orig_vs_img_cf,
     render_scatter_by_object_category,
+    render_2x2_factorial_anova_plots,
+    render_2d_margin_state_space,
 )
 from analysis.beaf.vision_mechanisms import (
     extract_vision_features_unified,
@@ -30,6 +32,8 @@ __all__ = [
     "render_scatter_delta_quadrant",
     "render_scatter_img_orig_vs_img_cf",
     "render_scatter_by_object_category",
+    "render_2x2_factorial_anova_plots",
+    "render_2d_margin_state_space",
     "extract_vision_features_unified",
     "compute_vision_pipeline_breakdown",
     "compute_vision_svd_sweep",

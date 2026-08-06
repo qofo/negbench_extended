@@ -48,6 +48,8 @@ from analysis.beaf import (
     render_scatter_delta_quadrant,
     render_scatter_img_orig_vs_img_cf,
     render_scatter_by_object_category,
+    render_2x2_factorial_anova_plots,
+    render_2d_margin_state_space,
     extract_vision_features_unified,
     compute_vision_pipeline_breakdown,
     compute_vision_svd_sweep,
@@ -90,30 +92,13 @@ def load_beaf_csv(csv_path: str, image_root: str) -> Tuple[pd.DataFrame, List[di
     return df, pair_metadata
 
 
-def build_counterfactual_pairs(df: pd.DataFrame) -> pd.DataFrame:
-    """Group rows by source_template and extract (original, counterfactual) image pairs."""
-    pairs = []
-    for tmpl, grp in df.groupby("source_template"):
-        orig_rows = grp[grp["object_in_image"] == True]
-        cf_rows   = grp[grp["object_in_image"] == False]
-        if orig_rows.empty or cf_rows.empty:
-            continue
-        orig_row = orig_rows.iloc[0]
-        cf_row   = cf_rows.iloc[0]
-        pairs.append({
-            "source_template":  tmpl,
-            "object_name":      str(orig_row.get("object_name", "")),
-            "orig_path":        orig_row["abs_image_path"],
-            "cf_path":          cf_row["abs_image_path"],
-            "positive_caption": str(orig_row["positive_caption"]),
-            "negative_caption": str(orig_row["negative_caption"]),
-        })
-    return pd.DataFrame(pairs)
-
-
-def load_beaf_paired_dataset(csv_path: str, image_root: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Load beaf_counterfactual_6col.csv and construct exact 2n/2n+1 pairs."""
+def load_and_verify_counterfactual_pairs(csv_path: str, image_root: str) -> Tuple[pd.DataFrame, pd.DataFrame, List[dict]]:
+    """Load beaf_counterfactual_6col.csv, group by source_template, and enforce strict pairing integrity.
+    Returns:
+        (df_raw, df_pairs, pair_metadata)
+    """
     df = pd.read_csv(csv_path)
+
     def _resolve_path(p: str, root: str) -> str:
         p_str = str(p).strip()
         if os.path.exists(p_str):
@@ -143,30 +128,171 @@ def load_beaf_paired_dataset(csv_path: str, image_root: str) -> Tuple[pd.DataFra
 
     df["object_in_image"] = df["object_in_image"].apply(_to_bool)
 
-    pairs = []
-    num_rows = len(df)
-    for i in range(0, num_rows - 1, 2):
-        row1 = df.iloc[i]
-        row2 = df.iloc[i + 1]
+    pair_metadata = []
+    for _, row in df.iterrows():
+        pair_metadata.append({
+            MetadataKey.IMAGE_PATH.value:      row["image_path"],
+            MetadataKey.OBJECT_NAME.value:     str(row.get("object_name", "")),
+            MetadataKey.OBJECT_IN_IMAGE.value: row["object_in_image"],
+            MetadataKey.SOURCE_TEMPLATE.value: str(row.get("source_template", "")),
+        })
 
-        if row1["object_in_image"] and not row2["object_in_image"]:
-            orig_row, cf_row = row1, row2
-        elif not row1["object_in_image"] and row2["object_in_image"]:
-            orig_row, cf_row = row2, row1
-        else:
-            orig_row, cf_row = row1, row2
+    pairs = []
+    num_pairs = len(df) // 2
+    for i in range(num_pairs):
+        row1 = df.iloc[2 * i]
+        row2 = df.iloc[2 * i + 1]
+
+        b1 = row1["object_in_image"]
+        b2 = row2["object_in_image"]
+
+        assert (b1 and not b2) or (not b1 and b2), f"Row pair {i} object_in_image mismatch: {b1}, {b2}"
+
+        orig_row = row1 if b1 else row2
+        cf_row   = row2 if b1 else row1
+
+        # Strict Assertion Checks (#1)
+        assert orig_row["object_in_image"] == True, f"Orig row for pair {i} must have object_in_image == True"
+        assert cf_row["object_in_image"] == False, f"CF row for pair {i} must have object_in_image == False"
+        assert str(orig_row.get("object_name")) == str(cf_row.get("object_name")), f"Object name mismatch in pair {i}"
+        assert str(orig_row.get("source_template")) == str(cf_row.get("source_template")), f"Source template mismatch in pair {i}"
 
         pairs.append({
-            "pair_id":          i // 2,
+            "pair_id":          i,
+            "source_template":  str(orig_row.get("source_template", "")),
             "object_name":      str(orig_row.get("object_name", "")),
             "orig_path":        orig_row["abs_image_path"],
             "cf_path":          cf_row["abs_image_path"],
             "positive_caption": str(orig_row["positive_caption"]),
             "negative_caption": str(orig_row["negative_caption"]),
-            "source_template":  str(orig_row.get("source_template", "")),
         })
 
-    return df, pd.DataFrame(pairs)
+    df_pairs = pd.DataFrame(pairs)
+    print(f"  ✅ [Unified Pairing Verified] Extracted all {len(df_pairs)} exact counterfactual pairs with 100% strict assertion checks.")
+    return df, df_pairs, pair_metadata
+
+
+def compute_quadrant_bootstrap_ci(
+    sim_orig_pos: np.ndarray,
+    sim_orig_neg: np.ndarray,
+    sim_cf_pos: np.ndarray,
+    margin: float = 0.01,
+    n_bootstraps: int = 1000,
+    seed: int = 42,
+) -> Dict[str, Any]:
+    """Calculate quadrant proportions with noise margin and 95% Bootstrap Confidence Intervals (#3)."""
+    delta_text = sim_orig_pos - sim_orig_neg
+    delta_vis  = sim_orig_pos - sim_cf_pos
+    n = len(delta_text)
+
+    def _get_quadrants(dt, dv):
+        q1 = (dt > margin) & (dv > margin)
+        q2 = (dt <= margin) & (dv > margin)
+        q3 = (dt <= margin) & (dv <= margin)
+        q4 = (dt > margin) & (dv <= margin)
+        q_near_zero = (np.abs(dt) <= margin) | (np.abs(dv) <= margin)
+        return {
+            "q1_both_sensitive_pct": float(np.mean(q1) * 100),
+            "q2_visual_only_pct":    float(np.mean(q2) * 100),
+            "q3_neither_pct":        float(np.mean(q3) * 100),
+            "q4_text_only_pct":      float(np.mean(q4) * 100),
+            "near_zero_margin_pct":  float(np.mean(q_near_zero) * 100),
+        }
+
+    point_estimates = _get_quadrants(delta_text, delta_vis)
+
+    rng = np.random.default_rng(seed=seed)
+    boot_dist = {k: [] for k in point_estimates}
+    for _ in range(n_bootstraps):
+        boot_idx = rng.choice(n, size=n, replace=True)
+        q_boot = _get_quadrants(delta_text[boot_idx], delta_vis[boot_idx])
+        for k, v in q_boot.items():
+            boot_dist[k].append(v)
+
+    summary_ci = {}
+    for k, v in point_estimates.items():
+        low = float(np.percentile(boot_dist[k], 2.5))
+        high = float(np.percentile(boot_dist[k], 97.5))
+        summary_ci[k] = {
+            "mean_pct": round(v, 2),
+            "ci_95_low": round(low, 2),
+            "ci_95_high": round(high, 2),
+        }
+    return summary_ci
+
+
+def compute_2x2_factorial_anova(
+    sim_orig_pos: np.ndarray,
+    sim_orig_neg: np.ndarray,
+    sim_cf_pos: np.ndarray,
+    sim_cf_neg: np.ndarray,
+    n_bootstraps: int = 1000,
+    seed: int = 42,
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """Compute 2x2 Factorial ANOVA Main Effects & Interaction Effect per sample pair with 95% Bootstrap CI.
+
+    Raw 2x2 Similarity Matrix per pair:
+                caption=pos   caption=neg
+    image=orig      A (orig_pos)  B (orig_neg)
+    image=cf        C (cf_pos)    D (cf_neg)
+
+    3 Orthogonal Derived Metrics:
+    - Text Main Effect    = ((A - B) + (C - D)) / 2
+    - Visual Main Effect  = ((A - C) + (B - D)) / 2
+    - Interaction Effect = (A - B) - (C - D) == (A - C) - (B - D)
+    """
+    A = sim_orig_pos
+    B = sim_orig_neg
+    C = sim_cf_pos
+    D = sim_cf_neg
+
+    text_main_effect   = ((A - B) + (C - D)) / 2.0
+    visual_main_effect = ((A - C) + (B - D)) / 2.0
+    interaction_effect = (A - B) - (C - D)
+
+    anova_df = pd.DataFrame({
+        "sim_A_orig_pos":       A,
+        "sim_B_orig_neg":       B,
+        "sim_C_cf_pos":         C,
+        "sim_D_cf_neg":         D,
+        "text_main_effect":     text_main_effect,
+        "visual_main_effect":   visual_main_effect,
+        "interaction_effect":   interaction_effect,
+    })
+
+    n = len(A)
+    rng = np.random.default_rng(seed=seed)
+
+    boot_t, boot_v, boot_i = [], [], []
+    for _ in range(n_bootstraps):
+        idx = rng.choice(n, size=n, replace=True)
+        boot_t.append(np.mean(text_main_effect[idx]))
+        boot_v.append(np.mean(visual_main_effect[idx]))
+        boot_i.append(np.mean(interaction_effect[idx]))
+
+    summary_anova = {
+        "text_main_effect": {
+            "mean": round(float(np.mean(text_main_effect)), 6),
+            "std":  round(float(np.std(text_main_effect)), 6),
+            "ci_95_low": round(float(np.percentile(boot_t, 2.5)), 6),
+            "ci_95_high": round(float(np.percentile(boot_t, 97.5)), 6),
+        },
+        "visual_main_effect": {
+            "mean": round(float(np.mean(visual_main_effect)), 6),
+            "std":  round(float(np.std(visual_main_effect)), 6),
+            "ci_95_low": round(float(np.percentile(boot_v, 2.5)), 6),
+            "ci_95_high": round(float(np.percentile(boot_v, 97.5)), 6),
+        },
+        "interaction_effect": {
+            "mean": round(float(np.mean(interaction_effect)), 6),
+            "std":  round(float(np.std(interaction_effect)), 6),
+            "ci_95_low": round(float(np.percentile(boot_i, 2.5)), 6),
+            "ci_95_high": round(float(np.percentile(boot_i, 97.5)), 6),
+            "negative_interaction_pct": round(float(np.mean(interaction_effect < 0) * 100), 2),
+        },
+    }
+
+    return anova_df, summary_anova
 
 
 def _encode_image_paths(
@@ -342,20 +468,17 @@ def main():
     print("=" * 60)
 
     # 1. Load Data
-    print("\n[Step 1] Loading BEAF CSV ...")
-    df_raw, df_pairs = load_beaf_paired_dataset(args.csv_path, args.image_root)
+    print("\n[Step 1] Loading BEAF CSV & Verifying Pair Integrity ...")
+    df_raw, df_pairs, pair_metadata = load_and_verify_counterfactual_pairs(args.csv_path, args.image_root)
+    if args.max_samples > 0:
+        df_pairs      = df_pairs.head(args.max_samples).copy()
+        pair_metadata = pair_metadata[:args.max_samples * 2]
     n_pairs = len(df_pairs)
     print(f"  Raw rows                                 : {len(df_raw)}")
-    print(f"  Exact Counterfactual Pairs (orig <-> cf) : {n_pairs}")
+    print(f"  Unified Verified Pairs (orig <-> cf)    : {n_pairs}")
 
-    df_v1, pair_metadata = load_beaf_csv(args.csv_path, args.image_root)
-    if args.max_samples > 0:
-        df_v1         = df_v1.head(args.max_samples).copy()
-        pair_metadata = pair_metadata[:args.max_samples]
-    cf_pairs_v1  = build_counterfactual_pairs(df_v1)
-    pos_texts_v1 = df_v1["positive_caption"].astype(str).tolist()
-    neg_texts_v1 = df_v1["negative_caption"].astype(str).tolist()
-    print(f"  Axis 1-4 pairs (source_template based)  : {len(cf_pairs_v1)}")
+    pos_texts_v1 = df_raw[df_raw["object_in_image"] == True]["positive_caption"].astype(str).tolist()
+    neg_texts_v1 = df_raw[df_raw["object_in_image"] == True]["negative_caption"].astype(str).tolist()
 
     # 2. Load Model
     print("\n[Step 2] Loading OpenCLIP Model ...")
@@ -377,10 +500,36 @@ def main():
     neg_embs = neg_feat_dict["final_l2norm"]
 
     # 4. Extract Vision Features
-    print("\n[Step 4] Extracting Vision Features (Part B) ...")
+    print("\n[Step 4] Extracting Vision Features & Filtering Missing Images ...")
     vis_orig = extract_vision_features_unified(model, preprocess, df_pairs["orig_path"].tolist(), device, args.img_batch)
     vis_cf   = extract_vision_features_unified(model, preprocess, df_pairs["cf_path"].tolist(),   device, args.img_batch)
 
+    # Filter out missing images using loaded_flags (#2)
+    flags_orig = np.array(vis_orig.get("loaded_flags", [True] * n_pairs))
+    flags_cf   = np.array(vis_cf.get("loaded_flags",   [True] * n_pairs))
+    valid_mask = flags_orig & flags_cf
+
+    n_valid = int(np.sum(valid_mask))
+    n_dropped = n_pairs - n_valid
+    if n_dropped > 0:
+        print(f"  ⚠️ [Data Integrity] Dropped {n_dropped}/{n_pairs} pairs due to missing/corrupted image files!")
+        print(f"     Retained {n_valid} valid image pairs for all downstream analyses.")
+    else:
+        print(f"  ✅ [Data Integrity] 100% ({n_valid}/{n_pairs}) image pairs loaded successfully with 0 missing files.")
+
+    df_pairs = df_pairs[valid_mask].reset_index(drop=True)
+    pos_embs = pos_embs[valid_mask]
+    neg_embs = neg_embs[valid_mask]
+
+    for k in vis_orig["layers"]:
+        vis_orig["layers"][k] = vis_orig["layers"][k][valid_mask]
+        vis_cf["layers"][k]   = vis_cf["layers"][k][valid_mask]
+    vis_orig["pre_proj"]     = vis_orig["pre_proj"][valid_mask]
+    vis_cf["pre_proj"]       = vis_cf["pre_proj"][valid_mask]
+    vis_orig["final_l2norm"] = vis_orig["final_l2norm"][valid_mask]
+    vis_cf["final_l2norm"]   = vis_cf["final_l2norm"][valid_mask]
+
+    n_pairs = n_valid
     orig_embs = vis_orig["final_l2norm"]
     cf_embs   = vis_cf["final_l2norm"]
 
@@ -389,133 +538,47 @@ def main():
     all_neg_embs  = np.vstack([neg_embs, neg_embs])
     all_obj_flags = np.array([True] * n_pairs + [False] * n_pairs)
 
-    # 5. Render Part B Scatter Plots
-    print("\n[Step 5] Part B — Rendering Scatter Plots ...")
+    # 5. Render Part B Scatter Plots & Compute 2x2 Factorial ANOVA
+    print("\n[Step 5] Part B — Rendering Scatter Plots & 2x2 Factorial ANOVA ...")
     render_scatter_pos_vs_neg(all_img_embs, all_pos_embs, all_neg_embs, all_obj_flags, args.output_dir)
 
     sim_orig_pos = batch_cosine_similarity(orig_embs, pos_embs)
     sim_orig_neg = batch_cosine_similarity(orig_embs, neg_embs)
     sim_cf_pos   = batch_cosine_similarity(cf_embs,   pos_embs)
+    sim_cf_neg   = batch_cosine_similarity(cf_embs,   neg_embs)
 
+    # 2x2 Factorial ANOVA Main Effects & Interaction Effect
+    anova_df, summary_anova = compute_2x2_factorial_anova(sim_orig_pos, sim_orig_neg, sim_cf_pos, sim_cf_neg, seed=args.seed)
+    anova_df.to_csv(os.path.join(args.output_dir, "beaf_2x2_factorial_anova.csv"), index=False)
+    render_2x2_factorial_anova_plots(anova_df, summary_anova, args.output_dir)
+    render_2d_margin_state_space(sim_orig_pos, sim_orig_neg, sim_cf_pos, sim_cf_neg, args.output_dir)
+
+    print("     [2x2 Factorial ANOVA 95% Bootstrap CI]:")
+    print(f"       - Text Main Effect   : {summary_anova['text_main_effect']['mean']:6.4f} (95% CI: [{summary_anova['text_main_effect']['ci_95_low']:6.4f}, {summary_anova['text_main_effect']['ci_95_high']:6.4f}])")
+    print(f"       - Visual Main Effect : {summary_anova['visual_main_effect']['mean']:6.4f} (95% CI: [{summary_anova['visual_main_effect']['ci_95_low']:6.4f}, {summary_anova['visual_main_effect']['ci_95_high']:6.4f}])")
+    print(f"       - Interaction Effect : {summary_anova['interaction_effect']['mean']:6.4f} (95% CI: [{summary_anova['interaction_effect']['ci_95_low']:6.4f}, {summary_anova['interaction_effect']['ci_95_high']:6.4f}]) | Negative Inter. = {summary_anova['interaction_effect']['negative_interaction_pct']:.1f}%")
+
+    quad_bootstrap_ci = compute_quadrant_bootstrap_ci(sim_orig_pos, sim_orig_neg, sim_cf_pos, margin=0.01, n_bootstraps=1000, seed=args.seed)
     render_scatter_delta_quadrant(sim_orig_pos, sim_orig_neg, sim_cf_pos, args.output_dir)
     render_scatter_img_orig_vs_img_cf(sim_orig_pos, sim_cf_pos, args.output_dir)
     render_scatter_by_object_category(df_pairs, sim_orig_pos, sim_orig_neg, args.output_dir)
 
-    print("\n[Step 6] Part B — Vision Encoder Mechanism Analyses ...")
-    object_names = df_pairs["object_name"].values if "object_name" in df_pairs.columns else None
+    # [Steps 6-10 Commented out for 2x2 ANOVA focus]
+    # object_names = df_pairs["object_name"].values if "object_name" in df_pairs.columns else None
+    # vis_breakdown = compute_vision_pipeline_breakdown(vis_orig, vis_cf, args.output_dir)
+    # vis_svd       = compute_vision_svd_sweep(model, vis_orig, vis_cf, args.output_dir)
+    # vis_probe     = compute_vision_linear_probe(vis_orig, vis_cf, args.output_dir, object_names=object_names)
+    # vis_nl_probe  = compute_vision_non_linear_probe(vis_orig, vis_cf, args.output_dir, seed=args.seed, object_names=object_names)
+    # vis_dir_pres  = compute_vision_direction_preservation(vis_orig, vis_cf, args.output_dir, seed=args.seed)
+    # pos_features_v1 = extract_all_features_unified(model, tokenizer, pos_texts_v1, device, "eot", args.batch_size)
+    # neg_features_v1 = extract_all_features_unified(model, tokenizer, neg_texts_v1, device, "eot", args.batch_size)
+    # pipeline_data = compute_pipeline_and_layer_breakdown(pos_features_v1, neg_features_v1)
+    # retrieval_data = compute_image_text_retrieval_metrics(model, tokenizer, preprocess, pair_metadata, pos_texts_v1, neg_texts_v1, retrieval_cfg)
+    # img_img_df = compute_image_image_cosine(df_pairs, model, preprocess, device, args.img_batch)
+    # matrix_df  = compute_4way_matrix(df_pairs, model, tokenizer, preprocess, device, args.batch_size, args.img_batch)
 
-    vis_breakdown = compute_vision_pipeline_breakdown(vis_orig, vis_cf, args.output_dir)
-    vis_svd       = compute_vision_svd_sweep(model, vis_orig, vis_cf, args.output_dir)
-    vis_probe     = compute_vision_linear_probe(vis_orig, vis_cf, args.output_dir, object_names=object_names)
-    vis_nl_probe  = compute_vision_non_linear_probe(vis_orig, vis_cf, args.output_dir, seed=args.seed, object_names=object_names)
-    vis_dir_pres  = compute_vision_direction_preservation(vis_orig, vis_cf, args.output_dir, seed=args.seed)
-
-    # 7. Part A — Axis 1: Text <-> Text
-    print("\n" + "=" * 60)
-    print("[Step 7] Part A — Axis 1: Text <-> Text Pipeline Breakdown")
-    print("=" * 60)
-
-    pos_features_v1 = extract_all_features_unified(model, tokenizer, pos_texts_v1, device, "eot", args.batch_size)
-    neg_features_v1 = extract_all_features_unified(model, tokenizer, neg_texts_v1, device, "eot", args.batch_size)
-    pipeline_data = compute_pipeline_and_layer_breakdown(pos_features_v1, neg_features_v1)
-
-    pd.DataFrame(pipeline_data["pipeline"]).to_csv(
-        os.path.join(args.output_dir, "beaf_text_text_pipeline.csv"), index=False
-    )
-    pd.DataFrame(pipeline_data["layers"]).to_csv(
-        os.path.join(args.output_dir, "beaf_text_text_cosine.csv"), index=False
-    )
-    for row in pipeline_data["pipeline"]:
-        print(f"    [{row['step_name']:22s}] Cosine: {row['mean_cosine_sim']:.4f}  L2: {row['mean_l2_distance']:.4f}")
-    print("  Saved: beaf_text_text_pipeline.csv, beaf_text_text_cosine.csv")
-
-    final_text_cosine = float(next(
-        r["mean_cosine_sim"] for r in reversed(pipeline_data["pipeline"])
-    ))
-
-    # 8. Part A — Axis 2: Image <-> Text Retrieval
-    print("\n" + "=" * 60)
-    print("[Step 8] Part A — Axis 2: Image <-> Text Retrieval")
-    print("=" * 60)
-
-    retrieval_cfg = RetrievalConfig(
-        image_root=args.image_root,
-        output_dir=args.output_dir,
-        device=device,
-        batch_size=args.batch_size,
-        image_batch_size=args.img_batch,
-    )
-    retrieval_data = compute_image_text_retrieval_metrics(
-        model, tokenizer, preprocess,
-        pair_metadata, pos_texts_v1, neg_texts_v1,
-        retrieval_cfg,
-    )
-
-    summary_axis2: Dict[str, Any] = {}
-    if retrieval_data.get("results_df") is not None:
-        retrieval_data["results_df"].to_csv(
-            os.path.join(args.output_dir, "beaf_image_text_similarity.csv"), index=False
-        )
-        summary_axis2 = retrieval_data["summary"]
-        with open(os.path.join(args.output_dir, "beaf_image_text_summary.json"), "w", encoding="utf-8") as f:
-            json.dump(summary_axis2, f, indent=2)
-        print(f"  Pearson r: {summary_axis2.get('pearson_r', 'N/A'):.4f}")
-        print("  Saved: beaf_image_text_similarity.csv, beaf_image_text_summary.json")
-    else:
-        print("  [Warning] No images processed for Axis 2. Check image_root / file paths.")
-
-    # 9. Part A — Axis 3: Image <-> Image Cosine
-    print("\n" + "=" * 60)
-    print("[Step 9] Part A — Axis 3: Image <-> Image Visual Sensitivity")
-    print("=" * 60)
-
-    img_img_df = compute_image_image_cosine(cf_pairs_v1, model, preprocess, device, args.img_batch)
-    valid_img  = img_img_df.dropna(subset=["sim_img_img"])
-    summary_axis3: Dict[str, Any] = {}
-
-    if len(valid_img) > 0:
-        mean_sim = valid_img["sim_img_img"].mean()
-        print(f"  Pairs computed       : {len(valid_img)} / {len(cf_pairs_v1)}")
-        print(f"  Mean sim(orig, cf)   : {mean_sim:.4f}")
-        img_img_df.to_csv(os.path.join(args.output_dir, "beaf_image_image_cosine.csv"), index=False)
-        render_image_image_histogram(img_img_df, args.output_dir)
-        summary_axis3 = {
-            "n_pairs":  int(len(valid_img)),
-            "mean_sim": round(float(mean_sim), 6),
-            "std_sim":  round(float(valid_img["sim_img_img"].std()), 6),
-        }
-    else:
-        print("  [Warning] No valid image pairs for Axis 3.")
-
-    # 10. Part A — Axis 4: 4-Way Cross Similarity
-    print("\n" + "=" * 60)
-    print("[Step 10] Part A — Axis 4: 4-Way Cross Similarity Matrix")
-    print("=" * 60)
-
-    matrix_df  = compute_4way_matrix(cf_pairs_v1, model, tokenizer, preprocess, device, args.batch_size, args.img_batch)
-    valid_4way = matrix_df.dropna(subset=["full_correct"])
-    summary_axis4: Dict[str, Any] = {}
-
-    if len(valid_4way) > 0:
-        fcr = float(pd.Series(valid_4way["full_correct"]).mean()) * 100
-        print(f"  Full Correct Rate: {fcr:.1f}%")
-        matrix_df.to_csv(os.path.join(args.output_dir, "beaf_4way_matrix.csv"), index=False)
-        render_4way_heatmap(matrix_df, args.output_dir)
-        render_text_vs_visual_scatter(matrix_df, args.output_dir)
-        render_full_correct_by_object(matrix_df, args.output_dir)
-        summary_axis4 = {
-            "n_pairs":               int(len(valid_4way)),
-            "full_correct_rate_pct": round(fcr, 2),
-            "mean_A_sim_orig_pos":   round(float(valid_4way["A_sim_orig_pos"].mean()), 6),
-            "mean_B_sim_orig_neg":   round(float(valid_4way["B_sim_orig_neg"].mean()), 6),
-            "mean_C_sim_cf_pos":     round(float(valid_4way["C_sim_cf_pos"].mean()), 6),
-            "mean_D_sim_cf_neg":     round(float(valid_4way["D_sim_cf_neg"].mean()), 6),
-        }
-    else:
-        print("  [Warning] No valid pairs for Axis 4.")
-
-    # 11. Write Comprehensive Summary Report
-    print("\n[Step 11] Writing Comprehensive Summary Report ...")
+    # 11. Write Comprehensive Summary Report (2x2 Factorial ANOVA Focus)
+    print("\n[Step 11] Writing 2x2 Factorial ANOVA Summary Report ...")
     r_val, _   = stats.pearsonr(batch_cosine_similarity(all_img_embs, all_pos_embs),
                                 batch_cosine_similarity(all_img_embs, all_neg_embs))
     rho_val, _ = stats.spearmanr(batch_cosine_similarity(all_img_embs, all_pos_embs),
@@ -531,24 +594,8 @@ def main():
             "pearson_r":    round(float(r_val), 6),
             "spearman_rho": round(float(rho_val), 6),
         },
-        "part_b_delta_delta_quadrants": {
-            "q1_both_sensitive_pct":    round(float(np.sum((sim_orig_pos - sim_orig_neg > 0) & (sim_orig_pos - sim_cf_pos > 0)) / n_pairs * 100), 2),
-            "q2_visual_only_pct":       round(float(np.sum((sim_orig_pos - sim_orig_neg <= 0) & (sim_orig_pos - sim_cf_pos > 0)) / n_pairs * 100), 2),
-            "q3_neither_pct":           round(float(np.sum((sim_orig_pos - sim_orig_neg <= 0) & (sim_orig_pos - sim_cf_pos <= 0)) / n_pairs * 100), 2),
-            "q4_text_only_failure_pct": round(float(np.sum((sim_orig_pos - sim_orig_neg > 0) & (sim_orig_pos - sim_cf_pos <= 0)) / n_pairs * 100), 2),
-        },
-        "part_b_vision_direction_preservation": vis_dir_pres,
-        "part_b_vision_linear_probe":           vis_probe,
-        "axis1_text_text": {
-            "final_l2norm_cosine_sim": round(final_text_cosine, 6),
-            "pipeline_steps": [
-                {"step": r["step_name"], "mean_cosine_sim": round(r["mean_cosine_sim"], 6)}
-                for r in pipeline_data["pipeline"]
-            ],
-        },
-        "axis2_image_text":  summary_axis2 if summary_axis2 else None,
-        "axis3_image_image": summary_axis3 if summary_axis3 else None,
-        "axis4_4way":        summary_axis4 if summary_axis4 else None,
+        "part_b_delta_delta_quadrants": quad_bootstrap_ci,
+        "part_b_2x2_factorial_anova":  summary_anova,
     }
 
     summary_path = os.path.join(args.output_dir, "beaf_comprehensive_summary_report.json")
@@ -556,8 +603,8 @@ def main():
         json.dump(comprehensive_summary, f, indent=2, ensure_ascii=False)
 
     print(f"\n{'='*60}")
-    print(f"  BEAF Unified Analysis Complete!")
-    print(f"  All artifacts saved to: {args.output_dir}")
+    print(f"  BEAF 2x2 Factorial ANOVA Fast Run Complete!")
+    print(f"  Results saved to: {args.output_dir}")
     print(f"{'='*60}")
 
 
