@@ -364,15 +364,27 @@ def compute_vision_svd_sweep(
 def compute_vision_linear_probe(
     vis_orig: Dict[str, Any],
     vis_cf: Dict[str, Any],
-    output_dir: str
+    output_dir: str,
+    object_names: Optional[np.ndarray] = None,
 ) -> Dict[str, Any]:
-    """Train 5-fold cross-validated Linear Probe on Vision Transformer features to classify object_in_image."""
+    """Train 5-fold cross-validated Linear Probe on Vision Transformer features to classify object_in_image.
+    If object_names is provided, uses GroupKFold to evaluate on Unseen Objects (Zero-Shot Generalization).
+    """
     n_orig = len(vis_orig["pre_proj"])
     n_cf   = len(vis_cf["pre_proj"])
     y = np.array([1] * n_orig + [0] * n_cf)
 
+    if object_names is not None and len(object_names) == n_orig:
+        groups = np.concatenate([object_names, object_names])
+        gkf = GroupKFold(n_splits=min(5, len(np.unique(groups))))
+        cv_splits = list(gkf.split(X=np.zeros(len(y)), y=y, groups=groups))
+        print(f"\n  🔍 [Debug: Linear Probe - GroupKFold Enabled] Unseen Objects Split: {len(np.unique(groups))} unique object_names.")
+    else:
+        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        cv_splits = list(skf.split(X=np.zeros(len(y)), y=y))
+        print(f"\n  🔍 [Debug: Linear Probe - StratifiedKFold] Samples: {n_orig} orig + {n_cf} cf = {len(y)} total")
+
     probe_results = {}
-    print(f"\n  🔍 [Debug: Linear Probe] Samples: {n_orig} orig + {n_cf} cf = {len(y)} total")
 
     for l_name in list(vis_orig["layers"].keys()) + ["Pre-Projection", "+Final L2Norm"]:
         if l_name in vis_orig["layers"]:
@@ -389,8 +401,7 @@ def compute_vision_linear_probe(
         X_norm = l2_normalize(X)
 
         clf = LogisticRegression(max_iter=1000, random_state=42)
-        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-        scores = cross_val_score(clf, X_norm, y, cv=cv, scoring="accuracy")
+        scores = cross_val_score(clf, X_norm, y, cv=cv_splits, scoring="accuracy")
 
         mean_acc = float(np.mean(scores) * 100)
         std_acc  = float(np.std(scores) * 100)
@@ -479,20 +490,69 @@ def compute_vision_direction_preservation(
     return report
 
 
+class LowRankBilinearPyTorch(nn.Module):
+    def __init__(self, d_in: int, rank: int):
+        super().__init__()
+        self.U = nn.Parameter(torch.randn(d_in, rank) * (1.0 / np.sqrt(d_in)))
+        self.V = nn.Parameter(torch.randn(d_in, rank) * (1.0 / np.sqrt(d_in)))
+        self.w_lin = nn.Parameter(torch.zeros(d_in))
+        self.bias = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        z = torch.matmul(x, self.U)
+        h = torch.matmul(x, self.V)
+        quad = torch.sum(z * h, dim=-1)
+        lin = torch.matmul(x, self.w_lin)
+        return quad + lin + self.bias.squeeze(-1)
+
+
+def train_eval_low_rank_bilinear(
+    X_train: np.ndarray, y_train: np.ndarray,
+    X_test: np.ndarray, y_test: np.ndarray,
+    rank: int, seed: int = 42, epochs: int = 300, lr: float = 1e-2
+) -> float:
+    """Train PyTorch real Low-Rank Bilinear Probe: f(x) = x^T U V^T x + w_0^T x + b."""
+    torch.manual_seed(seed)
+    d_in = X_train.shape[1]
+    model = LowRankBilinearPyTorch(d_in, rank)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    criterion = nn.BCEWithLogitsLoss()
+
+    X_tr = torch.tensor(X_train, dtype=torch.float32)
+    y_tr = torch.tensor(y_train, dtype=torch.float32)
+    X_te = torch.tensor(X_test, dtype=torch.float32)
+    y_te = torch.tensor(y_test, dtype=torch.float32)
+
+    model.train()
+    for _ in range(epochs):
+        optimizer.zero_grad()
+        logits = model(X_tr)
+        loss = criterion(logits, y_tr)
+        loss.backward()
+        optimizer.step()
+
+    model.eval()
+    with torch.no_grad():
+        preds = (torch.sigmoid(model(X_te)) >= 0.5).float()
+        acc = float((preds == y_te).float().mean().item() * 100)
+    return acc
+
+
 def compute_vision_non_linear_probe(
     vis_orig: Dict[str, Any],
     vis_cf: Dict[str, Any],
     output_dir: str,
-    seed: int = 42
+    seed: int = 42,
+    object_names: Optional[np.ndarray] = None,
 ) -> Dict[str, Any]:
     """
-    Train 5-fold cross-validated Non-Linear & Polynomial Probes on Visual Edit Difference Vectors.
-    Classifies True Object Removal Shift Vector (class 1) vs Control Random Shift Vector (class 0).
-    Sweeps:
-    1. Polynomial Kernel SVM (degree = 1, 2, 3, 4 with coef0=1.0)
-    2. RBF Kernel SVM (gamma = 1e-4, 1e-3, 1e-2, 1e-1, 1.0)
-    3. MLP Classifier (hidden_dim = 8, 16, 32, 64, 128, 256, 512)
-    4. Low-Rank TruncatedSVD + LogisticRegression (rank = 1, 2, 4, 8, 16, 32, 64, 128, 256, 512)
+    Train 5-fold cross-validated 5-Stage Step-by-Step Probes on Visual Edit Difference Vectors.
+    Follows the 5-Stage Scientific Research Progression:
+    1. Linear Probe Baseline (C sweep)
+    2. Polynomial Kernel Probe (Degree 2, 3)
+    3. Real Low-Rank Bilinear Classifier f(x) = x^T U V^T x + w_0^T x + b (rank 4, 8, 16, 32, 64)
+    4. RBF Kernel SVM Probe (Gamma 1e-4..1.0)
+    5. MLP Capacity Probe (Hidden 8, 16, 32, 64)
     """
     n_orig = len(vis_orig["pre_proj"])
     rng = np.random.default_rng(seed=seed)
@@ -501,13 +561,14 @@ def compute_vision_non_linear_probe(
     stages = ["Pre-Projection", "+Final L2Norm"]
 
     report = {
+        "linear_tuned": {},
         "polynomial_kernel": {},
+        "low_rank_bilinear": {},
         "rbf_kernel": {},
-        "mlp_capacity": {},
-        "low_rank_bilinear": {}
+        "mlp_capacity": {}
     }
 
-    print(f"\n  🔍 [Debug: Non-Linear Difference Probe] Pairs: {n_orig} real + {n_orig} ctrl = {n_orig * 2} vectors")
+    print(f"\n  🔍 [Debug: 5-Stage Step-by-Step Difference Probe] Pairs: {n_orig} real + {n_orig} ctrl = {n_orig * 2} vectors")
 
     for stage_name in stages:
         print(f"\n  === Stage: {stage_name} ===")
@@ -527,130 +588,153 @@ def compute_vision_non_linear_probe(
 
         X_diff = np.vstack([l2_normalize(diff_real), l2_normalize(diff_ctrl)])
         y_diff = np.array([1] * n_orig + [0] * n_orig)
-        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
 
-        # 1. Polynomial Kernel Sweep (Degree 1 to 4, with coef0=1.0)
-        print("     [1/4] Polynomial Kernel Sweep (Degree 1..4):")
-        poly_results = {}
-        for deg in [1, 2, 3, 4]:
-            clf = SVC(kernel="poly", degree=deg, coef0=1.0, C=1.0, random_state=seed)
-            scores = cross_val_score(clf, X_diff, y_diff, cv=cv, scoring="accuracy")
+        if object_names is not None and len(object_names) == n_orig:
+            groups = np.concatenate([object_names, object_names[rand_idx]])
+            gkf = GroupKFold(n_splits=min(5, len(np.unique(groups))))
+            cv_splits = list(gkf.split(X_diff, y_diff, groups=groups))
+            print(f"     🔍 [GroupKFold Enabled] Non-linear Probe grouped by {len(np.unique(groups))} unique object_names.")
+        else:
+            skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
+            cv_splits = list(skf.split(X_diff, y_diff))
+
+        # Stage 1: Linear Probe Baseline (C Sweep)
+        print("     [Stage 1/5] Linear Baseline (C Sweep 1e-3..100):")
+        lin_results = {}
+        for c in [1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0]:
+            clf = LogisticRegression(C=c, max_iter=1000, random_state=seed)
+            scores = cross_val_score(clf, X_diff, y_diff, cv=cv_splits, scoring="accuracy")
             mean_acc = float(np.mean(scores) * 100)
             std_acc  = float(np.std(scores) * 100)
-            poly_results[f"degree_{deg}"] = {
-                "mean_acc": mean_acc,
-                "std_acc": std_acc
-            }
+            lin_results[f"C_{c}"] = {"mean_acc": mean_acc, "std_acc": std_acc}
+            print(f"       * C = {c:6.3f}: {mean_acc:6.2f}% ± {std_acc:4.2f}%")
+        report["linear_tuned"][stage_name] = lin_results
+
+        # Stage 2: Polynomial Kernel Probe (Degree 2, 3)
+        print("     [Stage 2/5] Polynomial Kernel (Degree 2, 3):")
+        poly_results = {}
+        for deg in [2, 3]:
+            clf = SVC(kernel="poly", degree=deg, coef0=1.0, C=1.0, random_state=seed)
+            scores = cross_val_score(clf, X_diff, y_diff, cv=cv_splits, scoring="accuracy")
+            mean_acc = float(np.mean(scores) * 100)
+            std_acc  = float(np.std(scores) * 100)
+            poly_results[f"degree_{deg}"] = {"mean_acc": mean_acc, "std_acc": std_acc}
             print(f"       * Degree {deg}: {mean_acc:6.2f}% ± {std_acc:4.2f}%")
         report["polynomial_kernel"][stage_name] = poly_results
 
-        # 2. RBF Kernel Sweep (Gamma 1e-4 to 1.0)
-        print("     [2/4] RBF Kernel Sweep (Gamma 1e-4..1.0):")
+        # Stage 3: Real Low-Rank Bilinear Probe: f(x) = x^T U V^T x + w_0^T x + b
+        print("     [Stage 3/5] Real Low-Rank Bilinear f(x) = x^T U V^T x + w_0^T x + b (Rank 4, 8, 16, 32, 64):")
+        bilinear_results = {}
+        r_list = [4, 8, 16, 32, 64]
+        for r in r_list:
+            fold_accs = []
+            for train_idx, test_idx in cv_splits:
+                acc = train_eval_low_rank_bilinear(
+                    X_diff[train_idx], y_diff[train_idx],
+                    X_diff[test_idx], y_diff[test_idx],
+                    rank=r, seed=seed
+                )
+                fold_accs.append(acc)
+            mean_acc = float(np.mean(fold_accs))
+            std_acc  = float(np.std(fold_accs))
+            bilinear_results[f"rank_{r}"] = {"mean_acc": mean_acc, "std_acc": std_acc}
+            print(f"       * Bilinear Rank {r:2d}: {mean_acc:6.2f}% ± {std_acc:4.2f}%")
+        report["low_rank_bilinear"][stage_name] = bilinear_results
+
+        # Stage 4: RBF Kernel SVM Probe
+        print("     [Stage 4/5] RBF Kernel SVM Probe (Gamma 1e-4..1.0):")
         rbf_results = {}
         for g in [1e-4, 1e-3, 1e-2, 1e-1, 1.0]:
             clf = SVC(kernel="rbf", gamma=g, C=1.0, random_state=seed)
-            scores = cross_val_score(clf, X_diff, y_diff, cv=cv, scoring="accuracy")
+            scores = cross_val_score(clf, X_diff, y_diff, cv=cv_splits, scoring="accuracy")
             mean_acc = float(np.mean(scores) * 100)
             std_acc  = float(np.std(scores) * 100)
-            rbf_results[f"gamma_{g}"] = {
-                "mean_acc": mean_acc,
-                "std_acc": std_acc
-            }
-            print(f"       * Gamma {g}: {mean_acc:6.2f}% ± {std_acc:4.2f}%")
+            rbf_results[f"gamma_{g}"] = {"mean_acc": mean_acc, "std_acc": std_acc}
+            print(f"       * Gamma {g:6.4f}: {mean_acc:6.2f}% ± {std_acc:4.2f}%")
         report["rbf_kernel"][stage_name] = rbf_results
 
-        # 3. MLP Capacity Sweep (Hidden Dim 8 to 512)
-        print("     [3/4] MLP Capacity Sweep (Hidden Dim 8..512):")
+        # Stage 5: MLP Capacity Probe (Hidden 8, 16, 32, 64)
+        print("     [Stage 5/5] MLP Capacity Probe (Hidden 8, 16, 32, 64):")
         mlp_results = {}
-        for h in [8, 16, 32, 64, 128, 256, 512]:
-            clf = MLPClassifier(hidden_layer_sizes=(h,), activation="relu", max_iter=500, random_state=seed)
-            scores = cross_val_score(clf, X_diff, y_diff, cv=cv, scoring="accuracy")
+        for h in [8, 16, 32, 64]:
+            clf = MLPClassifier(hidden_layer_sizes=(h,), activation="relu", max_iter=1000, random_state=seed)
+            scores = cross_val_score(clf, X_diff, y_diff, cv=cv_splits, scoring="accuracy")
             mean_acc = float(np.mean(scores) * 100)
             std_acc  = float(np.std(scores) * 100)
-            mlp_results[f"hidden_{h}"] = {
-                "mean_acc": mean_acc,
-                "std_acc": std_acc
-            }
-            print(f"       * Hidden {h:3d}: {mean_acc:6.2f}% ± {std_acc:4.2f}%")
+            mlp_results[f"hidden_{h}"] = {"mean_acc": mean_acc, "std_acc": std_acc}
+            print(f"       * Hidden {h:2d}: {mean_acc:6.2f}% ± {std_acc:4.2f}%")
         report["mlp_capacity"][stage_name] = mlp_results
-
-        # 4. Low-Rank Subspace Sweep
-        print("     [4/4] Low-Rank Subspace Sweep (Rank 1..512):")
-        rank_results = {}
-        max_r = min(X_diff.shape[1], X_diff.shape[0])
-        for r in [1, 2, 4, 8, 16, 32, 64, 128, 256, min(512, max_r)]:
-            if r > max_r or r < 1:
-                continue
-            svd = TruncatedSVD(n_components=r, random_state=seed)
-            X_red = svd.fit_transform(X_diff)
-            clf = LogisticRegression(max_iter=1000, random_state=seed)
-            scores = cross_val_score(clf, X_red, y_diff, cv=cv, scoring="accuracy")
-            mean_acc = float(np.mean(scores) * 100)
-            std_acc  = float(np.std(scores) * 100)
-            rank_results[f"rank_{r}"] = {
-                "mean_acc": mean_acc,
-                "std_acc": std_acc
-            }
-            print(f"       * Rank {r:3d}: {mean_acc:6.2f}% ± {std_acc:4.2f}%")
-        report["low_rank_bilinear"][stage_name] = rank_results
 
     # Save JSON
     json_path = os.path.join(output_dir, "beaf_vision_non_linear_probe.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
 
-    # Plot
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    # Plot 2x3 Subplots for 5 Stages
+    fig, axes = plt.subplots(2, 3, figsize=(17, 9.5))
 
-    # Poly plot
+    # Stage 1: Linear C Sweep
     ax = axes[0, 0]
     for stage_name in stages:
-        degs = [1, 2, 3, 4]
-        accs = [report["polynomial_kernel"][stage_name][f"degree_{d}"]["mean_acc"] for d in degs]
-        ax.plot(degs, accs, marker="o", label=stage_name)
-    ax.set_title("Polynomial Kernel Interaction Order Sweep", fontweight="bold")
-    ax.set_xlabel("Polynomial Degree (Interaction Order)")
+        cs = [1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0]
+        accs = [report["linear_tuned"][stage_name][f"C_{c}"]["mean_acc"] for c in cs]
+        ax.plot([str(c) for c in cs], accs, marker="o", lw=2, label=stage_name)
+    ax.set_title("1. Linear Baseline (C Sweep)", fontweight="bold")
+    ax.set_xlabel("Logistic Regression C Parameter")
     ax.set_ylabel("Accuracy (%)")
-    ax.set_xticks([1, 2, 3, 4])
-    ax.grid(True, linestyle="--", alpha=0.6)
+    ax.grid(True, ls="--", alpha=0.6)
     ax.legend()
 
-    # RBF plot
+    # Stage 2: Poly Kernel (Degree 2, 3)
     ax = axes[0, 1]
+    for stage_name in stages:
+        degs = [2, 3]
+        accs = [report["polynomial_kernel"][stage_name][f"degree_{d}"]["mean_acc"] for d in degs]
+        ax.plot([str(d) for d in degs], accs, marker="s", lw=2, label=stage_name)
+    ax.set_title("2. Quadratic Polynomial (Degree 2, 3)", fontweight="bold")
+    ax.set_xlabel("Polynomial Degree")
+    ax.set_ylabel("Accuracy (%)")
+    ax.grid(True, ls="--", alpha=0.6)
+    ax.legend()
+
+    # Stage 3: Real Low-Rank Bilinear
+    ax = axes[0, 2]
+    for stage_name in stages:
+        ranks = [4, 8, 16, 32, 64]
+        accs = [report["low_rank_bilinear"][stage_name][f"rank_{r}"]["mean_acc"] for r in ranks]
+        ax.plot([str(r) for r in ranks], accs, marker="d", color="crimson" if stage_name=="+Final L2Norm" else "navy", lw=2, label=stage_name)
+    ax.set_title("3. Low-Rank Bilinear (W = U V^T)", fontweight="bold")
+    ax.set_xlabel("Bilinear Subspace Rank r")
+    ax.set_ylabel("Accuracy (%)")
+    ax.grid(True, ls="--", alpha=0.6)
+    ax.legend()
+
+    # Stage 4: RBF Kernel
+    ax = axes[1, 0]
     for stage_name in stages:
         gammas = [1e-4, 1e-3, 1e-2, 1e-1, 1.0]
         accs = [report["rbf_kernel"][stage_name][f"gamma_{g}"]["mean_acc"] for g in gammas]
-        ax.plot([str(g) for g in gammas], accs, marker="s", label=stage_name)
-    ax.set_title("RBF Kernel Non-Linearity Curvature Sweep", fontweight="bold")
-    ax.set_xlabel("RBF Gamma (Boundary Curvature)")
+        ax.plot([str(g) for g in gammas], accs, marker="v", lw=2, label=stage_name)
+    ax.set_title("4. RBF Kernel SVM Probe", fontweight="bold")
+    ax.set_xlabel("RBF Gamma Parameter")
     ax.set_ylabel("Accuracy (%)")
-    ax.grid(True, linestyle="--", alpha=0.6)
+    ax.grid(True, ls="--", alpha=0.6)
     ax.legend()
 
-    # MLP plot
-    ax = axes[1, 0]
-    for stage_name in stages:
-        hdims = [8, 16, 32, 64, 128, 256, 512]
-        accs = [report["mlp_capacity"][stage_name][f"hidden_{h}"]["mean_acc"] for h in hdims]
-        ax.plot([str(h) for h in hdims], accs, marker="^", label=stage_name)
-    ax.set_title("MLP Capacity Sweep (Hidden Dim)", fontweight="bold")
-    ax.set_xlabel("Hidden Layer Units")
-    ax.set_ylabel("Accuracy (%)")
-    ax.grid(True, linestyle="--", alpha=0.6)
-    ax.legend()
-
-    # Low-Rank plot
+    # Stage 5: MLP Capacity
     ax = axes[1, 1]
     for stage_name in stages:
-        ranks = list(report["low_rank_bilinear"][stage_name].keys())
-        r_vals = [int(k.replace("rank_", "")) for k in ranks]
-        accs = [report["low_rank_bilinear"][stage_name][k]["mean_acc"] for k in ranks]
-        ax.plot([str(r) for r in r_vals], accs, marker="d", label=stage_name)
-    ax.set_title("Low-Rank Subspace Dimension Sweep", fontweight="bold")
-    ax.set_xlabel("Subspace Rank (Truncated SVD Dim)")
+        hdims = [8, 16, 32, 64]
+        accs = [report["mlp_capacity"][stage_name][f"hidden_{h}"]["mean_acc"] for h in hdims]
+        ax.plot([str(h) for h in hdims], accs, marker="^", lw=2, label=stage_name)
+    ax.set_title("5. MLP Capacity Probe (Hidden Dim)", fontweight="bold")
+    ax.set_xlabel("Hidden Layer Units (h)")
     ax.set_ylabel("Accuracy (%)")
-    ax.grid(True, linestyle="--", alpha=0.6)
+    ax.grid(True, ls="--", alpha=0.6)
     ax.legend()
+
+    # Hide 6th empty subplot
+    axes[1, 2].axis("off")
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "beaf_vision_non_linear_probe.png"), dpi=300, bbox_inches="tight")
