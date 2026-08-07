@@ -33,6 +33,7 @@ from analysis.beaf.object_experiment import (
     get_balanced_beaf_object_df,
     run_single_object_analysis,
     run_leave_one_object_out_text_probe_experiment,
+    run_single_object_train_val_experiment,
 )
 
 
@@ -46,18 +47,23 @@ def main():
     parser.add_argument("--target_object", type=str, default="all", help="Single object name or 'all'")
     parser.add_argument("--min_pairs", type=int, default=2, help="Minimum 1:1 image pairs for object inclusion")
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for feature extraction")
+    parser.add_argument("--mode", type=str, default="generalization", choices=["generalization", "train_val"], help="Experiment mode")
+    parser.add_argument("--train_ratio", type=float, default=0.7, help="Train ratio for train_val split mode")
     parser.add_argument("--output_dir", type=str, default="logs/evaluation/beaf_object_generalization/openai_vit_b32", help="Output directory")
 
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
 
     print("======================================================================")
-    print("🚀 BEAF Single-Object & Multi-Object Generalization Experiment")
+    print(f"🚀 BEAF Single-Object Experiment (Mode: {args.mode})")
     print(f" Dataset CSV      : {args.csv_path}")
     print(f" Template JSON    : {args.template_json}")
     print(f" Model / Pretrained: {args.model} ({args.pretrained})")
     print(f" Target Object    : {args.target_object}")
     print(f" Min Pairs        : {args.min_pairs}")
+    if args.mode == "train_val":
+        print(f" Train Ratio      : {args.train_ratio}")
+
     print(f" Output Directory : {args.output_dir}")
     print("======================================================================")
 
@@ -105,8 +111,84 @@ def main():
     print(f"Found {len(unique_objects)} total objects in BEAF dataset. Evaluating {len(target_objs)} target objects...")
 
     # 5. Iterative Single-Object Experiments
+    if args.mode == "train_val":
+        tv_results: List[Dict[str, Any]] = []
+        for obj in target_objs:
+            df_obj = get_balanced_beaf_object_df(df, obj)
+            if df_obj.empty or (len(df_obj) // 2) < args.min_pairs:
+                continue
+
+            neg_prompts, pos_prompts, neg_groups, pos_groups = instantiate_templates(obj, template_data)
+            res = run_single_object_train_val_experiment(
+                df_balanced=df_obj,
+                object_name=obj,
+                neg_prompts=neg_prompts,
+                pos_prompts=pos_prompts,
+                neg_groups=neg_groups,
+                pos_groups=pos_groups,
+                model=model,
+                preprocess=preprocess,
+                tokenizer=tokenizer,
+                device=device,
+                batch_size=args.batch_size,
+                train_ratio=args.train_ratio,
+            )
+
+            if "error" not in res:
+                tv_results.append(res)
+                print(f"\n  [{obj:15s}] Val Img Pairs:{res['n_val_image_pairs']:2d} | Val Text Probe Acc:{res['val_text_probe_acc']*100:.1f}% | Val Vision Probe Acc:{res['val_vision_probe_acc']*100:.1f}% | Val 4-Way Sign Consistency Acc:{res['val_joint_sign_consistency_acc']*100:.1f}%")
+                print(f"    - Q1 (Present Img, Pos Text) Mean Score S(v,t): {res['mean_score_Q1_pos_v_pos_t']:+.4f} (High >0 Acc: {res['acc_Q1_pos_v_pos_t_is_high']*100:.1f}%)")
+                print(f"    - Q2 (Absent Img, Neg Text)  Mean Score S(v,t): {res['mean_score_Q2_neg_v_neg_t']:+.4f} (High >0 Acc: {res['acc_Q2_neg_v_neg_t_is_high']*100:.1f}%)")
+                print(f"    - Q3 (Present Img, Neg Text) Mean Score S(v,t): {res['mean_score_Q3_pos_v_neg_t']:+.4f} (Low  <0 Acc: {res['acc_Q3_pos_v_neg_t_is_low']*100:.1f}%)")
+                print(f"    - Q4 (Absent Img, Pos Text)  Mean Score S(v,t): {res['mean_score_Q4_neg_v_pos_t']:+.4f} (Low  <0 Acc: {res['acc_Q4_neg_v_pos_t_is_low']*100:.1f}%)")
+
+        if not tv_results:
+            print("❌ No valid objects found for Train/Val analysis.")
+            return
+
+        tv_df = pd.DataFrame(tv_results)
+        csv_out = os.path.join(args.output_dir, "train_val_per_object_results.csv")
+        tv_df.to_csv(csv_out, index=False)
+        print(f"\nSaved Train/Val per-object results to {csv_out}")
+
+        tv_summary = {
+            "model": args.model,
+            "pretrained": args.pretrained,
+            "train_ratio": args.train_ratio,
+            "n_evaluated_objects": int(len(tv_df)),
+            "macro_val_text_probe_acc_mean": float(tv_df["val_text_probe_acc"].mean()),
+            "macro_val_text_probe_acc_std": float(tv_df["val_text_probe_acc"].std()),
+            "macro_val_vision_probe_acc_mean": float(tv_df["val_vision_probe_acc"].mean()),
+            "macro_val_vision_probe_acc_std": float(tv_df["val_vision_probe_acc"].std()),
+            "macro_val_joint_sign_consistency_acc_mean": float(tv_df["val_joint_sign_consistency_acc"].mean()),
+            "macro_val_joint_sign_consistency_acc_std": float(tv_df["val_joint_sign_consistency_acc"].std()),
+            "macro_mean_Q1_score": float(tv_df["mean_score_Q1_pos_v_pos_t"].mean()),
+            "macro_mean_Q2_score": float(tv_df["mean_score_Q2_neg_v_neg_t"].mean()),
+            "macro_mean_Q3_score": float(tv_df["mean_score_Q3_pos_v_neg_t"].mean()),
+            "macro_mean_Q4_score": float(tv_df["mean_score_Q4_neg_v_pos_t"].mean()),
+        }
+
+        json_out = os.path.join(args.output_dir, "train_val_summary.json")
+        with open(json_out, "w", encoding="utf-8") as f:
+            json.dump(tv_summary, f, indent=2)
+
+        print("\n======================================================================")
+        print("📊 DEDICATED SINGLE-OBJECT TRAIN/VAL EXPERIMENT SUMMARY")
+        print(f" Evaluated Objects                   : {tv_summary['n_evaluated_objects']}")
+        print(f" Val Text-Only Probe Acc             : {tv_summary['macro_val_text_probe_acc_mean']*100:.2f}% ± {tv_summary['macro_val_text_probe_acc_std']*100:.2f}%")
+        print(f" Val Vision-Only Probe Acc           : {tv_summary['macro_val_vision_probe_acc_mean']*100:.2f}% ± {tv_summary['macro_val_vision_probe_acc_std']*100:.2f}%")
+        print(f" Val 4-Way Sign-Consistency Joint Acc: {tv_summary['macro_val_joint_sign_consistency_acc_mean']*100:.2f}% ± {tv_summary['macro_val_joint_sign_consistency_acc_std']*100:.2f}%")
+        print(" Quadrant Mean Scores S(v, t) = f_V(v) * f_T(t):")
+        print(f"  - Q1 (Present Img, Pos Text) Target >0 : {tv_summary['macro_mean_Q1_score']:+.4f}")
+        print(f"  - Q2 (Absent Img, Neg Text)  Target >0 : {tv_summary['macro_mean_Q2_score']:+.4f}")
+        print(f"  - Q3 (Present Img, Neg Text) Target <0 : {tv_summary['macro_mean_Q3_score']:+.4f}")
+        print(f"  - Q4 (Absent Img, Pos Text)  Target <0 : {tv_summary['macro_mean_Q4_score']:+.4f}")
+        print("======================================================================")
+        return
+
     object_results: List[Dict[str, Any]] = []
     object_t_embs: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+
 
     for obj in target_objs:
         df_obj = get_balanced_beaf_object_df(df, obj)

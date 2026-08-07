@@ -18,7 +18,137 @@ from PIL import Image
 from typing import List, Dict, Tuple, Any, Optional
 from tqdm import tqdm
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
+
+
+def run_single_object_train_val_experiment(
+    df_balanced: pd.DataFrame,
+    object_name: str,
+    neg_prompts: List[str],
+    pos_prompts: List[str],
+    neg_groups: List[str],
+    pos_groups: List[str],
+    model: torch.nn.Module,
+    preprocess: callable,
+    tokenizer: callable,
+    device: str = "cuda",
+    batch_size: int = 64,
+    train_ratio: float = 0.7,
+    random_state: int = 42
+) -> Dict[str, Any]:
+    """Dedicated Single-Object Experiment with 70:30 Train/Val Split.
+    
+    Evaluates:
+    1. Text-Only Probing (Train on 70% text templates -> Val on 30% text templates)
+    2. Vision-Only Probing (Train on 70% Present/Absent images -> Val on 30% images)
+    3. 4-Way Multimodal Joint Scoring S(v, t) = f_V(v) * f_T(t) on Val split:
+       - Matched High Scores: S(v_pos, t_pos) > 0 and S(v_neg, t_neg) > 0
+       - Mismatched Low Scores: S(v_pos, t_neg) < 0 and S(v_neg, t_pos) < 0
+    """
+    model.eval()
+
+    # 1. Feature Extraction
+    with torch.no_grad():
+        pos_tokens = tokenizer(pos_prompts).to(device)
+        neg_tokens = tokenizer(neg_prompts).to(device)
+        pos_t_emb = model.encode_text(pos_tokens, normalize=True).cpu().numpy()
+        neg_t_emb = model.encode_text(neg_tokens, normalize=True).cpu().numpy()
+
+    pos_img_df = df_balanced[df_balanced["object_in_image"] == True]
+    neg_img_df = df_balanced[df_balanced["object_in_image"] == False]
+
+    def _extract_img_embeds(paths: List[str]) -> np.ndarray:
+        embeds = []
+        with torch.no_grad():
+            for i in range(0, len(paths), batch_size):
+                batch_paths = paths[i : i + batch_size]
+                tensors = [preprocess(Image.open(p).convert("RGB")) for p in batch_paths if os.path.exists(p)]
+                if tensors:
+                    b_tens = torch.stack(tensors).to(device)
+                    v_emb = model.encode_image(b_tens, normalize=True).cpu().numpy()
+                    embeds.append(v_emb)
+        return np.vstack(embeds) if embeds else np.empty((0, pos_t_emb.shape[1]))
+
+    pos_v_emb = _extract_img_embeds(pos_img_df["abs_image_path"].tolist())
+    neg_v_emb = _extract_img_embeds(neg_img_df["abs_image_path"].tolist())
+
+    if len(pos_v_emb) < 4 or len(neg_v_emb) < 4 or len(pos_t_emb) < 4 or len(neg_t_emb) < 4:
+        return {"error": f"Insufficient samples for object {object_name}"}
+
+    # 2. Train/Val Splits (70% Train, 30% Val)
+    pos_t_tr, pos_t_val = train_test_split(pos_t_emb, train_size=train_ratio, random_state=random_state)
+    neg_t_tr, neg_t_val = train_test_split(neg_t_emb, train_size=train_ratio, random_state=random_state)
+
+    pos_v_tr, pos_v_val = train_test_split(pos_v_emb, train_size=train_ratio, random_state=random_state)
+    neg_v_tr, neg_v_val = train_test_split(neg_v_emb, train_size=train_ratio, random_state=random_state)
+
+    X_t_tr = np.vstack([pos_t_tr, neg_t_tr])
+    y_t_tr = np.array([1] * len(pos_t_tr) + [-1] * len(neg_t_tr))
+    X_t_val = np.vstack([pos_t_val, neg_t_val])
+    y_t_val = np.array([1] * len(pos_t_val) + [-1] * len(neg_t_val))
+
+    X_v_tr = np.vstack([pos_v_tr, neg_v_tr])
+    y_v_tr = np.array([1] * len(pos_v_tr) + [-1] * len(neg_v_tr))
+    X_v_val = np.vstack([pos_v_val, neg_v_val])
+    y_v_val = np.array([1] * len(pos_v_val) + [-1] * len(neg_v_val))
+
+    # 3. Train Probes on Train Split
+    t_clf = LogisticRegression(C=1.0, max_iter=1000, random_state=random_state)
+    t_clf.fit(X_t_tr, y_t_tr)
+
+    v_clf = LogisticRegression(C=1.0, max_iter=1000, random_state=random_state)
+    v_clf.fit(X_v_tr, y_v_tr)
+
+    # 4. Measure Val Performance for Modality-Specific Probes
+    val_t_acc = float(t_clf.score(X_t_val, y_t_val))
+    val_v_acc = float(v_clf.score(X_v_val, y_v_val))
+
+    # 5. Measure 4-Way Multimodal Joint Scoring on Val Split S(v, t) = f_V(v) * f_T(t)
+    f_V_pos_val = v_clf.decision_function(pos_v_val)  # [M_val]
+    f_V_neg_val = v_clf.decision_function(neg_v_val)  # [M_val]
+
+    f_T_pos_val = t_clf.decision_function(pos_t_val)  # [N_pos_val]
+    f_T_neg_val = t_clf.decision_function(neg_t_val)  # [N_neg_val]
+
+    # Outer product matrices S(v, t) = f_V(v) * f_T(t)
+    S_11 = np.outer(f_V_pos_val, f_T_pos_val)  # (Present Img, Pos Text) -> Target: S > 0
+    S_22 = np.outer(f_V_neg_val, f_T_neg_val)  # (Absent Img, Neg Text) -> Target: S > 0
+    S_12 = np.outer(f_V_pos_val, f_T_neg_val)  # (Present Img, Neg Text) -> Target: S < 0
+    S_21 = np.outer(f_V_neg_val, f_T_pos_val)  # (Absent Img, Pos Text) -> Target: S < 0
+
+    # Quadrant Accuracies
+    acc_S11_high = float(np.mean(S_11 > 0))  # Present + Pos Text -> High (>0)
+    acc_S22_high = float(np.mean(S_22 > 0))  # Absent + Neg Text -> High (>0)
+    acc_S12_low  = float(np.mean(S_12 < 0))  # Present + Neg Text -> Low (<0)
+    acc_S21_low  = float(np.mean(S_21 < 0))  # Absent + Pos Text -> Low (<0)
+
+    val_joint_sign_consistency_acc = float(np.mean([acc_S11_high, acc_S22_high, acc_S12_low, acc_S21_low]))
+
+    return {
+        "object_name": object_name,
+        "n_train_image_pairs": int(len(pos_v_tr)),
+        "n_val_image_pairs": int(len(pos_v_val)),
+        "n_train_pos_templates": int(len(pos_t_tr)),
+        "n_val_pos_templates": int(len(pos_t_val)),
+
+        # Modality-Specific Val Accuracies
+        "val_text_probe_acc": val_t_acc,
+        "val_vision_probe_acc": val_v_acc,
+
+        # 4-Way Quadrant Mean Scores
+        "mean_score_Q1_pos_v_pos_t": float(np.mean(S_11)),
+        "mean_score_Q2_neg_v_neg_t": float(np.mean(S_22)),
+        "mean_score_Q3_pos_v_neg_t": float(np.mean(S_12)),
+        "mean_score_Q4_neg_v_pos_t": float(np.mean(S_21)),
+
+        # 4-Way Sign-Consistency Rule Accuracies
+        "acc_Q1_pos_v_pos_t_is_high": acc_S11_high,
+        "acc_Q2_neg_v_neg_t_is_high": acc_S22_high,
+        "acc_Q3_pos_v_neg_t_is_low":  acc_S12_low,
+        "acc_Q4_neg_v_pos_t_is_low":  acc_S21_low,
+        "val_joint_sign_consistency_acc": val_joint_sign_consistency_acc,
+    }
+
 
 
 def evaluate_text_linear_probe_single_object(
@@ -133,7 +263,7 @@ def evaluate_unseen_template_group_text_probe(
         test_pos_idx = [i for i, g in enumerate(pos_groups) if g == target_group]
         test_neg_idx = [i for i, g in enumerate(neg_groups) if g == target_group]
 
-        if not test_pos_idx or not test_neg_idx:
+        if not train_pos_idx or not train_neg_idx or not test_pos_idx or not test_neg_idx:
             continue
 
         X_train = np.vstack([pos_t_emb[train_pos_idx], neg_t_emb[train_neg_idx]])
@@ -148,6 +278,7 @@ def evaluate_unseen_template_group_text_probe(
         acc = clf.score(X_test, y_test)
         per_group_acc[target_group] = float(acc)
 
+
     accs = list(per_group_acc.values())
     return {
         "unseen_template_group_acc_mean": float(np.mean(accs)) if accs else 0.0,
@@ -161,8 +292,11 @@ def train_eval_vision_linear_probe(
     neg_v_emb: np.ndarray,
     C: float = 1.0,
     cv_folds: int = 5
-) -> Tuple[float, float, LogisticRegression]:
+) -> Tuple[float, float, Optional[LogisticRegression]]:
     """Train and evaluate LogisticRegression probe on Present (+1) vs Absent (-1) images."""
+    if len(pos_v_emb) == 0 or len(neg_v_emb) == 0:
+        return 0.5, 0.0, None
+
     X_v = np.vstack([pos_v_emb, neg_v_emb])
     y_v = np.array([1] * len(pos_v_emb) + [-1] * len(neg_v_emb))
 
@@ -181,18 +315,27 @@ def train_eval_vision_linear_probe(
     return mean_acc, std_acc, clf
 
 
+
 def evaluate_dual_classifier_product_scorer(
-    v_clf: LogisticRegression,
-    t_clf: LogisticRegression,
+    v_clf: Optional[LogisticRegression],
+    t_clf: Optional[LogisticRegression],
     pos_v_emb: np.ndarray,
     neg_v_emb: np.ndarray,
     pos_t_emb: np.ndarray,
     neg_t_emb: np.ndarray
 ) -> Dict[str, float]:
     """Evaluate S(v, t) = f_V(v) * f_T(t) Product Scorer on 1:1 Present/Absent images."""
+    if v_clf is None or t_clf is None or len(pos_v_emb) == 0 or len(neg_v_emb) == 0:
+        return {
+            "dual_probe_pos_acc": 0.5,
+            "dual_probe_neg_acc": 0.5,
+            "dual_probe_overall_acc": 0.5,
+        }
+
     # Decision functions
     f_V_pos = v_clf.decision_function(pos_v_emb)  # [M]
     f_V_neg = v_clf.decision_function(neg_v_emb)  # [M]
+
 
     f_T_pos = np.mean(t_clf.decision_function(pos_t_emb))  # scalar
     f_T_neg = np.mean(t_clf.decision_function(neg_t_emb))  # scalar
