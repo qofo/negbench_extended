@@ -322,16 +322,26 @@ def main():
             b_t = float(data["b_t"])
             b_v = float(data.get("b_v", 0.0))
 
+            mlp_fc1_w = torch.from_numpy(data["mlp_fc1_w"]).float() if "mlp_fc1_w" in data else None
+            mlp_fc1_b = torch.from_numpy(data["mlp_fc1_b"]).float() if "mlp_fc1_b" in data else None
+            mlp_fc2_w = torch.from_numpy(data["mlp_fc2_w"]).float() if "mlp_fc2_w" in data else None
+            mlp_fc2_b = float(data["mlp_fc2_b"]) if "mlp_fc2_b" in data else 0.0
+
             U_v = torch.from_numpy(data["U_v"]).float() if "U_v" in data else None
             V_v = torch.from_numpy(data["V_v"]).float() if "V_v" in data else None
             w_lin_v = torch.from_numpy(data["w_lin_v"]).float() if "w_lin_v" in data else None
             w_v = torch.from_numpy(data["w_v"]).float() if "w_v" in data else None
 
             v_rank = U_v.shape[1] if U_v is not None else 4
-            scorer = DualClassifierProductScorer(feature_dim=w_t.shape[0], vision_rank=v_rank)
-            scorer.load_weights(w_t=w_t, b_t=b_t, w_v=w_v, b_v=b_v, U_v=U_v, V_v=V_v, w_lin_v=w_lin_v)
+            v_hdim = mlp_fc1_w.shape[0] if mlp_fc1_w is not None else 64
+            scorer = DualClassifierProductScorer(feature_dim=w_t.shape[0], vision_rank=v_rank, vision_hidden_dim=v_hdim)
+            scorer.load_weights(
+                w_t=w_t, b_t=b_t, w_v=w_v, b_v=b_v, U_v=U_v, V_v=V_v, w_lin_v=w_lin_v,
+                mlp_fc1_w=mlp_fc1_w, mlp_fc1_b=mlp_fc1_b, mlp_fc2_w=mlp_fc2_w, mlp_fc2_b=mlp_fc2_b
+            )
             model_name = os.path.basename(ckpt_path).replace(".npz", "")
             return scorer, model_name
+
 
         else:
             ckpt = torch.load(ckpt_path, map_location="cpu")

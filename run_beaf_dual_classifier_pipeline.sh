@@ -40,7 +40,11 @@ python train_beaf_dual_probes.py \
     --model_name "${MODEL}" \
     --pretrained "${PRETRAINED}" \
     --output_dir "${PROBE_OUT_DIR}" \
+    --vision_type mlp \
+    --vision_hidden_dim 64 \
     --C 1.0
+
+
 
 if [ ! -f "${WEIGHTS_PATH}" ]; then
     echo "❌ Error: Dual classifier weights file not found at ${WEIGHTS_PATH}"

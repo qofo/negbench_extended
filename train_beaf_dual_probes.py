@@ -141,6 +141,19 @@ class LowRankBilinearPyTorch(torch.nn.Module):
         return quad + lin + self.bias.squeeze(-1)
 
 
+class MLPVisionPyTorch(torch.nn.Module):
+    """MLP Vision Classifier: f_V(x) = fc2(GELU(fc1(x)))"""
+
+    def __init__(self, d_in: int, hidden_dim: int = 64):
+        super().__init__()
+        self.fc1 = torch.nn.Linear(d_in, hidden_dim)
+        self.act = torch.nn.GELU()
+        self.fc2 = torch.nn.Linear(hidden_dim, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc2(self.act(self.fc1(x))).squeeze(-1)
+
+
 def train_eval_vision_low_rank(
     X_tr: np.ndarray, y_tr: np.ndarray,
     X_te: np.ndarray, y_te: np.ndarray,
@@ -172,16 +185,49 @@ def train_eval_vision_low_rank(
     return acc
 
 
+def train_eval_vision_mlp(
+    X_tr: np.ndarray, y_tr: np.ndarray,
+    X_te: np.ndarray, y_te: np.ndarray,
+    hidden_dim: int = 64, epochs: int = 300, lr: float = 1e-2, seed: int = 42
+) -> float:
+    torch.manual_seed(seed)
+    d_in = X_tr.shape[1]
+    model = MLPVisionPyTorch(d_in, hidden_dim)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    criterion = torch.nn.BCEWithLogitsLoss()
+
+    X_train_t = torch.tensor(X_tr, dtype=torch.float32)
+    y_train_t = torch.tensor((y_tr == 1).astype(np.float32), dtype=torch.float32)
+    X_test_t = torch.tensor(X_te, dtype=torch.float32)
+    y_test_t = torch.tensor((y_te == 1).astype(np.float32), dtype=torch.float32)
+
+    model.train()
+    for _ in range(epochs):
+        optimizer.zero_grad()
+        logits = model(X_train_t)
+        loss = criterion(logits, y_train_t)
+        loss.backward()
+        optimizer.step()
+
+    model.eval()
+    with torch.no_grad():
+        preds = (torch.sigmoid(model(X_test_t)) >= 0.5).float()
+        acc = float((preds == y_test_t).float().mean().item() * 100)
+    return acc
+
+
 def train_dual_probes(
     X_text: np.ndarray,
     y_text: np.ndarray,
     X_vision: np.ndarray,
     y_vision: np.ndarray,
     C: float = 1.0,
+    vision_type: str = "mlp",
     vision_rank: int = 4,
+    vision_hidden_dim: int = 64,
     n_splits: int = 5
 ) -> dict:
-    """Train LogisticRegression for text and Low-Rank Bilinear Probe (rank=4) for vision."""
+    """Train LogisticRegression for text and MLP / Low-Rank / Linear for vision."""
     print("\nExecuting 5-Fold CV for Text Classifier (f_T: Positive=+1, Negative=-1)...")
     clf_text = LogisticRegression(C=C, max_iter=1000, random_state=42)
     cv_text = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
@@ -195,57 +241,91 @@ def train_dual_probes(
     w_t = clf_text.coef_[0].astype(np.float32)
     b_t = float(clf_text.intercept_[0])
 
-    print(f"\nExecuting 5-Fold CV for Vision Classifier (f_V: Low-Rank Bilinear Rank={vision_rank})...")
+    print(f"\nExecuting 5-Fold CV for Vision Classifier (f_V: Type={vision_type.upper()}, Dim/Rank={vision_hidden_dim if vision_type=='mlp' else vision_rank})...")
     cv_vision = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
     scores_vision = []
 
     for fold, (tr_idx, te_idx) in enumerate(cv_vision.split(X_vision, y_vision)):
-        acc = train_eval_vision_low_rank(
-            X_vision[tr_idx], y_vision[tr_idx],
-            X_vision[te_idx], y_vision[te_idx],
-            rank=vision_rank, seed=42 + fold
-        )
+        if vision_type == "mlp":
+            acc = train_eval_vision_mlp(
+                X_vision[tr_idx], y_vision[tr_idx],
+                X_vision[te_idx], y_vision[te_idx],
+                hidden_dim=vision_hidden_dim, seed=42 + fold
+            )
+        elif vision_type == "low_rank_bilinear":
+            acc = train_eval_vision_low_rank(
+                X_vision[tr_idx], y_vision[tr_idx],
+                X_vision[te_idx], y_vision[te_idx],
+                rank=vision_rank, seed=42 + fold
+            )
+        else: # linear
+            clf_v = LogisticRegression(C=C, max_iter=1000, random_state=42)
+            clf_v.fit(X_vision[tr_idx], y_vision[tr_idx])
+            acc = float(clf_v.score(X_vision[te_idx], y_vision[te_idx]) * 100)
         scores_vision.append(acc)
 
     mean_acc_vision = float(np.mean(scores_vision))
     std_acc_vision = float(np.std(scores_vision))
-    print(f"✅ Vision Classifier (Low-Rank Bilinear Rank-{vision_rank}) Accuracy: {mean_acc_vision:.2f}% ± {std_acc_vision:.2f}%")
+    print(f"✅ Vision Classifier ({vision_type.upper()}) Accuracy: {mean_acc_vision:.2f}% ± {std_acc_vision:.2f}%")
 
-    # Train final Low-Rank Bilinear vision classifier on full dataset
+    # Train final vision classifier on full dataset
     d_in = X_vision.shape[1]
-    final_v_model = LowRankBilinearPyTorch(d_in, vision_rank)
-    opt_v = torch.optim.Adam(final_v_model.parameters(), lr=1e-2, weight_decay=1e-4)
-    crit_v = torch.nn.BCEWithLogitsLoss()
-
-    X_vis_t = torch.tensor(X_vision, dtype=torch.float32)
-    y_vis_t = torch.tensor((y_vision == 1).astype(np.float32), dtype=torch.float32)
-
-    final_v_model.train()
-    for _ in range(300):
-        opt_v.zero_grad()
-        loss = crit_v(final_v_model(X_vis_t), y_vis_t)
-        loss.backward()
-        opt_v.step()
-
-    final_v_model.eval()
-    U_v = final_v_model.U.detach().cpu().numpy().astype(np.float32)
-    V_v = final_v_model.V.detach().cpu().numpy().astype(np.float32)
-    w_lin_v = final_v_model.w_lin.detach().cpu().numpy().astype(np.float32)
-    b_v = float(final_v_model.bias.detach().cpu().item())
-
-    return {
-        "U_v": U_v,
-        "V_v": V_v,
-        "w_lin_v": w_lin_v,
-        "b_v": b_v,
+    res = {
+        "vision_type": vision_type,
         "w_t": w_t,
         "b_t": b_t,
         "text_acc_mean": mean_acc_text,
         "text_acc_std": std_acc_text,
         "vision_acc_mean": mean_acc_vision,
         "vision_acc_std": std_acc_vision,
-        "vision_rank": vision_rank,
     }
+
+    if vision_type == "mlp":
+        final_v_model = MLPVisionPyTorch(d_in, vision_hidden_dim)
+        opt_v = torch.optim.Adam(final_v_model.parameters(), lr=1e-2, weight_decay=1e-4)
+        crit_v = torch.nn.BCEWithLogitsLoss()
+        X_vis_t = torch.tensor(X_vision, dtype=torch.float32)
+        y_vis_t = torch.tensor((y_vision == 1).astype(np.float32), dtype=torch.float32)
+
+        final_v_model.train()
+        for _ in range(300):
+            opt_v.zero_grad()
+            loss = crit_v(final_v_model(X_vis_t), y_vis_t)
+            loss.backward()
+            opt_v.step()
+
+        final_v_model.eval()
+        res["mlp_fc1_w"] = final_v_model.fc1.weight.detach().cpu().numpy().astype(np.float32)
+        res["mlp_fc1_b"] = final_v_model.fc1.bias.detach().cpu().numpy().astype(np.float32)
+        res["mlp_fc2_w"] = final_v_model.fc2.weight.detach().cpu().numpy().astype(np.float32)
+        res["mlp_fc2_b"] = float(final_v_model.fc2.bias.detach().cpu().item())
+    elif vision_type == "low_rank_bilinear":
+        final_v_model = LowRankBilinearPyTorch(d_in, vision_rank)
+        opt_v = torch.optim.Adam(final_v_model.parameters(), lr=1e-2, weight_decay=1e-4)
+        crit_v = torch.nn.BCEWithLogitsLoss()
+        X_vis_t = torch.tensor(X_vision, dtype=torch.float32)
+        y_vis_t = torch.tensor((y_vision == 1).astype(np.float32), dtype=torch.float32)
+
+        final_v_model.train()
+        for _ in range(300):
+            opt_v.zero_grad()
+            loss = crit_v(final_v_model(X_vis_t), y_vis_t)
+            loss.backward()
+            opt_v.step()
+
+        final_v_model.eval()
+        res["U_v"] = final_v_model.U.detach().cpu().numpy().astype(np.float32)
+        res["V_v"] = final_v_model.V.detach().cpu().numpy().astype(np.float32)
+        res["w_lin_v"] = final_v_model.w_lin.detach().cpu().numpy().astype(np.float32)
+        res["b_v"] = float(final_v_model.bias.detach().cpu().item())
+        res["vision_rank"] = vision_rank
+    else: # linear
+        clf_v = LogisticRegression(C=C, max_iter=1000, random_state=42)
+        clf_v.fit(X_vision, y_vision)
+        res["w_v"] = clf_v.coef_[0].astype(np.float32)
+        res["b_v"] = float(clf_v.intercept_[0])
+
+    return res
 
 
 def main():
@@ -260,7 +340,9 @@ def main():
     parser.add_argument("--pretrained", type=str, default="openai", help="Pretrained weights")
     parser.add_argument("--output_dir", type=str, default="logs/evaluation/beaf_dual_probe", help="Output directory for weights")
     parser.add_argument("--C", type=float, default=1.0, help="Logistic Regression C parameter")
+    parser.add_argument("--vision_type", type=str, default="mlp", choices=["mlp", "low_rank_bilinear", "linear"], help="Type of Vision Classifier")
     parser.add_argument("--vision_rank", type=int, default=4, help="Rank for Vision Low-Rank Bilinear Classifier")
+    parser.add_argument("--vision_hidden_dim", type=int, default=64, help="Hidden dimension for Vision MLP Classifier")
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for feature extraction")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device")
     args = parser.parse_args()
@@ -281,20 +363,35 @@ def main():
 
     print(f"Features Extracted: Text {X_text.shape}, Vision {X_vision.shape}")
 
-    results = train_dual_probes(X_text, y_text, X_vision, y_vision, C=args.C, vision_rank=args.vision_rank)
+    results = train_dual_probes(
+        X_text, y_text, X_vision, y_vision,
+        C=args.C, vision_type=args.vision_type, vision_rank=args.vision_rank, vision_hidden_dim=args.vision_hidden_dim
+    )
 
     out_weights_path = os.path.join(args.output_dir, "beaf_dual_probe_weights.npz")
-    np.savez(
-        out_weights_path,
-        U_v=results["U_v"],
-        V_v=results["V_v"],
-        w_lin_v=results["w_lin_v"],
-        b_v=np.array(results["b_v"], dtype=np.float32),
-        w_t=results["w_t"],
-        b_t=np.array(results["b_t"], dtype=np.float32),
-        vision_rank=np.array(results["vision_rank"], dtype=np.int32),
-    )
-    print(f"\n🎉 Saved dual probe weights (Vision: Low-Rank Rank-{args.vision_rank}) to: {out_weights_path}")
+    save_dict = {
+        "vision_type": np.array(results["vision_type"]),
+        "w_t": results["w_t"],
+        "b_t": np.array(results["b_t"], dtype=np.float32),
+    }
+
+    if results["vision_type"] == "mlp":
+        save_dict["mlp_fc1_w"] = results["mlp_fc1_w"]
+        save_dict["mlp_fc1_b"] = results["mlp_fc1_b"]
+        save_dict["mlp_fc2_w"] = results["mlp_fc2_w"]
+        save_dict["mlp_fc2_b"] = np.array(results["mlp_fc2_b"], dtype=np.float32)
+    elif results["vision_type"] == "low_rank_bilinear":
+        save_dict["U_v"] = results["U_v"]
+        save_dict["V_v"] = results["V_v"]
+        save_dict["w_lin_v"] = results["w_lin_v"]
+        save_dict["b_v"] = np.array(results["b_v"], dtype=np.float32)
+        save_dict["vision_rank"] = np.array(results["vision_rank"], dtype=np.int32)
+    else: # linear
+        save_dict["w_v"] = results["w_v"]
+        save_dict["b_v"] = np.array(results["b_v"], dtype=np.float32)
+
+    np.savez(out_weights_path, **save_dict)
+    print(f"\n🎉 Saved dual probe weights (Vision: {results['vision_type'].upper()}) to: {out_weights_path}")
 
     info_path = os.path.join(args.output_dir, "beaf_dual_probe_info.json")
     with open(info_path, "w", encoding="utf-8") as f:
@@ -303,7 +400,7 @@ def main():
                 "model_name": args.model_name,
                 "pretrained": args.pretrained,
                 "C": args.C,
-                "vision_type": f"Low-Rank Bilinear (Rank={args.vision_rank})",
+                "vision_type": results["vision_type"],
                 "text_cv_accuracy_pct": f"{results['text_acc_mean']:.2f} ± {results['text_acc_std']:.2f}%",
                 "vision_cv_accuracy_pct": f"{results['vision_acc_mean']:.2f} ± {results['vision_acc_std']:.2f}%",
                 "weights_path": out_weights_path,
@@ -316,4 +413,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
