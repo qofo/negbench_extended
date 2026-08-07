@@ -27,6 +27,9 @@ from analysis.beaf.object_experiment import (
     instantiate_templates,
     get_balanced_beaf_object_df,
     run_single_object_analysis,
+    evaluate_text_linear_probe_single_object,
+    evaluate_text_linear_probe_cross_object,
+    run_leave_one_object_out_text_probe_experiment,
 )
 
 __all__ = [
@@ -50,5 +53,9 @@ __all__ = [
     "instantiate_templates",
     "get_balanced_beaf_object_df",
     "run_single_object_analysis",
+    "evaluate_text_linear_probe_single_object",
+    "evaluate_text_linear_probe_cross_object",
+    "run_leave_one_object_out_text_probe_experiment",
 ]
+
 

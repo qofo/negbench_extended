@@ -17,6 +17,96 @@ import open_clip
 from PIL import Image
 from typing import List, Dict, Tuple, Any, Optional
 from tqdm import tqdm
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import StratifiedKFold, cross_val_score
+
+
+def evaluate_text_linear_probe_single_object(
+    pos_t_emb: np.ndarray,
+    neg_t_emb: np.ndarray,
+    C: float = 1.0,
+    cv_folds: int = 5
+) -> Tuple[float, float, LogisticRegression]:
+    """Train and evaluate a Logistic Regression linear probe on text embeddings for a SINGLE object.
+    
+    Returns:
+        (mean_cv_accuracy, std_cv_accuracy, fitted_classifier)
+    """
+    X_text = np.vstack([pos_t_emb, neg_t_emb])
+    y_text = np.array([1] * len(pos_t_emb) + [-1] * len(neg_t_emb))
+
+    clf = LogisticRegression(C=C, max_iter=1000, random_state=42)
+    skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
+    scores = cross_val_score(clf, X_text, y_text, cv=skf, scoring="accuracy")
+
+    clf.fit(X_text, y_text)
+    return float(scores.mean()), float(scores.std()), clf
+
+
+def evaluate_text_linear_probe_cross_object(
+    train_pos_t_emb: np.ndarray,
+    train_neg_t_emb: np.ndarray,
+    test_pos_t_emb: np.ndarray,
+    test_neg_t_emb: np.ndarray,
+    C: float = 1.0
+) -> float:
+    """Train linear probe on source object(s) text embeddings, and evaluate on unseen target object text embeddings."""
+    X_train = np.vstack([train_pos_t_emb, train_neg_t_emb])
+    y_train = np.array([1] * len(train_pos_t_emb) + [-1] * len(train_neg_t_emb))
+
+    X_test = np.vstack([test_pos_t_emb, test_neg_t_emb])
+    y_test = np.array([1] * len(test_pos_t_emb) + [-1] * len(test_neg_t_emb))
+
+    clf = LogisticRegression(C=C, max_iter=1000, random_state=42)
+    clf.fit(X_train, y_train)
+
+    unseen_acc = clf.score(X_test, y_test)
+    return float(unseen_acc)
+
+
+def run_leave_one_object_out_text_probe_experiment(
+    object_t_embs: Dict[str, Tuple[np.ndarray, np.ndarray]],
+    C: float = 1.0
+) -> Dict[str, Any]:
+    """Perform Leave-One-Object-Out (LOOO) cross-validation for text linear probing across all objects.
+    
+    Args:
+        object_t_embs: Dictionary mapping object_name -> (pos_t_emb, neg_t_emb)
+    
+    Returns:
+        Dictionary containing per-object unseen test accuracy and macro average unseen accuracy.
+    """
+    object_names = list(object_t_embs.keys())
+    per_object_unseen_acc = {}
+
+    for target_obj in object_names:
+        # 1. Test set: target_obj
+        test_pos, test_neg = object_t_embs[target_obj]
+
+        # 2. Train set: All other objects
+        train_pos_list = [object_t_embs[o][0] for o in object_names if o != target_obj]
+        train_neg_list = [object_t_embs[o][1] for o in object_names if o != target_obj]
+
+        train_pos = np.vstack(train_pos_list)
+        train_neg = np.vstack(train_neg_list)
+
+        acc = evaluate_text_linear_probe_cross_object(
+            train_pos_t_emb=train_pos,
+            train_neg_t_emb=train_neg,
+            test_pos_t_emb=test_pos,
+            test_neg_t_emb=test_neg,
+            C=C
+        )
+        per_object_unseen_acc[target_obj] = acc
+
+    acc_values = list(per_object_unseen_acc.values())
+    summary = {
+        "looo_unseen_acc_mean": float(np.mean(acc_values)),
+        "looo_unseen_acc_std": float(np.std(acc_values)),
+        "per_object_unseen_acc": per_object_unseen_acc
+    }
+    return summary
+
 
 
 def format_object_name(object_name: str) -> Dict[str, str]:
@@ -190,6 +280,9 @@ def run_single_object_analysis(
     pos_v_margin = mean_sim_pos_v_pos_t - mean_sim_pos_v_neg_t
     neg_v_margin = mean_sim_neg_v_neg_t - mean_sim_neg_v_pos_t
 
+    # 5. Text Linear Probe (5-Fold CV on single object positive vs negative text vectors)
+    text_cv_acc, text_cv_std, _ = evaluate_text_linear_probe_single_object(pos_t_emb, neg_t_emb)
+
     results = {
         "object_name": object_name,
         "n_present_images": int(len(pos_v_emb)),
@@ -214,6 +307,15 @@ def run_single_object_analysis(
         "overall_accuracy": overall_acc,
         "mean_pos_v_margin": float(np.mean(pos_v_margin)),
         "mean_neg_v_margin": float(np.mean(neg_v_margin)),
+
+        # Text Linear Probe Metrics
+        "text_probe_cv_acc": text_cv_acc,
+        "text_probe_cv_std": text_cv_std,
+
+        # Raw Text Embeddings for Cross-Object Evaluation
+        "_pos_t_emb": pos_t_emb,
+        "_neg_t_emb": neg_t_emb,
     }
 
     return results
+
