@@ -318,14 +318,21 @@ def main():
         from src.evaluation.scoring_heads import DualClassifierProductScorer
         if ckpt_path.endswith(".npz"):
             data = np.load(ckpt_path)
-            w_v = torch.from_numpy(data["w_v"]).float()
-            b_v = float(data["b_v"])
             w_t = torch.from_numpy(data["w_t"]).float()
             b_t = float(data["b_t"])
-            scorer = DualClassifierProductScorer(feature_dim=w_v.shape[0])
-            scorer.load_weights(w_v, b_v, w_t, b_t)
+            b_v = float(data.get("b_v", 0.0))
+
+            U_v = torch.from_numpy(data["U_v"]).float() if "U_v" in data else None
+            V_v = torch.from_numpy(data["V_v"]).float() if "V_v" in data else None
+            w_lin_v = torch.from_numpy(data["w_lin_v"]).float() if "w_lin_v" in data else None
+            w_v = torch.from_numpy(data["w_v"]).float() if "w_v" in data else None
+
+            v_rank = U_v.shape[1] if U_v is not None else 4
+            scorer = DualClassifierProductScorer(feature_dim=w_t.shape[0], vision_rank=v_rank)
+            scorer.load_weights(w_t=w_t, b_t=b_t, w_v=w_v, b_v=b_v, U_v=U_v, V_v=V_v, w_lin_v=w_lin_v)
             model_name = os.path.basename(ckpt_path).replace(".npz", "")
             return scorer, model_name
+
         else:
             ckpt = torch.load(ckpt_path, map_location="cpu")
             model_name = ckpt.get("model_name", os.path.basename(ckpt_path).replace(".pt", ""))

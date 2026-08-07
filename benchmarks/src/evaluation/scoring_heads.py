@@ -322,26 +322,54 @@ class DualClassifierProductScorer(BaseScorer):
     """
     9. Dual Classifier Product Scorer.
     Expressiveness: High (Bilinear sign alignment)
-    Hypothesis: S(v, t) = f_V(v) * f_T(t) where f_V is Vision Classifier (+1 present, -1 absent)
-                and f_T is Text Classifier (+1 affirmative, -1 negated).
+    Hypothesis: S(v, t) = f_V(v) * f_T(t) where f_V is Vision Classifier (Linear or Low-Rank Bilinear)
+                and f_T is Text Classifier (Linear Probe).
     """
 
-    def __init__(self, feature_dim: int, use_hard_sign: bool = False):
+    def __init__(self, feature_dim: int, vision_rank: int = 4, use_hard_sign: bool = False):
         super().__init__()
         self.feature_dim = feature_dim
+        self.vision_rank = vision_rank
         self.use_hard_sign = use_hard_sign
+
+        self.has_low_rank_vision = False
+        self.U_v = nn.Parameter(torch.zeros(feature_dim, vision_rank))
+        self.V_v = nn.Parameter(torch.zeros(feature_dim, vision_rank))
         self.w_v = nn.Parameter(torch.zeros(feature_dim))
         self.b_v = nn.Parameter(torch.zeros(1))
+
         self.w_t = nn.Parameter(torch.zeros(feature_dim))
         self.b_t = nn.Parameter(torch.zeros(1))
 
-    def load_weights(self, w_v: torch.Tensor, b_v: float, w_t: torch.Tensor, b_t: float):
+    def load_weights(
+        self,
+        w_t: torch.Tensor,
+        b_t: float,
+        w_v: Optional[torch.Tensor] = None,
+        b_v: float = 0.0,
+        U_v: Optional[torch.Tensor] = None,
+        V_v: Optional[torch.Tensor] = None,
+        w_lin_v: Optional[torch.Tensor] = None
+    ):
         """Load pre-trained classifier weights."""
         with torch.no_grad():
-            self.w_v.copy_(w_v)
-            self.b_v.copy_(torch.tensor([b_v], dtype=torch.float32))
             self.w_t.copy_(w_t)
             self.b_t.copy_(torch.tensor([b_t], dtype=torch.float32))
+            self.b_v.copy_(torch.tensor([b_v], dtype=torch.float32))
+
+            if U_v is not None and V_v is not None:
+                self.has_low_rank_vision = True
+                rank = U_v.shape[1]
+                if self.U_v.shape != U_v.shape:
+                    self.U_v = nn.Parameter(torch.zeros_like(U_v))
+                    self.V_v = nn.Parameter(torch.zeros_like(V_v))
+                self.U_v.copy_(U_v)
+                self.V_v.copy_(V_v)
+                if w_lin_v is not None:
+                    self.w_v.copy_(w_lin_v)
+            elif w_v is not None:
+                self.has_low_rank_vision = False
+                self.w_v.copy_(w_v)
 
     def forward(self, img_emb: torch.Tensor, text_emb: torch.Tensor) -> torch.Tensor:
         if img_emb.dim() == 2:
@@ -350,7 +378,17 @@ class DualClassifierProductScorer(BaseScorer):
         v_norm = F.normalize(img_emb, dim=-1)   # (B, 1, D)
         t_norm = F.normalize(text_emb, dim=-1)  # (B, K, D)
 
-        margin_v = torch.sum(v_norm * self.w_v, dim=-1) + self.b_v  # (B, 1)
+        if self.has_low_rank_vision:
+            # Low-Rank Bilinear Vision Classifier: f_V(v) = sum_r (v U_r)(v V_r) + v w_lin + b_v
+            z = torch.matmul(v_norm, self.U_v)  # (B, 1, r)
+            h = torch.matmul(v_norm, self.V_v)  # (B, 1, r)
+            quad = torch.sum(z * h, dim=-1)      # (B, 1)
+            lin = torch.sum(v_norm * self.w_v, dim=-1)  # (B, 1)
+            margin_v = quad + lin + self.b_v    # (B, 1)
+        else:
+            # Linear Vision Classifier: f_V(v) = v w_v + b_v
+            margin_v = torch.sum(v_norm * self.w_v, dim=-1) + self.b_v  # (B, 1)
+
         margin_t = torch.sum(t_norm * self.w_t, dim=-1) + self.b_t  # (B, K)
 
         if self.use_hard_sign:
@@ -359,6 +397,7 @@ class DualClassifierProductScorer(BaseScorer):
             scores = margin_v * margin_t  # (B, K)
 
         return scores
+
 
 
 def build_scorer(model_type: str, feature_dim: int, rank: int = 32) -> BaseScorer:

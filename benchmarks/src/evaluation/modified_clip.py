@@ -89,14 +89,21 @@ class NegationAwareCLIPWrapper(nn.Module):
                 from evaluation.scoring_heads import build_scorer, DualClassifierProductScorer
                 if scorer_ckpt.endswith(".npz"):
                     data = np.load(scorer_ckpt)
-                    w_v = torch.from_numpy(data["w_v"]).float()
-                    b_v = float(data["b_v"])
                     w_t = torch.from_numpy(data["w_t"]).float()
                     b_t = float(data["b_t"])
-                    feat_dim = w_v.shape[0]
-                    self.scorer = DualClassifierProductScorer(feature_dim=feat_dim)
-                    self.scorer.load_weights(w_v, b_v, w_t, b_t)
-                    print(f"✅ Loaded trained DualClassifierProductScorer from NPZ: {scorer_ckpt}")
+                    b_v = float(data.get("b_v", 0.0))
+                    feat_dim = w_t.shape[0]
+
+                    U_v = torch.from_numpy(data["U_v"]).float() if "U_v" in data else None
+                    V_v = torch.from_numpy(data["V_v"]).float() if "V_v" in data else None
+                    w_lin_v = torch.from_numpy(data["w_lin_v"]).float() if "w_lin_v" in data else None
+                    w_v = torch.from_numpy(data["w_v"]).float() if "w_v" in data else None
+
+                    v_rank = U_v.shape[1] if U_v is not None else 4
+                    self.scorer = DualClassifierProductScorer(feature_dim=feat_dim, vision_rank=v_rank)
+                    self.scorer.load_weights(w_t=w_t, b_t=b_t, w_v=w_v, b_v=b_v, U_v=U_v, V_v=V_v, w_lin_v=w_lin_v)
+                    print(f"✅ Loaded trained DualClassifierProductScorer (Vision Low-Rank={U_v is not None}) from NPZ: {scorer_ckpt}")
+
                 else:
                     checkpoint = torch.load(scorer_ckpt, map_location="cpu")
                     ckpt_type = checkpoint.get("model_name", scorer_type) if isinstance(checkpoint, dict) else scorer_type
