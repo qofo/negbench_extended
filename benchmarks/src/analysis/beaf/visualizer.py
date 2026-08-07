@@ -208,9 +208,8 @@ def render_scatter_delta_quadrant(
     ax.axhline(0, color="black", lw=1.2, ls="--")
     ax.axvline(0, color="black", lw=1.2, ls="--")
 
-    ax.set_xlabel("Text Negation Score  sim(orig, pos) - sim(orig, neg)", fontsize=10, fontweight="bold")
-    ax.set_ylabel("Visual Change Score  sim(orig, pos) - sim(cf, pos)", fontsize=10, fontweight="bold")
-    ax.set_title("Delta-Delta Quadrant Scatter: Text Negation vs Visual Change Sensitivity", fontsize=11, fontweight="bold")
+    ax.set_xlabel("sim(orig, pos) - sim(orig, neg)", fontsize=11, fontweight="bold")
+    ax.set_ylabel("sim(orig, pos) - sim(cf, pos)", fontsize=11, fontweight="bold")
     ax.grid(True, ls="--", alpha=0.35)
 
     ax.text(0.75, 0.90, f"Q1: Both Sensitive\n({q1:.1f}%)", transform=ax.transAxes, color="seagreen", fontweight="bold", fontsize=10)
@@ -368,7 +367,6 @@ def render_2d_margin_state_space(
     m_cf   = sim_cf_neg - sim_cf_pos
 
     slope, intercept, r_value, p_value, std_err = stats.linregress(m_orig, m_cf)
-    r_pearson, _ = stats.pearsonr(m_orig, m_cf)
 
     n_total = len(m_orig)
     q1 = (m_orig > 0) & (m_cf > 0)
@@ -380,44 +378,34 @@ def render_2d_margin_state_space(
     pct_q2 = (q2.sum() / n_total) * 100
     pct_q3 = (q3.sum() / n_total) * 100
     pct_q4 = (q4.sum() / n_total) * 100
-    p_cond = (q1.sum() / (m_orig > 0).sum()) * 100
 
-    fig, ax = plt.subplots(figsize=(9, 8))
+    fig, ax = plt.subplots(figsize=(8, 7))
 
     # Scatter points colored by quadrant
-    ax.scatter(m_orig[q4], m_cf[q4], c="crimson", alpha=0.55, s=28, label=f"Q4: Counterfactual Fail ({pct_q4:.1f}%)")
-    ax.scatter(m_orig[q1], m_cf[q1], c="mediumseagreen", alpha=0.7, s=32, label=f"Q1: Flip Success ({pct_q1:.1f}%)")
-    ax.scatter(m_orig[q2], m_cf[q2], c="royalblue", alpha=0.6, s=28, label=f"Q2: CF-Only Success ({pct_q2:.1f}%)")
-    ax.scatter(m_orig[q3], m_cf[q3], c="gray", alpha=0.6, s=28, label=f"Q3: Both Fail ({pct_q3:.1f}%)")
+    ax.scatter(m_orig[q4], m_cf[q4], c="crimson", alpha=0.55, s=24)
+    ax.scatter(m_orig[q1], m_cf[q1], c="seagreen", alpha=0.7, s=28)
+    ax.scatter(m_orig[q2], m_cf[q2], c="dodgerblue", alpha=0.6, s=24)
+    ax.scatter(m_orig[q3], m_cf[q3], c="gray", alpha=0.6, s=24)
 
     # Quadrant lines
-    ax.axhline(0, color="black", ls="--", lw=1.2, alpha=0.7)
-    ax.axvline(0, color="black", ls="--", lw=1.2, alpha=0.7)
+    ax.axhline(0, color="black", ls="--", lw=1.2)
+    ax.axvline(0, color="black", ls="--", lw=1.2)
 
-    # Regression Line
+    # Regression Line (without legend label)
     x_vals = np.linspace(m_orig.min() - 0.005, m_orig.max() + 0.005, 200)
     y_vals = slope * x_vals + intercept
-    ax.plot(x_vals, y_vals, color="black", ls="-", lw=2.2,
-            label=f"Fit: m_cf = {slope:.3f}·m_orig + {intercept:.4f}\n(r = {r_pearson:.3f}, R² = {r_value**2:.3f})")
+    ax.plot(x_vals, y_vals, color="black", ls="-", lw=2.0)
 
-    # Annotations & Titles
-    ax.set_title("2D Margin State Space: Counterfactual VLM Sensitivity\n(m_orig = A-B vs m_cf = D-C)", fontsize=12, fontweight="bold")
-    ax.set_xlabel("Original Image Preference Margin: m_orig = sim(orig, pos) - sim(orig, neg)", fontsize=11)
-    ax.set_ylabel("Counterfactual Image Preference Margin: m_cf = sim(cf, neg) - sim(cf, pos)", fontsize=11)
+    # Axis Labels (pure formulas)
+    ax.set_xlabel("sim(orig, pos) - sim(orig, neg)", fontsize=11, fontweight="bold")
+    ax.set_ylabel("sim(cf, neg) - sim(cf, pos)", fontsize=11, fontweight="bold")
+    ax.grid(True, ls="--", alpha=0.35)
 
-    # Callout text box
-    stats_text = (
-        f"Joint State Space Stats (N = {n_total}):\n"
-        f"• Slope (α) = {slope:.4f}\n"
-        f"• Pearson r = {r_pearson:.4f} (R² = {r_value**2:.4f})\n"
-        f"• Conditional P(m_cf > 0 | m_orig > 0) = {p_cond:.2f}%\n"
-        f"• Q4 Counterfactual Fail = {pct_q4:.2f}% (1,422 pairs)"
-    )
-    ax.text(0.03, 0.04, stats_text, transform=ax.transAxes, fontsize=10,
-            verticalalignment="bottom", bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow", alpha=0.95, edgecolor="goldenrod"))
-
-    ax.legend(loc="upper right", fontsize=10, framealpha=0.95)
-    ax.grid(True, ls="--", alpha=0.4)
+    # Quadrant Percentage Annotations inside the plot
+    ax.text(0.70, 0.90, f"Q1: Flip Success\n({pct_q1:.1f}%)", transform=ax.transAxes, color="seagreen", fontweight="bold", fontsize=10)
+    ax.text(0.05, 0.90, f"Q2: CF-Only Success\n({pct_q2:.1f}%)", transform=ax.transAxes, color="dodgerblue", fontweight="bold", fontsize=10)
+    ax.text(0.70, 0.05, f"Q4: Original-Only Success\n({pct_q4:.1f}%)", transform=ax.transAxes, color="crimson", fontweight="bold", fontsize=10)
+    ax.text(0.05, 0.05, f"Q3: Both Fail\n({pct_q3:.1f}%)", transform=ax.transAxes, color="gray", fontweight="bold", fontsize=10)
 
     plt.tight_layout()
     out_path = os.path.join(output_dir, "beaf_2d_margin_state_space.png")

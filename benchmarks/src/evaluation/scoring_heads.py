@@ -318,11 +318,54 @@ class NonLinearBiEncoderScorer(BaseScorer):
         return scores
 
 
+class DualClassifierProductScorer(BaseScorer):
+    """
+    9. Dual Classifier Product Scorer.
+    Expressiveness: High (Bilinear sign alignment)
+    Hypothesis: S(v, t) = f_V(v) * f_T(t) where f_V is Vision Classifier (+1 present, -1 absent)
+                and f_T is Text Classifier (+1 affirmative, -1 negated).
+    """
+
+    def __init__(self, feature_dim: int, use_hard_sign: bool = False):
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.use_hard_sign = use_hard_sign
+        self.w_v = nn.Parameter(torch.zeros(feature_dim))
+        self.b_v = nn.Parameter(torch.zeros(1))
+        self.w_t = nn.Parameter(torch.zeros(feature_dim))
+        self.b_t = nn.Parameter(torch.zeros(1))
+
+    def load_weights(self, w_v: torch.Tensor, b_v: float, w_t: torch.Tensor, b_t: float):
+        """Load pre-trained classifier weights."""
+        with torch.no_grad():
+            self.w_v.copy_(w_v)
+            self.b_v.copy_(torch.tensor([b_v], dtype=torch.float32))
+            self.w_t.copy_(w_t)
+            self.b_t.copy_(torch.tensor([b_t], dtype=torch.float32))
+
+    def forward(self, img_emb: torch.Tensor, text_emb: torch.Tensor) -> torch.Tensor:
+        if img_emb.dim() == 2:
+            img_emb = img_emb.unsqueeze(1)  # (B, 1, D)
+
+        v_norm = F.normalize(img_emb, dim=-1)   # (B, 1, D)
+        t_norm = F.normalize(text_emb, dim=-1)  # (B, K, D)
+
+        margin_v = torch.sum(v_norm * self.w_v, dim=-1) + self.b_v  # (B, 1)
+        margin_t = torch.sum(t_norm * self.w_t, dim=-1) + self.b_t  # (B, K)
+
+        if self.use_hard_sign:
+            scores = torch.sign(margin_v) * torch.sign(margin_t)
+        else:
+            scores = margin_v * margin_t  # (B, K)
+
+        return scores
+
+
 def build_scorer(model_type: str, feature_dim: int, rank: int = 32) -> BaseScorer:
     """Factory function to build a scoring head model by name.
 
     Args:
-        model_type: Name of the scoring head (e.g., 'cosine', 'bilinear', 'low_rank_bilinear').
+        model_type: Name of the scoring head (e.g., 'cosine', 'bilinear', 'dual_classifier_product').
         feature_dim: Dimensionality of CLIP embeddings (typically 512).
         rank: Rank k for LowRankBilinearScorer and NonLinearBiEncoderScorer (default 32).
     """
@@ -344,7 +387,10 @@ def build_scorer(model_type: str, feature_dim: int, rank: int = 32) -> BaseScore
         return LowRankBilinearScorer(feature_dim, rank=rank)
     elif name_lower in ["nonlinear_biencoder", "nl_biencoder", "nonlinear_bi", "nl_bi"]:
         return NonLinearBiEncoderScorer(feature_dim, rank=rank)
+    elif name_lower in ["dual_classifier_product", "product_probe", "dual_classifier"]:
+        return DualClassifierProductScorer(feature_dim)
     else:
         raise ValueError(f"Unknown scoring model type: {model_type}. "
                          f"Available: cosine, weighted_cosine, bilinear, logistic_regression, "
-                         f"shallow_mlp, deep_mlp, low_rank_bilinear, nonlinear_biencoder")
+                         f"shallow_mlp, deep_mlp, low_rank_bilinear, nonlinear_biencoder, dual_classifier_product")
+

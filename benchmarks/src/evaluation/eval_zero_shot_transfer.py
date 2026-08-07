@@ -297,7 +297,7 @@ def main():
 
     if scorer_dir and os.path.exists(scorer_dir):
         for fname in sorted(os.listdir(scorer_dir)):
-            if fname.endswith(".pt"):
+            if fname.endswith(".pt") or fname.endswith(".npz"):
                 full_p = os.path.join(scorer_dir, fname)
                 if full_p not in ckpt_paths:
                     ckpt_paths.append(full_p)
@@ -314,6 +314,26 @@ def main():
 
     transfer_results = {}
 
+    def _load_scorer_from_ckpt(ckpt_path: str, feature_dim: int, rank_default: int):
+        from src.evaluation.scoring_heads import DualClassifierProductScorer
+        if ckpt_path.endswith(".npz"):
+            data = np.load(ckpt_path)
+            w_v = torch.from_numpy(data["w_v"]).float()
+            b_v = float(data["b_v"])
+            w_t = torch.from_numpy(data["w_t"]).float()
+            b_t = float(data["b_t"])
+            scorer = DualClassifierProductScorer(feature_dim=w_v.shape[0])
+            scorer.load_weights(w_v, b_v, w_t, b_t)
+            model_name = os.path.basename(ckpt_path).replace(".npz", "")
+            return scorer, model_name
+        else:
+            ckpt = torch.load(ckpt_path, map_location="cpu")
+            model_name = ckpt.get("model_name", os.path.basename(ckpt_path).replace(".pt", ""))
+            rank = ckpt.get("rank", rank_default)
+            scorer = build_scorer(model_name, feature_dim, rank=rank)
+            scorer.load_state_dict(ckpt["state_dict"])
+            return scorer, model_name
+
     if is_retrieval:
         print(f"\n🔍 Detected Retrieval Task Dataset: {args.target_mcq}")
         images_emb, texts_emb, texts_image_index = extract_retrieval_embeddings(
@@ -329,12 +349,7 @@ def main():
 
         for ckpt_path in ckpt_paths:
             print(f"\nLoading Pre-trained Scorer Checkpoint: {ckpt_path}")
-            ckpt = torch.load(ckpt_path, map_location=device)
-            model_name = ckpt.get("model_name", os.path.basename(ckpt_path).replace(".pt", ""))
-            rank = ckpt.get("rank", args.rank)
-
-            scorer = build_scorer(model_name, feature_dim, rank=rank)
-            scorer.load_state_dict(ckpt["state_dict"])
+            scorer, model_name = _load_scorer_from_ckpt(ckpt_path, feature_dim, args.rank)
 
             ckpt_metrics = evaluate_zero_shot_retrieval(scorer, images_emb, texts_emb, texts_image_index, device=device)
             print(f"Pre-trained Scorer ({model_name}) Retrieval: T2I R@1 = {ckpt_metrics['t2i_recall@1']:.2f}% | T2I R@5 = {ckpt_metrics['t2i_recall@5']:.2f}% | I2T R@1 = {ckpt_metrics['i2t_recall@1']:.2f}%")
@@ -354,16 +369,13 @@ def main():
 
         for ckpt_path in ckpt_paths:
             print(f"\nLoading Pre-trained Scorer Checkpoint: {ckpt_path}")
-            ckpt = torch.load(ckpt_path, map_location=device)
-            model_name = ckpt.get("model_name", os.path.basename(ckpt_path).replace(".pt", ""))
-            rank = ckpt.get("rank", args.rank)
-
-            scorer = build_scorer(model_name, feature_dim, rank=rank)
-            scorer.load_state_dict(ckpt["state_dict"])
+            scorer, model_name = _load_scorer_from_ckpt(ckpt_path, feature_dim, args.rank)
 
             ckpt_metrics = evaluate_zero_shot_scorer(scorer, img_embeds, text_embeds, targets, question_types, device=device)
             print(f"Pre-trained Scorer ({model_name}) MCQ: Total Acc = {ckpt_metrics['total_accuracy']:.2f}% | Pos Acc = {ckpt_metrics['positive_accuracy']:.2f}% | Neg Acc = {ckpt_metrics['negative_accuracy']:.2f}%")
+
             transfer_results[f"Pretrained_{model_name}"] = ckpt_metrics
+
 
     # Save JSON and Summary CSV
     out_json = os.path.join(args.output_dir, "zero_shot_transfer_results.json")

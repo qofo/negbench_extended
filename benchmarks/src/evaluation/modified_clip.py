@@ -84,18 +84,29 @@ class NegationAwareCLIPWrapper(nn.Module):
             self.U_neg = torch.from_numpy(U_np).float()
 
         # Load trained Scoring Head Checkpoint
-        if self.negation_method in ["scoring_head", "trained_scorer"] or scorer_ckpt is not None:
+        if self.negation_method in ["scoring_head", "trained_scorer", "dual_classifier_product", "product_probe"] or scorer_ckpt is not None:
             if scorer_ckpt and os.path.exists(scorer_ckpt):
-                from evaluation.scoring_heads import build_scorer
-                checkpoint = torch.load(scorer_ckpt, map_location="cpu")
-                
-                ckpt_type = checkpoint.get("model_name", scorer_type) if isinstance(checkpoint, dict) else scorer_type
-                ckpt_dim = checkpoint.get("feature_dim", feature_dim) if isinstance(checkpoint, dict) else feature_dim
-                state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+                from evaluation.scoring_heads import build_scorer, DualClassifierProductScorer
+                if scorer_ckpt.endswith(".npz"):
+                    data = np.load(scorer_ckpt)
+                    w_v = torch.from_numpy(data["w_v"]).float()
+                    b_v = float(data["b_v"])
+                    w_t = torch.from_numpy(data["w_t"]).float()
+                    b_t = float(data["b_t"])
+                    feat_dim = w_v.shape[0]
+                    self.scorer = DualClassifierProductScorer(feature_dim=feat_dim)
+                    self.scorer.load_weights(w_v, b_v, w_t, b_t)
+                    print(f"✅ Loaded trained DualClassifierProductScorer from NPZ: {scorer_ckpt}")
+                else:
+                    checkpoint = torch.load(scorer_ckpt, map_location="cpu")
+                    ckpt_type = checkpoint.get("model_name", scorer_type) if isinstance(checkpoint, dict) else scorer_type
+                    ckpt_dim = checkpoint.get("feature_dim", feature_dim) if isinstance(checkpoint, dict) else feature_dim
+                    state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
 
-                self.scorer = build_scorer(ckpt_type, ckpt_dim)
-                self.scorer.load_state_dict(state_dict)
-                print(f"✅ Loaded trained Scoring Head '{ckpt_type}' from: {scorer_ckpt}")
+                    self.scorer = build_scorer(ckpt_type, ckpt_dim)
+                    self.scorer.load_state_dict(state_dict)
+                    print(f"✅ Loaded trained Scoring Head '{ckpt_type}' from: {scorer_ckpt}")
+
 
     def compute_similarity(self, img_feats: torch.Tensor, text_feats: torch.Tensor) -> torch.Tensor:
         """
