@@ -32,6 +32,8 @@ from analysis.beaf.object_experiment import (
     run_leave_one_object_out_text_probe_experiment,
     evaluate_unseen_template_group_text_probe,
     train_eval_vision_linear_probe,
+    train_eval_vision_high_order_probe,
+    VisionProbeWrapper,
     evaluate_dual_classifier_product_scorer,
     run_single_object_train_val_experiment,
 )
@@ -62,9 +64,12 @@ __all__ = [
     "run_leave_one_object_out_text_probe_experiment",
     "evaluate_unseen_template_group_text_probe",
     "train_eval_vision_linear_probe",
+    "train_eval_vision_high_order_probe",
+    "VisionProbeWrapper",
     "evaluate_dual_classifier_product_scorer",
     "run_single_object_train_val_experiment",
 ]
+
 
 
 

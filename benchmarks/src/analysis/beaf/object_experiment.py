@@ -17,8 +17,162 @@ import open_clip
 from PIL import Image
 from typing import List, Dict, Tuple, Any, Optional
 from tqdm import tqdm
+import torch.nn as nn
 from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
 from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
+
+
+class PyTorchMLPProbe(nn.Module):
+    def __init__(self, in_dim: int, hidden_dim: int = 64):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class PyTorchLowRankBilinearProbe(nn.Module):
+    def __init__(self, in_dim: int, rank: int = 4):
+        super().__init__()
+        self.U = nn.Parameter(torch.randn(in_dim, rank) * 0.01)
+        self.V = nn.Parameter(torch.randn(in_dim, rank) * 0.01)
+        self.w = nn.Parameter(torch.zeros(in_dim))
+        self.b = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x):
+        z = torch.matmul(x, self.U)
+        h = torch.matmul(x, self.V)
+        quad = torch.sum(z * h, dim=-1)
+        lin = torch.sum(x * self.w, dim=-1)
+        return (quad + lin + self.b).unsqueeze(-1)
+
+
+class VisionProbeWrapper:
+    def __init__(self, probe_type: str, model_obj: Any):
+        self.probe_type = probe_type
+        self.model_obj = model_obj
+
+    def decision_function(self, X: np.ndarray) -> np.ndarray:
+        if len(X) == 0:
+            return np.empty((0,))
+        if self.probe_type == "linear":
+            return self.model_obj.decision_function(X)
+        elif self.probe_type == "quadratic":
+            X_quad = np.hstack([X, X ** 2])
+            return self.model_obj.decision_function(X_quad)
+        elif self.probe_type == "poly_kernel":
+            return self.model_obj.decision_function(X)
+        elif self.probe_type in ["mlp", "low_rank_bilinear"]:
+            self.model_obj.eval()
+            with torch.no_grad():
+                t_X = torch.tensor(X, dtype=torch.float32)
+                out = self.model_obj(t_X).squeeze(-1).numpy()
+            return out
+        else:
+            return self.model_obj.decision_function(X)
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        scores = self.decision_function(X)
+        return np.where(scores >= 0, 1, -1)
+
+    def score(self, X: np.ndarray, y: np.ndarray) -> float:
+        if len(X) == 0:
+            return 0.5
+        preds = self.predict(X)
+        return float(np.mean(preds == y))
+
+
+def _fit_single_vision_probe(probe_type: str, X_tr: np.ndarray, y_tr: np.ndarray, C: float = 1.0) -> VisionProbeWrapper:
+    """Helper to instantiate and fit a specific vision probe type on train data."""
+    if probe_type == "linear":
+        clf = LogisticRegression(C=C, max_iter=1000, random_state=42)
+        clf.fit(X_tr, y_tr)
+        return VisionProbeWrapper("linear", clf)
+    elif probe_type == "quadratic":
+        X_tr_quad = np.hstack([X_tr, X_tr ** 2])
+        clf = LogisticRegression(C=C, max_iter=1000, random_state=42)
+        clf.fit(X_tr_quad, y_tr)
+        return VisionProbeWrapper("quadratic", clf)
+    elif probe_type == "poly_kernel":
+        clf = SVC(kernel="poly", degree=2, C=C, random_state=42)
+        clf.fit(X_tr, y_tr)
+        return VisionProbeWrapper("poly_kernel", clf)
+    elif probe_type == "mlp":
+        D = X_tr.shape[1]
+        model = PyTorchMLPProbe(D, hidden_dim=64)
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=1e-4)
+        criterion = nn.BCEWithLogitsLoss()
+        y_binary = np.where(y_tr == 1, 1.0, 0.0)
+        t_X = torch.tensor(X_tr, dtype=torch.float32)
+        t_y = torch.tensor(y_binary, dtype=torch.float32).unsqueeze(-1)
+        model.train()
+        for _ in range(80):
+            optimizer.zero_grad()
+            out = model(t_X)
+            loss = criterion(out, t_y)
+            loss.backward()
+            optimizer.step()
+        model.eval()
+        return VisionProbeWrapper("mlp", model)
+    elif probe_type == "low_rank_bilinear":
+        D = X_tr.shape[1]
+        model = PyTorchLowRankBilinearProbe(D, rank=4)
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=1e-4)
+        criterion = nn.BCEWithLogitsLoss()
+        y_binary = np.where(y_tr == 1, 1.0, 0.0)
+        t_X = torch.tensor(X_tr, dtype=torch.float32)
+        t_y = torch.tensor(y_binary, dtype=torch.float32).unsqueeze(-1)
+        model.train()
+        for _ in range(80):
+            optimizer.zero_grad()
+            out = model(t_X)
+            loss = criterion(out, t_y)
+            loss.backward()
+            optimizer.step()
+        model.eval()
+        return VisionProbeWrapper("low_rank_bilinear", model)
+    else:
+        clf = LogisticRegression(C=C, max_iter=1000, random_state=42)
+        clf.fit(X_tr, y_tr)
+        return VisionProbeWrapper("linear", clf)
+
+
+def train_eval_vision_high_order_probe(
+    pos_v_emb: np.ndarray,
+    neg_v_emb: np.ndarray,
+    probe_type: str = "linear",
+    C: float = 1.0,
+    cv_folds: int = 5
+) -> Tuple[float, float, Optional[VisionProbeWrapper]]:
+    """Train and evaluate 1st-degree or 2nd-degree high-order non-linear vision probes."""
+    if len(pos_v_emb) == 0 or len(neg_v_emb) == 0:
+        return 0.5, 0.0, None
+
+    X_v = np.vstack([pos_v_emb, neg_v_emb])
+    y_v = np.array([1] * len(pos_v_emb) + [-1] * len(neg_v_emb))
+
+    n_samples = len(y_v)
+    effective_folds = min(cv_folds, n_samples // 2)
+
+    if effective_folds >= 2:
+        skf = StratifiedKFold(n_splits=effective_folds, shuffle=True, random_state=42)
+        scores = []
+        for train_idx, val_idx in skf.split(X_v, y_v):
+            probe = _fit_single_vision_probe(probe_type, X_v[train_idx], y_v[train_idx], C=C)
+            sc = probe.score(X_v[val_idx], y_v[val_idx])
+            scores.append(sc)
+        mean_acc, std_acc = float(np.mean(scores)), float(np.std(scores))
+    else:
+        mean_acc, std_acc = 0.5, 0.0
+
+    fitted_probe = _fit_single_vision_probe(probe_type, X_v, y_v, C=C)
+    return mean_acc, std_acc, fitted_probe
+
 
 
 def run_single_object_train_val_experiment(
@@ -34,17 +188,10 @@ def run_single_object_train_val_experiment(
     device: str = "cuda",
     batch_size: int = 64,
     train_ratio: float = 0.7,
-    random_state: int = 42
+    random_state: int = 42,
+    vision_probe_type: str = "linear",
 ) -> Dict[str, Any]:
-    """Dedicated Single-Object Experiment with 70:30 Train/Val Split.
-    
-    Evaluates:
-    1. Text-Only Probing (Train on 70% text templates -> Val on 30% text templates)
-    2. Vision-Only Probing (Train on 70% Present/Absent images -> Val on 30% images)
-    3. 4-Way Multimodal Joint Scoring S(v, t) = f_V(v) * f_T(t) on Val split:
-       - Matched High Scores: S(v_pos, t_pos) > 0 and S(v_neg, t_neg) > 0
-       - Mismatched Low Scores: S(v_pos, t_neg) < 0 and S(v_neg, t_pos) < 0
-    """
+    """Dedicated Single-Object Experiment with 70:30 Train/Val Split."""
     model.eval()
 
     # 1. Feature Extraction
@@ -96,12 +243,12 @@ def run_single_object_train_val_experiment(
     t_clf = LogisticRegression(C=1.0, max_iter=1000, random_state=random_state)
     t_clf.fit(X_t_tr, y_t_tr)
 
-    v_clf = LogisticRegression(C=1.0, max_iter=1000, random_state=random_state)
-    v_clf.fit(X_v_tr, y_v_tr)
+    v_clf = _fit_single_vision_probe(vision_probe_type, X_v_tr, y_v_tr)
 
     # 4. Measure Val Performance for Modality-Specific Probes
     val_t_acc = float(t_clf.score(X_t_val, y_t_val))
     val_v_acc = float(v_clf.score(X_v_val, y_v_val))
+
 
     # 5. Measure 4-Way Multimodal Joint Scoring on Val Split S(v, t) = f_V(v) * f_T(t)
     f_V_pos_val = v_clf.decision_function(pos_v_val)  # [M_val]
@@ -465,9 +612,10 @@ def run_single_object_analysis(
     preprocess: callable,
     tokenizer: callable,
     device: str = "cuda",
-    batch_size: int = 64
+    batch_size: int = 64,
+    vision_probe_type: str = "linear",
 ) -> Dict[str, Any]:
-    """Perform 4-way cross cosine similarity, zero-shot accuracy, and dual linear probing analysis for a single object."""
+    """Perform 4-way cross cosine similarity, zero-shot accuracy, and dual probing analysis for a single object."""
     model.eval()
 
     # 1. Encode Positive and Negative Text Templates
@@ -544,9 +692,10 @@ def run_single_object_analysis(
     text_cv_acc, text_cv_std, t_clf = evaluate_text_linear_probe_single_object(pos_t_emb, neg_t_emb)
     unseen_tmpl_results = evaluate_unseen_template_group_text_probe(pos_t_emb, neg_t_emb, pos_groups, neg_groups)
 
-    # 6. Vision Linear Probe & Joint Dual Scorer
-    vision_cv_acc, vision_cv_std, v_clf = train_eval_vision_linear_probe(pos_v_emb, neg_v_emb)
+    # 6. Vision High-Order Non-Linear Probe & Joint Dual Scorer
+    vision_cv_acc, vision_cv_std, v_clf = train_eval_vision_high_order_probe(pos_v_emb, neg_v_emb, probe_type=vision_probe_type)
     dual_scorer_res = evaluate_dual_classifier_product_scorer(v_clf, t_clf, pos_v_emb, neg_v_emb, pos_t_emb, neg_t_emb)
+
 
     results = {
         "object_name": object_name,
