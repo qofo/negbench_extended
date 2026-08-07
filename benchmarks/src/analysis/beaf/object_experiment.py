@@ -109,6 +109,116 @@ def run_leave_one_object_out_text_probe_experiment(
 
 
 
+def evaluate_unseen_template_group_text_probe(
+    pos_t_emb: np.ndarray,
+    neg_t_emb: np.ndarray,
+    pos_groups: List[str],
+    neg_groups: List[str],
+    C: float = 1.0
+) -> Dict[str, Any]:
+    """Perform Leave-One-Template-Group-Out (LOO-Group) cross-validation.
+    
+    Trains LogisticRegression on 3 template groups, and tests accuracy on the 4th unseen template group.
+    Prevents template keyword shortcut memorization.
+    """
+    unique_groups = sorted(list(set(pos_groups + neg_groups)))
+    per_group_acc = {}
+
+    for target_group in unique_groups:
+        # Train set: All templates EXCEPT target_group
+        train_pos_idx = [i for i, g in enumerate(pos_groups) if g != target_group]
+        train_neg_idx = [i for i, g in enumerate(neg_groups) if g != target_group]
+
+        # Test set: Templates in target_group
+        test_pos_idx = [i for i, g in enumerate(pos_groups) if g == target_group]
+        test_neg_idx = [i for i, g in enumerate(neg_groups) if g == target_group]
+
+        if not test_pos_idx or not test_neg_idx:
+            continue
+
+        X_train = np.vstack([pos_t_emb[train_pos_idx], neg_t_emb[train_neg_idx]])
+        y_train = np.array([1] * len(train_pos_idx) + [-1] * len(train_neg_idx))
+
+        X_test = np.vstack([pos_t_emb[test_pos_idx], neg_t_emb[test_neg_idx]])
+        y_test = np.array([1] * len(test_pos_idx) + [-1] * len(test_neg_idx))
+
+        clf = LogisticRegression(C=C, max_iter=1000, random_state=42)
+        clf.fit(X_train, y_train)
+
+        acc = clf.score(X_test, y_test)
+        per_group_acc[target_group] = float(acc)
+
+    accs = list(per_group_acc.values())
+    return {
+        "unseen_template_group_acc_mean": float(np.mean(accs)) if accs else 0.0,
+        "unseen_template_group_acc_std": float(np.std(accs)) if accs else 0.0,
+        "per_group_acc": per_group_acc,
+    }
+
+
+def train_eval_vision_linear_probe(
+    pos_v_emb: np.ndarray,
+    neg_v_emb: np.ndarray,
+    C: float = 1.0,
+    cv_folds: int = 5
+) -> Tuple[float, float, LogisticRegression]:
+    """Train and evaluate LogisticRegression probe on Present (+1) vs Absent (-1) images."""
+    X_v = np.vstack([pos_v_emb, neg_v_emb])
+    y_v = np.array([1] * len(pos_v_emb) + [-1] * len(neg_v_emb))
+
+    n_samples = len(y_v)
+    effective_folds = min(cv_folds, n_samples // 2)
+
+    clf = LogisticRegression(C=C, max_iter=1000, random_state=42)
+    if effective_folds >= 2:
+        skf = StratifiedKFold(n_splits=effective_folds, shuffle=True, random_state=42)
+        scores = cross_val_score(clf, X_v, y_v, cv=skf, scoring="accuracy")
+        mean_acc, std_acc = float(scores.mean()), float(scores.std())
+    else:
+        mean_acc, std_acc = 0.5, 0.0
+
+    clf.fit(X_v, y_v)
+    return mean_acc, std_acc, clf
+
+
+def evaluate_dual_classifier_product_scorer(
+    v_clf: LogisticRegression,
+    t_clf: LogisticRegression,
+    pos_v_emb: np.ndarray,
+    neg_v_emb: np.ndarray,
+    pos_t_emb: np.ndarray,
+    neg_t_emb: np.ndarray
+) -> Dict[str, float]:
+    """Evaluate S(v, t) = f_V(v) * f_T(t) Product Scorer on 1:1 Present/Absent images."""
+    # Decision functions
+    f_V_pos = v_clf.decision_function(pos_v_emb)  # [M]
+    f_V_neg = v_clf.decision_function(neg_v_emb)  # [M]
+
+    f_T_pos = np.mean(t_clf.decision_function(pos_t_emb))  # scalar
+    f_T_neg = np.mean(t_clf.decision_function(neg_t_emb))  # scalar
+
+    # Product scores S(v, t) = f_V(v) * f_T(t)
+    S_pos_v_pos_t = f_V_pos * f_T_pos
+    S_pos_v_neg_t = f_V_pos * f_T_neg
+
+    S_neg_v_pos_t = f_V_neg * f_T_pos
+    S_neg_v_neg_t = f_V_neg * f_T_neg
+
+    # Present Image: S(v_pos, t_pos) > S(v_pos, t_neg)
+    pos_correct = np.sum(S_pos_v_pos_t > S_pos_v_neg_t)
+    # Absent Image: S(v_neg, t_neg) > S(v_neg, t_pos)
+    neg_correct = np.sum(S_neg_v_neg_t > S_neg_v_pos_t)
+
+    total = len(pos_v_emb) + len(neg_v_emb)
+    overall_acc = float(pos_correct + neg_correct) / total if total > 0 else 0.0
+
+    return {
+        "dual_probe_pos_acc": float(pos_correct) / len(pos_v_emb),
+        "dual_probe_neg_acc": float(neg_correct) / len(neg_v_emb),
+        "dual_probe_overall_acc": overall_acc,
+    }
+
+
 def format_object_name(object_name: str) -> Dict[str, str]:
     """Helper to compute grammatical variants for a given object name."""
     obj = object_name.strip().lower()
@@ -152,21 +262,33 @@ def format_object_name(object_name: str) -> Dict[str, str]:
     }
 
 
-def instantiate_templates(object_name: str, template_data: Dict[str, List[str]]) -> Tuple[List[str], List[str]]:
-    """Fill template placeholders ({object}, {a_object}, {A_object}, {plural_object}) for a specific object."""
+def instantiate_templates(object_name: str, template_data: Dict[str, Any]) -> Tuple[List[str], List[str], List[str], List[str]]:
+    """Fill template placeholders for a specific object, returning prompts and group tags."""
     fmt = format_object_name(object_name)
 
-    neg_prompts = []
-    for tmpl in template_data["negative_templates"]:
-        prompt = tmpl.format(**fmt)
-        neg_prompts.append(prompt)
+    neg_prompts, neg_groups = [], []
+    for item in template_data["negative_templates"]:
+        if isinstance(item, dict):
+            tmpl_str = item["template"]
+            grp = item.get("group", "group_A")
+        else:
+            tmpl_str = item
+            grp = "group_A"
+        neg_prompts.append(tmpl_str.format(**fmt))
+        neg_groups.append(grp)
 
-    pos_prompts = []
-    for tmpl in template_data["positive_templates"]:
-        prompt = tmpl.format(**fmt)
-        pos_prompts.append(prompt)
+    pos_prompts, pos_groups = [], []
+    for item in template_data["positive_templates"]:
+        if isinstance(item, dict):
+            tmpl_str = item["template"]
+            grp = item.get("group", "group_A")
+        else:
+            tmpl_str = item
+            grp = "group_A"
+        pos_prompts.append(tmpl_str.format(**fmt))
+        pos_groups.append(grp)
 
-    return neg_prompts, pos_prompts
+    return neg_prompts, pos_prompts, neg_groups, pos_groups
 
 
 def get_balanced_beaf_object_df(df: pd.DataFrame, target_object: str) -> pd.DataFrame:
@@ -194,13 +316,15 @@ def run_single_object_analysis(
     object_name: str,
     neg_prompts: List[str],
     pos_prompts: List[str],
+    neg_groups: List[str],
+    pos_groups: List[str],
     model: torch.nn.Module,
     preprocess: callable,
     tokenizer: callable,
     device: str = "cuda",
     batch_size: int = 64
 ) -> Dict[str, Any]:
-    """Perform 4-way cross cosine similarity and zero-shot accuracy analysis for a single object."""
+    """Perform 4-way cross cosine similarity, zero-shot accuracy, and dual linear probing analysis for a single object."""
     model.eval()
 
     # 1. Encode Positive and Negative Text Templates
@@ -247,28 +371,22 @@ def run_single_object_analysis(
         return {"error": f"Failed to load images for object {object_name}"}
 
     # 3. Compute Similarities
-    # Image-Text Full 4-Way Matrices
-    # pos_v vs pos_t: [M, N_pos]
     sim_pos_v_pos_t = pos_v_emb @ pos_t_emb.T
     sim_pos_v_neg_t = pos_v_emb @ neg_t_emb.T
     sim_neg_v_pos_t = neg_v_emb @ pos_t_emb.T
     sim_neg_v_neg_t = neg_v_emb @ neg_t_emb.T
 
-    # Mean Prompt Similarities per Image
     mean_sim_pos_v_pos_t = np.mean(sim_pos_v_pos_t, axis=1)  # [M]
     mean_sim_pos_v_neg_t = np.mean(sim_pos_v_neg_t, axis=1)  # [M]
     mean_sim_neg_v_pos_t = np.mean(sim_neg_v_pos_t, axis=1)  # [M]
     mean_sim_neg_v_neg_t = np.mean(sim_neg_v_neg_t, axis=1)  # [M]
 
-    # Text-Text Cross Similarity Matrix
-    sim_text_pos_neg = pos_t_emb @ neg_t_emb.T  # [N_pos, N_neg]
+    sim_text_pos_neg = pos_t_emb @ neg_t_emb.T
     sim_text_pos_pos = pos_t_emb @ pos_t_emb.T
     sim_text_neg_neg = neg_t_emb @ neg_t_emb.T
 
-    # 4. Compute Zero-shot Classification Accuracy (MCQ & Binary)
-    # Present Image correctly predicts Pos Text > Neg Text
+    # 4. Zero-shot Classification Accuracy (Cosine Similarity)
     pos_v_correct = np.sum(mean_sim_pos_v_pos_t > mean_sim_pos_v_neg_t)
-    # Absent Image correctly predicts Neg Text > Pos Text
     neg_v_correct = np.sum(mean_sim_neg_v_neg_t > mean_sim_neg_v_pos_t)
 
     total_images = len(pos_v_emb) + len(neg_v_emb)
@@ -276,12 +394,16 @@ def run_single_object_analysis(
     pos_acc = float(pos_v_correct) / len(pos_v_emb)
     neg_acc = float(neg_v_correct) / len(neg_v_emb)
 
-    # Margin calculation: S(v_pos, t_pos) - S(v_pos, t_neg)
     pos_v_margin = mean_sim_pos_v_pos_t - mean_sim_pos_v_neg_t
     neg_v_margin = mean_sim_neg_v_neg_t - mean_sim_neg_v_pos_t
 
-    # 5. Text Linear Probe (5-Fold CV on single object positive vs negative text vectors)
-    text_cv_acc, text_cv_std, _ = evaluate_text_linear_probe_single_object(pos_t_emb, neg_t_emb)
+    # 5. Text Linear Probe (5-Fold CV & Unseen Template Group CV)
+    text_cv_acc, text_cv_std, t_clf = evaluate_text_linear_probe_single_object(pos_t_emb, neg_t_emb)
+    unseen_tmpl_results = evaluate_unseen_template_group_text_probe(pos_t_emb, neg_t_emb, pos_groups, neg_groups)
+
+    # 6. Vision Linear Probe & Joint Dual Scorer
+    vision_cv_acc, vision_cv_std, v_clf = train_eval_vision_linear_probe(pos_v_emb, neg_v_emb)
+    dual_scorer_res = evaluate_dual_classifier_product_scorer(v_clf, t_clf, pos_v_emb, neg_v_emb, pos_t_emb, neg_t_emb)
 
     results = {
         "object_name": object_name,
@@ -301,7 +423,7 @@ def run_single_object_analysis(
         "mean_sim_text_pos_pos": float(np.mean(sim_text_pos_pos)),
         "mean_sim_text_neg_neg": float(np.mean(sim_text_neg_neg)),
 
-        # Accuracy & Margins
+        # Zero-Shot Cosine Accuracies
         "pos_image_accuracy": pos_acc,
         "neg_image_accuracy": neg_acc,
         "overall_accuracy": overall_acc,
@@ -311,11 +433,21 @@ def run_single_object_analysis(
         # Text Linear Probe Metrics
         "text_probe_cv_acc": text_cv_acc,
         "text_probe_cv_std": text_cv_std,
+        "unseen_template_group_acc_mean": unseen_tmpl_results["unseen_template_group_acc_mean"],
+        "unseen_template_group_acc_std": unseen_tmpl_results["unseen_template_group_acc_std"],
 
-        # Raw Text Embeddings for Cross-Object Evaluation
+        # Vision Probe & Dual Classifier Product Metrics
+        "vision_probe_cv_acc": vision_cv_acc,
+        "vision_probe_cv_std": vision_cv_std,
+        "dual_probe_overall_acc": dual_scorer_res["dual_probe_overall_acc"],
+
+        # Raw Embeddings & Classifiers for Cross-Object Sweeps
         "_pos_t_emb": pos_t_emb,
         "_neg_t_emb": neg_t_emb,
+        "_pos_v_emb": pos_v_emb,
+        "_neg_v_emb": neg_v_emb,
     }
 
     return results
+
 

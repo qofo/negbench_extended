@@ -113,13 +113,15 @@ def main():
         if df_obj.empty or (len(df_obj) // 2) < args.min_pairs:
             continue
 
-        neg_prompts, pos_prompts = instantiate_templates(obj, template_data)
+        neg_prompts, pos_prompts, neg_groups, pos_groups = instantiate_templates(obj, template_data)
 
         res = run_single_object_analysis(
             df_balanced=df_obj,
             object_name=obj,
             neg_prompts=neg_prompts,
             pos_prompts=pos_prompts,
+            neg_groups=neg_groups,
+            pos_groups=pos_groups,
             model=model,
             preprocess=preprocess,
             tokenizer=tokenizer,
@@ -130,7 +132,7 @@ def main():
         if "error" not in res:
             object_t_embs[obj] = (res["_pos_t_emb"], res["_neg_t_emb"])
             object_results.append(res)
-            print(f"  [{obj:15s}] Pairs: {res['n_present_images']:3d} | Text Probe CV Acc: {res['text_probe_cv_acc']*100:.1f}% | Pos Acc: {res['pos_image_accuracy']*100:.1f}% | Neg Acc: {res['neg_image_accuracy']*100:.1f}% | Overall Acc: {res['overall_accuracy']*100:.1f}%")
+            print(f"  [{obj:15s}] Pairs:{res['n_present_images']:3d} | Text Probe CV:{res['text_probe_cv_acc']*100:.1f}% | Unseen Tmpl Group:{res['unseen_template_group_acc_mean']*100:.1f}% | Vision Probe:{res['vision_probe_cv_acc']*100:.1f}% | Dual Probe:{res['dual_probe_overall_acc']*100:.1f}% | ZeroShot Acc:{res['overall_accuracy']*100:.1f}%")
 
     if not object_results:
         print("❌ No valid objects found for analysis.")
@@ -149,6 +151,8 @@ def main():
     for res in object_results:
         res.pop("_pos_t_emb", None)
         res.pop("_neg_t_emb", None)
+        res.pop("_pos_v_emb", None)
+        res.pop("_neg_v_emb", None)
 
     # 7. Aggregate Results & Save
     res_df = pd.DataFrame(object_results)
@@ -168,6 +172,16 @@ def main():
         "macro_text_probe_cv_acc_std": float(res_df["text_probe_cv_acc"].std()),
         "macro_unseen_object_text_probe_acc_mean": float(looo_results.get("looo_unseen_acc_mean", 0.0)),
         "macro_unseen_object_text_probe_acc_std": float(looo_results.get("looo_unseen_acc_std", 0.0)),
+
+        # Unseen Template Group Cross Validation Averages
+        "macro_unseen_template_group_acc_mean": float(res_df["unseen_template_group_acc_mean"].mean()),
+        "macro_unseen_template_group_acc_std": float(res_df["unseen_template_group_acc_mean"].std()),
+
+        # Vision Probe & Dual Classifier Product Scorer Averages
+        "macro_vision_probe_cv_acc_mean": float(res_df["vision_probe_cv_acc"].mean()),
+        "macro_vision_probe_cv_acc_std": float(res_df["vision_probe_cv_acc"].std()),
+        "macro_dual_probe_overall_acc_mean": float(res_df["dual_probe_overall_acc"].mean()),
+        "macro_dual_probe_overall_acc_std": float(res_df["dual_probe_overall_acc"].std()),
 
         # Image-Text Zero-Shot Macro Averages
         "macro_pos_acc_mean": float(res_df["pos_image_accuracy"].mean()),
@@ -195,14 +209,18 @@ def main():
     print(f"Saved generalization summary to {json_out_path}")
 
     print("\n======================================================================")
-    print("📊 GENERALIZATION & TEXT LINEAR PROBE EXPERIMENT SUMMARY")
-    print(f" Evaluated Objects                 : {summary_stats['n_evaluated_objects']}")
-    print(f" Single-Object Text Probe CV Acc   : {summary_stats['macro_text_probe_cv_acc_mean']*100:.2f}% ± {summary_stats['macro_text_probe_cv_acc_std']*100:.2f}%")
-    print(f" Unseen Object Text Probe Acc (LOOO): {summary_stats['macro_unseen_object_text_probe_acc_mean']*100:.2f}% ± {summary_stats['macro_unseen_object_text_probe_acc_std']*100:.2f}%")
-    print(f" Zero-Shot Overall Acc (Macro)     : {summary_stats['macro_overall_acc_mean']*100:.2f}% ± {summary_stats['macro_overall_acc_std']*100:.2f}%")
+    print("📊 GENERALIZATION & COMPLEMENTARY PROBE EXPERIMENT SUMMARY")
+    print(f" Evaluated Objects                      : {summary_stats['n_evaluated_objects']}")
+    print(f" Single-Object Text Probe CV Acc        : {summary_stats['macro_text_probe_cv_acc_mean']*100:.2f}% ± {summary_stats['macro_text_probe_cv_acc_std']*100:.2f}%")
+    print(f" Unseen Object Text Probe Acc (LOOO)    : {summary_stats['macro_unseen_object_text_probe_acc_mean']*100:.2f}% ± {summary_stats['macro_unseen_object_text_probe_acc_std']*100:.2f}%")
+    print(f" Unseen Template Group Text Probe Acc   : {summary_stats['macro_unseen_template_group_acc_mean']*100:.2f}% ± {summary_stats['macro_unseen_template_group_acc_std']*100:.2f}%")
+    print(f" Single-Object Vision Probe CV Acc      : {summary_stats['macro_vision_probe_cv_acc_mean']*100:.2f}% ± {summary_stats['macro_vision_probe_cv_acc_std']*100:.2f}%")
+    print(f" Joint Dual Classifier Product Acc      : {summary_stats['macro_dual_probe_overall_acc_mean']*100:.2f}% ± {summary_stats['macro_dual_probe_overall_acc_std']*100:.2f}%")
+    print(f" Zero-Shot Overall Acc (Cosine Baseline): {summary_stats['macro_overall_acc_mean']*100:.2f}% ± {summary_stats['macro_overall_acc_std']*100:.2f}%")
     print("======================================================================")
 
 
 if __name__ == "__main__":
     main()
+
 
