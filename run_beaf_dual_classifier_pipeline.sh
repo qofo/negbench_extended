@@ -11,9 +11,17 @@
 set -e
 
 BASE_DIR="."
-BEAF_CSV="${BASE_DIR}/csvOLD/beaf_counterfactual_6col.csv"
-COCO_MCQ_CSV="${BASE_DIR}/csvOLD/COCO_val_mcq_top100_paired.csv"
-COCO_FULL_CSV="${BASE_DIR}/csvOLD/COCO_val_full_paired.csv"
+DATA_DIR="${BASE_DIR}/benchmarks/data/images"
+
+BEAF_CSV="${DATA_DIR}/beaf_counterfactual_6col.csv"
+if [ ! -f "${BEAF_CSV}" ]; then
+    BEAF_CSV="${BASE_DIR}/csvOLD/beaf_counterfactual_6col.csv"
+fi
+
+COCO_MCQ_CSV="${DATA_DIR}/COCO_val_mcq_llama3.1_rephrased.csv"
+COCO_RETRIEVAL_CSV="${DATA_DIR}/COCO_val_negated_retrieval_llama3.1_rephrased_affneg_true.csv"
+VOC_MCQ_CSV="${DATA_DIR}/VOC2007_mcq_llama3.1_rephrased.csv"
+CHEXPERT_MCQ_CSV="${DATA_DIR}/chexpert_binary_mcq_control_valid_only.csv"
 
 PROBE_OUT_DIR="${BASE_DIR}/logs/evaluation/beaf_dual_probe"
 EVAL_OUT_DIR="${BASE_DIR}/logs/evaluation/beaf_dual_classifier_pipeline"
@@ -24,6 +32,7 @@ PRETRAINED="openai"
 
 echo "======================================================================"
 echo "🚀 STAGE 1: Training Dual Classifiers (+1/-1) on BEAF Data"
+echo " Target BEAF CSV: ${BEAF_CSV}"
 echo "======================================================================"
 
 python train_beaf_dual_probes.py \
@@ -48,8 +57,11 @@ echo "======================================================================"
 BENCHMARKS=(
     "${BEAF_CSV}"
     "${COCO_MCQ_CSV}"
-    "${COCO_FULL_CSV}"
+    "${COCO_RETRIEVAL_CSV}"
+    "${VOC_MCQ_CSV}"
+    "${CHEXPERT_MCQ_CSV}"
 )
+
 
 for csv in "${BENCHMARKS[@]}"; do
     if [ -f "$csv" ]; then

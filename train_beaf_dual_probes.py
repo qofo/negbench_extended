@@ -48,9 +48,18 @@ def extract_beaf_features(
     preprocess: callable,
     tokenizer: callable,
     device: str = "cuda",
-    batch_size: int = 64
+    batch_size: int = 64,
+    cache_path: str = "logs/evaluation/cached_embeddings/beaf_probe_features.npz"
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Extract L2-normalized image and text embeddings from BEAF."""
+    """Extract L2-normalized image and text embeddings from BEAF with disk caching."""
+    if cache_path and os.path.exists(cache_path):
+        print(f"\n⚡ Loading pre-cached BEAF features from disk: {cache_path}")
+        try:
+            data = np.load(cache_path)
+            return data["X_text"], data["y_text"], data["X_vision"], data["y_vision"]
+        except Exception as e:
+            print(f"⚠️ Failed to load cache {cache_path}: {e}. Re-extracting...")
+
     model.eval()
 
     # 1. Text Features (Positive vs Negative)
@@ -93,8 +102,6 @@ def extract_beaf_features(
                         lbls_batch.append(lbl)
                     except Exception as e:
                         pass
-                else:
-                    pass
 
             if images_tensors:
                 imgs_batch_t = torch.stack(images_tensors).to(device)
@@ -104,6 +111,14 @@ def extract_beaf_features(
 
     X_vision = np.vstack(valid_img_embeds)
     y_vision = np.array(valid_img_labels)
+
+    if cache_path:
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        np.savez(cache_path, X_text=X_text, y_text=y_text, X_vision=X_vision, y_vision=y_vision)
+        print(f"✅ Saved BEAF features cache to: {cache_path}")
+
+    return X_text, y_text, X_vision, y_vision
+
 
     return X_text, y_text, X_vision, y_vision
 
@@ -157,7 +172,12 @@ def train_dual_probes(
 
 def main():
     parser = argparse.ArgumentParser(description="Train Dual Classifiers (+1/-1) on BEAF Data.")
-    parser.add_argument("--csv_path", type=str, default="csvOLD/beaf_counterfactual_6col.csv", help="Path to BEAF CSV")
+    default_csv = "benchmarks/data/images/beaf_counterfactual_6col.csv"
+    if not os.path.exists(default_csv) and os.path.exists("csvOLD/beaf_counterfactual_6col.csv"):
+        default_csv = "csvOLD/beaf_counterfactual_6col.csv"
+
+    parser.add_argument("--csv_path", type=str, default=default_csv, help="Path to BEAF CSV")
+
     parser.add_argument("--image_root", type=str, default="", help="Root directory for relative image paths")
     parser.add_argument("--model_name", type=str, default="ViT-B-32", help="OpenCLIP vision encoder architecture")
     parser.add_argument("--pretrained", type=str, default="openai", help="Pretrained weights")
