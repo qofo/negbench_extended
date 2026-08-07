@@ -610,15 +610,12 @@ def compute_vision_non_linear_probe(
     output_dir: str,
     seed: int = 42,
     object_names: Optional[np.ndarray] = None,
+    eval_raw_images: bool = False,
 ) -> Dict[str, Any]:
     """
-    Train 5-fold cross-validated 5-Stage Step-by-Step Probes on Visual Edit Difference Vectors.
-    Follows the 5-Stage Scientific Research Progression:
-    1. Linear Probe Baseline (C sweep)
-    2. Polynomial Kernel Probe (Degree 2, 3)
-    3. Real Low-Rank Bilinear Classifier f(x) = x^T U V^T x + w_0^T x + b (rank 4, 8, 16, 32, 64)
-    4. RBF Kernel SVM Probe (Gamma 1e-4..1.0)
-    5. MLP Capacity Probe (Hidden 8, 16, 32, 64)
+    Train 5-fold cross-validated Probes on Visual Features.
+    If eval_raw_images is True, probes directly on raw single image vectors X_orig (+1) vs X_cf (0).
+    Otherwise, probes on Visual Edit Difference Vectors (Real Shift vs Norm-Matched Random Noise).
     """
     n_orig = len(vis_orig["pre_proj"])
     rng = np.random.default_rng(seed=seed)
@@ -635,7 +632,8 @@ def compute_vision_non_linear_probe(
         "mlp_capacity": {}
     }
 
-    print(f"\n  🔍 [Debug: 6-Stage Step-by-Step Difference Probe] Pairs: {n_orig} real + {n_orig} ctrl = {n_orig * 2} vectors")
+    mode_str = "Raw Image Vectors (Single X_orig vs X_cf)" if eval_raw_images else "Visual Edit Difference Vectors (Real Shift vs Random Dir)"
+    print(f"\n  🔍 [Debug: Non-Linear Probe ({mode_str})] Samples: {n_orig * 2} total vectors")
 
     for stage_name in stages:
         print(f"\n  === Stage: {stage_name} ===")
@@ -646,30 +644,41 @@ def compute_vision_non_linear_probe(
             f_orig = vis_orig["final_l2norm"]
             f_cf   = vis_cf["final_l2norm"]
 
-        diff_real = f_orig - f_cf
-        # Norm-Matched Directional Control: Isotropic random directions with identical sample-wise L2 norm
-        d_in = diff_real.shape[1]
-        rng_ctrl = np.random.default_rng(seed=seed)
-        rand_dirs = rng_ctrl.normal(size=(n_orig, d_in))
-        rand_dirs = rand_dirs / np.linalg.norm(rand_dirs, axis=1, keepdims=True)
-        norms_real = np.linalg.norm(diff_real, axis=1, keepdims=True)
-        diff_ctrl = rand_dirs * norms_real
-
-        norm_real = np.linalg.norm(diff_real, axis=1).mean()
-        norm_ctrl = np.linalg.norm(diff_ctrl, axis=1).mean()
-        print(f"     - Mean L2 Norm: Real removal shift = {norm_real:.4f} | Control (norm-matched random dir) = {norm_ctrl:.4f}")
-
-        X_diff = np.vstack([l2_normalize(diff_real), l2_normalize(diff_ctrl)])
-        y_diff = np.array([1] * n_orig + [0] * n_orig)
-
-        if object_names is not None and len(object_names) == n_orig:
-            groups = np.concatenate([object_names, object_names[rand_idx]])
-            gkf = GroupKFold(n_splits=min(5, len(np.unique(groups))))
-            cv_splits = list(gkf.split(X_diff, y_diff, groups=groups))
-            print(f"     🔍 [GroupKFold Enabled] Non-linear Probe grouped by {len(np.unique(groups))} unique object_names.")
+        if eval_raw_images:
+            X_data = np.vstack([l2_normalize(f_orig), l2_normalize(f_cf)])
+            y_data = np.array([1] * n_orig + [0] * n_orig)
+            if object_names is not None and len(object_names) == n_orig:
+                groups = np.concatenate([object_names, object_names])
+                gkf = GroupKFold(n_splits=min(5, len(np.unique(groups))))
+                cv_splits = list(gkf.split(X_data, y_data, groups=groups))
+                print(f"     🔍 [GroupKFold Enabled] Probing raw single images grouped by {len(np.unique(groups))} unique object_names.")
+            else:
+                skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
+                cv_splits = list(skf.split(X_data, y_data))
         else:
-            skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
-            cv_splits = list(skf.split(X_diff, y_diff))
+            diff_real = f_orig - f_cf
+            d_in = diff_real.shape[1]
+            rng_ctrl = np.random.default_rng(seed=seed)
+            rand_dirs = rng_ctrl.normal(size=(n_orig, d_in))
+            rand_dirs = rand_dirs / np.linalg.norm(rand_dirs, axis=1, keepdims=True)
+            norms_real = np.linalg.norm(diff_real, axis=1, keepdims=True)
+            diff_ctrl = rand_dirs * norms_real
+
+            norm_real = np.linalg.norm(diff_real, axis=1).mean()
+            norm_ctrl = np.linalg.norm(diff_ctrl, axis=1).mean()
+            print(f"     - Mean L2 Norm: Real removal shift = {norm_real:.4f} | Control (norm-matched random dir) = {norm_ctrl:.4f}")
+
+            X_data = np.vstack([l2_normalize(diff_real), l2_normalize(diff_ctrl)])
+            y_data = np.array([1] * n_orig + [0] * n_orig)
+
+            if object_names is not None and len(object_names) == n_orig:
+                groups = np.concatenate([object_names, object_names[rand_idx]])
+                gkf = GroupKFold(n_splits=min(5, len(np.unique(groups))))
+                cv_splits = list(gkf.split(X_data, y_data, groups=groups))
+                print(f"     🔍 [GroupKFold Enabled] Non-linear Probe grouped by {len(np.unique(groups))} unique object_names.")
+            else:
+                skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
+                cv_splits = list(skf.split(X_data, y_data))
 
         # Stage 0: Element-wise Non-linear GELU Probe (Feature-wise, 0% Dimension Mixing Control)
         print("     [Stage 0/5] Element-wise Non-linear GELU Probe (0% Dimension Mixing):")
@@ -677,8 +686,8 @@ def compute_vision_non_linear_probe(
         fold_accs = []
         for train_idx, test_idx in cv_splits:
             acc = train_eval_element_wise_gelu(
-                X_diff[train_idx], y_diff[train_idx],
-                X_diff[test_idx], y_diff[test_idx],
+                X_data[train_idx], y_data[train_idx],
+                X_data[test_idx], y_data[test_idx],
                 seed=seed
             )
             fold_accs.append(acc)
@@ -693,7 +702,7 @@ def compute_vision_non_linear_probe(
         lin_results = {}
         for c in [1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0]:
             clf = LogisticRegression(C=c, max_iter=1000, random_state=seed)
-            scores = cross_val_score(clf, X_diff, y_diff, cv=cv_splits, scoring="accuracy")
+            scores = cross_val_score(clf, X_data, y_data, cv=cv_splits, scoring="accuracy")
             mean_acc = float(np.mean(scores) * 100)
             std_acc  = float(np.std(scores) * 100)
             lin_results[f"C_{c}"] = {"mean_acc": mean_acc, "std_acc": std_acc}
@@ -705,7 +714,7 @@ def compute_vision_non_linear_probe(
         poly_results = {}
         for deg in [2, 3]:
             clf = SVC(kernel="poly", degree=deg, coef0=1.0, C=1.0, random_state=seed)
-            scores = cross_val_score(clf, X_diff, y_diff, cv=cv_splits, scoring="accuracy")
+            scores = cross_val_score(clf, X_data, y_data, cv=cv_splits, scoring="accuracy")
             mean_acc = float(np.mean(scores) * 100)
             std_acc  = float(np.std(scores) * 100)
             poly_results[f"degree_{deg}"] = {"mean_acc": mean_acc, "std_acc": std_acc}
@@ -720,8 +729,8 @@ def compute_vision_non_linear_probe(
             fold_accs = []
             for train_idx, test_idx in cv_splits:
                 acc = train_eval_low_rank_bilinear(
-                    X_diff[train_idx], y_diff[train_idx],
-                    X_diff[test_idx], y_diff[test_idx],
+                    X_data[train_idx], y_data[train_idx],
+                    X_data[test_idx], y_data[test_idx],
                     rank=r, seed=seed
                 )
                 fold_accs.append(acc)
@@ -736,7 +745,7 @@ def compute_vision_non_linear_probe(
         rbf_results = {}
         for g in [1e-4, 1e-3, 1e-2, 1e-1, 1.0]:
             clf = SVC(kernel="rbf", gamma=g, C=1.0, random_state=seed)
-            scores = cross_val_score(clf, X_diff, y_diff, cv=cv_splits, scoring="accuracy")
+            scores = cross_val_score(clf, X_data, y_data, cv=cv_splits, scoring="accuracy")
             mean_acc = float(np.mean(scores) * 100)
             std_acc  = float(np.std(scores) * 100)
             rbf_results[f"gamma_{g}"] = {"mean_acc": mean_acc, "std_acc": std_acc}
@@ -744,20 +753,23 @@ def compute_vision_non_linear_probe(
         report["rbf_kernel"][stage_name] = rbf_results
 
         # Stage 5: MLP Capacity Probe (Hidden 8, 16, 32, 64)
-        print("     [Stage 5/5] MLP Capacity Probe (Hidden 8, 16, 32, 64):")
+        print("     [Stage 5/5] MLP Capacity Probe (Hidden 1..64):")
         mlp_results = {}
-        for h in [1,2,3,4,8]:
+        for h in [1, 2, 4, 8, 16, 32, 64]:
             clf = MLPClassifier(hidden_layer_sizes=(h,), activation="relu", max_iter=1000, random_state=seed)
-            scores = cross_val_score(clf, X_diff, y_diff, cv=cv_splits, scoring="accuracy")
+            scores = cross_val_score(clf, X_data, y_data, cv=cv_splits, scoring="accuracy")
             mean_acc = float(np.mean(scores) * 100)
             std_acc  = float(np.std(scores) * 100)
             mlp_results[f"hidden_{h}"] = {"mean_acc": mean_acc, "std_acc": std_acc}
             print(f"       * Hidden {h:2d}: {mean_acc:6.2f}% ± {std_acc:4.2f}%")
         report["mlp_capacity"][stage_name] = mlp_results
 
+    prefix = "beaf_vision_raw_non_linear_probe" if eval_raw_images else "beaf_vision_non_linear_probe"
     # Save JSON
-    json_path = os.path.join(output_dir, "beaf_vision_non_linear_probe.json")
+    json_path = os.path.join(output_dir, f"{prefix}.json")
     with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+
         json.dump(report, f, indent=2)
 
     # Plot 2x3 Subplots for 5 Stages
@@ -814,7 +826,7 @@ def compute_vision_non_linear_probe(
     # Stage 5: MLP Capacity
     ax = axes[1, 1]
     for stage_name in stages:
-        hdims = [1,2,3,4,8]
+        hdims = [1, 2, 4, 8, 16, 32, 64]
         accs = [report["mlp_capacity"][stage_name][f"hidden_{h}"]["mean_acc"] for h in hdims]
         ax.plot([str(h) for h in hdims], accs, marker="^", lw=2, label=stage_name)
     ax.set_title("5. MLP Capacity Probe (Hidden Dim)", fontweight="bold")
@@ -827,9 +839,10 @@ def compute_vision_non_linear_probe(
     axes[1, 2].axis("off")
 
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "beaf_vision_non_linear_probe.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(os.path.join(output_dir, f"{prefix}.png"), dpi=300, bbox_inches="tight")
     plt.close()
 
-    print("  Saved: beaf_vision_non_linear_probe.json & .png")
+    print(f"  Saved: {prefix}.json & .png")
     return report
+
 

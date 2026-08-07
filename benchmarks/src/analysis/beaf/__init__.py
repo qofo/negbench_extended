@@ -22,6 +22,12 @@ from analysis.beaf.vision_mechanisms import (
     compute_vision_non_linear_probe,
     compute_vision_direction_preservation,
 )
+from analysis.beaf.object_experiment import (
+    format_object_name,
+    instantiate_templates,
+    get_balanced_beaf_object_df,
+    run_single_object_analysis,
+)
 
 __all__ = [
     "render_image_image_histogram",
@@ -40,4 +46,9 @@ __all__ = [
     "compute_vision_linear_probe",
     "compute_vision_non_linear_probe",
     "compute_vision_direction_preservation",
+    "format_object_name",
+    "instantiate_templates",
+    "get_balanced_beaf_object_df",
+    "run_single_object_analysis",
 ]
+

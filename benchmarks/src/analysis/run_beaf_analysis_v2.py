@@ -564,11 +564,12 @@ def main():
     render_scatter_by_object_category(df_pairs, sim_orig_pos, sim_orig_neg, args.output_dir)
 
     # [Steps 6-10 Commented out for 2x2 ANOVA focus]
-    # object_names = df_pairs["object_name"].values if "object_name" in df_pairs.columns else None
-    # vis_breakdown = compute_vision_pipeline_breakdown(vis_orig, vis_cf, args.output_dir)
-    # vis_svd       = compute_vision_svd_sweep(model, vis_orig, vis_cf, args.output_dir)
-    # vis_probe     = compute_vision_linear_probe(vis_orig, vis_cf, args.output_dir, object_names=object_names)
-    # vis_nl_probe  = compute_vision_non_linear_probe(vis_orig, vis_cf, args.output_dir, seed=args.seed, object_names=object_names)
+    object_names = df_pairs["object_name"].values if "object_name" in df_pairs.columns else None
+    vis_probe     = compute_vision_linear_probe(vis_orig, vis_cf, args.output_dir, object_names=object_names)
+    vis_nl_probe      = compute_vision_non_linear_probe(vis_orig, vis_cf, args.output_dir, seed=args.seed, object_names=object_names, eval_raw_images=False)
+    vis_raw_nl_probe  = compute_vision_non_linear_probe(vis_orig, vis_cf, args.output_dir, seed=args.seed, object_names=object_names, eval_raw_images=True)
+
+
     # vis_dir_pres  = compute_vision_direction_preservation(vis_orig, vis_cf, args.output_dir, seed=args.seed)
     # pos_features_v1 = extract_all_features_unified(model, tokenizer, pos_texts_v1, device, "eot", args.batch_size)
     # neg_features_v1 = extract_all_features_unified(model, tokenizer, neg_texts_v1, device, "eot", args.batch_size)
