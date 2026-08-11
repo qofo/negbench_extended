@@ -391,25 +391,43 @@ def compute_vision_linear_probe(
     vis_cf: Dict[str, Any],
     output_dir: str,
     object_names: Optional[np.ndarray] = None,
+    pair_ids: Optional[np.ndarray] = None,
+    seed: int = 42,
 ) -> Dict[str, Any]:
     """Train 5-fold cross-validated Linear Probe on Vision Transformer features to classify object_in_image.
-    If object_names is provided, uses GroupKFold to evaluate on Unseen Objects (Zero-Shot Generalization).
+
+    Fold strategy:
+    - If `pair_ids` is provided: GroupKFold by pair_id, ensuring orig and cf from the
+      same edited pair always land in the same fold (prevents visual similarity leakage).
+    - If only `object_names` is provided: GroupKFold by object_name for Unseen Object
+      generalization testing. NOTE: this variant risks within-pair leakage when the
+      same pair's orig/cf images appear in different folds.
+    - Otherwise: StratifiedKFold (5-fold, random).
     """
     n_orig = len(vis_orig["pre_proj"])
     n_cf   = len(vis_cf["pre_proj"])
-    # 1 if original(I_pres), and 0 if counterfacture(I_abs)
+    # Label 1 = original (object present), 0 = counterfactual (object absent)
     y = np.array([1] * n_orig + [0] * n_cf)
 
-    # divide seen and unseen object in train and validata set
-    if object_names is not None and len(object_names) == n_orig:
+    if pair_ids is not None and len(pair_ids) == n_orig:
+        # ✅ Correct: same pair_id guarantees orig and cf are in the same fold
+        groups = np.concatenate([pair_ids, pair_ids])
+        gkf = GroupKFold(n_splits=min(5, len(np.unique(groups))))
+        cv_splits = list(gkf.split(X=np.zeros(len(y)), y=y, groups=groups))
+        print(f"\n  ✅ [Linear Probe - GroupKFold by pair_id] {len(np.unique(groups))} unique pairs, "
+              f"no within-pair data leakage.")
+    elif object_names is not None and len(object_names) == n_orig:
+        # ⚠️ Unseen-object generalization split (object_name level)
+        # Warning: orig/cf may end up in different folds if object has many pairs
         groups = np.concatenate([object_names, object_names])
         gkf = GroupKFold(n_splits=min(5, len(np.unique(groups))))
         cv_splits = list(gkf.split(X=np.zeros(len(y)), y=y, groups=groups))
-        print(f"\n  🔍 [Debug: Linear Probe - GroupKFold Enabled] Unseen Objects Split: {len(np.unique(groups))} unique object_names.")
+        print(f"\n  ⚠️  [Linear Probe - GroupKFold by object_name] {len(np.unique(groups))} unique objects. "
+              f"Use pair_ids for stricter leakage control.")
     else:
-        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
         cv_splits = list(skf.split(X=np.zeros(len(y)), y=y))
-        print(f"\n  🔍 [Debug: Linear Probe - StratifiedKFold] Samples: {n_orig} orig + {n_cf} cf = {len(y)} total")
+        print(f"\n  🔍 [Linear Probe - StratifiedKFold] Samples: {n_orig} orig + {n_cf} cf = {len(y)} total")
 
     probe_results = {}
 

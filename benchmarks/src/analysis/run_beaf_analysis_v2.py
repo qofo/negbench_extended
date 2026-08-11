@@ -352,6 +352,41 @@ def _encode_image_paths(
     return np.concatenate(all_embs, axis=0), loaded_flags
 
 
+def _classify_failure_mode(A: float, B: float, C: float, D: float) -> str:
+    """Classify a 2x2 similarity quad into one of 5 mutually exclusive outcome categories.
+
+    2x2 Matrix:
+        caption=pos  caption=neg
+    image=orig   A            B
+    image=cf     C            D
+
+    3 Diagnostic Conditions:
+        text_ok   : A > B  - model scores orig image higher with positive caption than negative
+        visual_ok : A > C  - model distinguishes object-present from object-absent image
+        cf_coh_ok : D > C  - counterfactual image scores higher with negative caption
+
+    Categories:
+        PASS             : all 3 conditions met
+        FAIL_BOTH        : text_ok and visual_ok both fail (total failure)
+        FAIL_TEXT_ONLY   : only text_ok fails (negation not encoded, but vision works)
+        FAIL_VISUAL_ONLY : only visual_ok fails (negation encoded, but vision insensitive)
+        FAIL_CF_COHERENCE: text_ok and visual_ok pass, but cf_coh_ok fails
+    """
+    text_ok   = A > B
+    visual_ok = A > C
+    cf_coh_ok = D > C
+
+    if text_ok and visual_ok and cf_coh_ok:
+        return "PASS"
+    if not text_ok and not visual_ok:
+        return "FAIL_BOTH"
+    if not text_ok:
+        return "FAIL_TEXT_ONLY"
+    if not visual_ok:
+        return "FAIL_VISUAL_ONLY"
+    return "FAIL_CF_COHERENCE"
+
+
 def compute_image_image_cosine(
     cf_pairs: pd.DataFrame,
     model,
@@ -406,7 +441,7 @@ def compute_4way_matrix(
     cf_np, cf_loaded     = _encode_image_paths(cf_pairs["cf_path"].tolist(),   model, preprocess, device, img_batch_size)
 
     A_list, B_list, C_list, D_list = [], [], [], []
-    text_neg_correct, visual_cf_correct, cf_text_correct, full_correct = [], [], [], []
+    text_neg_correct, visual_cf_correct, cf_text_correct, full_correct, failure_mode = [], [], [], [], []
 
     for i in range(len(cf_pairs)):
         if orig_loaded[i] and cf_loaded[i]:
@@ -426,11 +461,13 @@ def compute_4way_matrix(
             visual_cf_correct.append(bool(A > C))
             cf_text_correct.append(bool(D > C))
             full_correct.append(bool(A > B and D > C and A > C and D > B))
+            failure_mode.append(_classify_failure_mode(A, B, C, D))
         else:
             text_neg_correct.append(None)
             visual_cf_correct.append(None)
             cf_text_correct.append(None)
             full_correct.append(None)
+            failure_mode.append("LOAD_ERROR")
 
     result = cf_pairs.copy()
     result["A_sim_orig_pos"]       = A_list
@@ -444,6 +481,7 @@ def compute_4way_matrix(
     result["visual_cf_correct"]    = visual_cf_correct
     result["cf_text_correct"]      = cf_text_correct
     result["full_correct"]         = full_correct
+    result["failure_mode"]         = failure_mode
     return result
 
 
@@ -573,7 +611,13 @@ def main():
 
     # [Steps 6-10 Commented out for 2x2 ANOVA focus]
     object_names = df_pairs["object_name"].values if "object_name" in df_pairs.columns else None
-    vis_probe = compute_vision_linear_probe(vis_orig, vis_cf, args.output_dir, object_names=object_names)
+    pair_ids     = df_pairs["pair_id"].values     if "pair_id"     in df_pairs.columns else None
+    vis_probe = compute_vision_linear_probe(
+        vis_orig, vis_cf, args.output_dir,
+        object_names=object_names,
+        pair_ids=pair_ids,
+        seed=args.seed,
+    )
 
 
     # vis_dir_pres  = compute_vision_direction_preservation(vis_orig, vis_cf, args.output_dir, seed=args.seed)

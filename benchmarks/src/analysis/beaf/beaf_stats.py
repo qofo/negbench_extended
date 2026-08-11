@@ -10,6 +10,7 @@ from typing import Dict, Any, Tuple
 
 import numpy as np
 import pandas as pd
+from scipy import stats as scipy_stats
 
 
 def compute_2x2_factorial_anova(
@@ -80,6 +81,18 @@ def compute_2x2_factorial_anova(
             "ci_95_low": round(float(np.percentile(boot_i, 2.5)), 6),
             "ci_95_high": round(float(np.percentile(boot_i, 97.5)), 6),
             "negative_interaction_pct": round(float(np.mean(interaction_effect < 0) * 100), 2),
+        },
+        "independence_diagnostics": {
+            # r(text_main, visual_main): ideally near 0 — large |r| means effects are not orthogonal.
+            # CLIP's joint training objective may cause systematic correlation here.
+            "r_text_vs_visual_main_effect": round(float(scipy_stats.pearsonr(text_main_effect, visual_main_effect)[0]), 6),
+            # r(A-B, C-D): measures whether text discriminability (A-B) is consistent
+            # regardless of which image is shown. Near 0 = assumption holds.
+            "r_AB_vs_CD": round(float(scipy_stats.pearsonr(A - B, C - D)[0]), 6),
+            "interpretation": (
+                "⚠️ High |r| (>0.3) suggests ANOVA orthogonality assumption may be violated. "
+                "Text and visual effects may share a common latent cause in CLIP's representation."
+            ),
         },
     }
 
