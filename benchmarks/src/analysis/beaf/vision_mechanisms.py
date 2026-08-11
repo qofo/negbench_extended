@@ -75,11 +75,11 @@ def extract_vision_features_unified(
     # Check how many images exist on disk before processing
     missing_paths = [p for p in image_paths if not os.path.exists(p)]
     if len(missing_paths) > 0:
-        print(f"  ❌ [CRITICAL ERROR] {len(missing_paths)}/{len(image_paths)} image files DO NOT EXIST on disk!")
-        print(f"     Example missing path: '{missing_paths[0]}'")
-        print(f"     Please check --image_root path or CSV image_path values!")
+        print(f"[CRITICAL ERROR] {len(missing_paths)}/{len(image_paths)} image files DO NOT EXIST on disk!")
+        print(f"Example missing path: '{missing_paths[0]}'")
+        print(f"Please check --image_root path or CSV image_path values!")
     else:
-        print(f"  ✅ All {len(image_paths)} image files found successfully on disk.")
+        print(f"All {len(image_paths)} image files found successfully on disk.")
 
     for start in range(0, len(image_paths), batch_size):
         batch_paths = image_paths[start : start + batch_size]
@@ -110,13 +110,15 @@ def extract_vision_features_unified(
         with torch.no_grad():
             cast_dtype = transformer.get_cast_dtype() if hasattr(transformer, "get_cast_dtype") else stacked.dtype
 
+            # make a patches
             if conv1 is not None:
                 x = conv1(stacked)
                 x = x.reshape(x.shape[0], x.shape[1], -1)
                 x = x.permute(0, 2, 1)
             else:
                 x = stacked
-
+    
+            # add CLS token
             if class_embedding is not None:
                 class_emb = class_embedding.to(x.dtype)
                 if class_emb.ndim == 1:
@@ -132,15 +134,19 @@ def extract_vision_features_unified(
             hidden_states = [x]
 
             x_perm = x.permute(1, 0, 2)
+            # transformer blocks
             for block in resblocks:
                 x_perm = block(x_perm)
                 hidden_states.append(x_perm.permute(1, 0, 2))
 
             pooled_layers = []
             for hs in hidden_states:
+                # Use only CLS token
                 cls_feat = hs[:, 0, :].float().cpu().numpy()
                 pooled_layers.append(cls_feat)
 
+
+            # take after 12nd layer, after LN, after projection, after L2 nomalization respectively
             x_post = hidden_states[-1][:, 0, :]
             if ln_post is not None:
                 x_post = ln_post(x_post)
@@ -391,8 +397,10 @@ def compute_vision_linear_probe(
     """
     n_orig = len(vis_orig["pre_proj"])
     n_cf   = len(vis_cf["pre_proj"])
+    # 1 if original(I_pres), and 0 if counterfacture(I_abs)
     y = np.array([1] * n_orig + [0] * n_cf)
 
+    # divide seen and unseen object in train and validata set
     if object_names is not None and len(object_names) == n_orig:
         groups = np.concatenate([object_names, object_names])
         gkf = GroupKFold(n_splits=min(5, len(np.unique(groups))))
