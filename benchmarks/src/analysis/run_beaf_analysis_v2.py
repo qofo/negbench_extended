@@ -54,16 +54,27 @@ from analysis.beaf import (
     compute_vision_pipeline_breakdown,
     compute_vision_svd_sweep,
     compute_vision_linear_probe,
-    compute_vision_non_linear_probe,
     compute_vision_direction_preservation,
+    compute_2x2_factorial_anova,
+    compute_quadrant_bootstrap_ci,
+    load_and_verify_counterfactual_pairs,
 )
 
 
 # =========================================================================== #
-# Data Loaders & Data Computation Helpers
+# Image Encoding Helper
 # =========================================================================== #
 
-def load_beaf_csv(csv_path: str, image_root: str) -> Tuple[pd.DataFrame, List[dict]]:
+def _encode_image_paths_simple(csv_path: str, image_root: str) -> None:
+    pass  # Stub — kept for backward compat; actual encoding done by extract_vision_features_unified
+
+
+def _dummy_placeholder() -> None:
+    pass  # load_beaf_csv, load_and_verify_counterfactual_pairs moved to analysis.beaf.beaf_loader
+          # compute_2x2_factorial_anova, compute_quadrant_bootstrap_ci moved to analysis.beaf.beaf_stats
+
+
+def _encode_image_paths(
     """Load beaf_counterfactual_6col.csv and resolve absolute image paths for Axis 1-4."""
     df = pd.read_csv(csv_path)
     if image_root:
@@ -477,9 +488,6 @@ def main():
     print(f"  Raw rows                                 : {len(df_raw)}")
     print(f"  Unified Verified Pairs (orig <-> cf)    : {n_pairs}")
 
-    pos_texts_v1 = df_raw[df_raw["object_in_image"] == True]["positive_caption"].astype(str).tolist()
-    neg_texts_v1 = df_raw[df_raw["object_in_image"] == True]["negative_caption"].astype(str).tolist()
-
     # 2. Load Model
     print("\n[Step 2] Loading OpenCLIP Model ...")
     model, preprocess, _ = open_clip.create_model_and_transforms(args.model, pretrained=args.pretrained)
@@ -565,9 +573,7 @@ def main():
 
     # [Steps 6-10 Commented out for 2x2 ANOVA focus]
     object_names = df_pairs["object_name"].values if "object_name" in df_pairs.columns else None
-    vis_probe     = compute_vision_linear_probe(vis_orig, vis_cf, args.output_dir, object_names=object_names)
-    vis_nl_probe      = compute_vision_non_linear_probe(vis_orig, vis_cf, args.output_dir, seed=args.seed, object_names=object_names, eval_raw_images=False)
-    vis_raw_nl_probe  = compute_vision_non_linear_probe(vis_orig, vis_cf, args.output_dir, seed=args.seed, object_names=object_names, eval_raw_images=True)
+    vis_probe = compute_vision_linear_probe(vis_orig, vis_cf, args.output_dir, object_names=object_names)
 
 
     # vis_dir_pres  = compute_vision_direction_preservation(vis_orig, vis_cf, args.output_dir, seed=args.seed)

@@ -19,7 +19,6 @@ from analysis.beaf.vision_mechanisms import (
     compute_vision_pipeline_breakdown,
     compute_vision_svd_sweep,
     compute_vision_linear_probe,
-    compute_vision_non_linear_probe,
     compute_vision_direction_preservation,
 )
 from analysis.beaf.object_experiment import (
@@ -37,8 +36,17 @@ from analysis.beaf.object_experiment import (
     evaluate_dual_classifier_product_scorer,
     run_single_object_train_val_experiment,
 )
+from analysis.beaf.beaf_stats import (
+    compute_2x2_factorial_anova,
+    compute_quadrant_bootstrap_ci,
+)
+from analysis.beaf.beaf_loader import (
+    load_beaf_csv,
+    load_and_verify_counterfactual_pairs,
+)
 
 __all__ = [
+    # Visualizers
     "render_image_image_histogram",
     "render_4way_heatmap",
     "render_text_vs_visual_scatter",
@@ -49,12 +57,13 @@ __all__ = [
     "render_scatter_by_object_category",
     "render_2x2_factorial_anova_plots",
     "render_2d_margin_state_space",
+    # Vision Mechanisms
     "extract_vision_features_unified",
     "compute_vision_pipeline_breakdown",
     "compute_vision_svd_sweep",
     "compute_vision_linear_probe",
-    "compute_vision_non_linear_probe",
     "compute_vision_direction_preservation",
+    # Object Experiments
     "format_object_name",
     "instantiate_templates",
     "get_balanced_beaf_object_df",
@@ -68,9 +77,10 @@ __all__ = [
     "VisionProbeWrapper",
     "evaluate_dual_classifier_product_scorer",
     "run_single_object_train_val_experiment",
+    # Statistics
+    "compute_2x2_factorial_anova",
+    "compute_quadrant_bootstrap_ci",
+    # Data Loading
+    "load_beaf_csv",
+    "load_and_verify_counterfactual_pairs",
 ]
-
-
-
-
-
