@@ -161,35 +161,18 @@ def compute_quadrant_bootstrap_ci(
     return summary_ci
 
 
+
+
 def compute_per_object_layerwise_stats(
     vis_orig,
     vis_cf,
     df_pairs,
     seed=42,
 ):
-    # For each unique object_name and for each Vision Transformer layer:
-    # 1. Cosine similarity: mean sim(I_orig^(l), I_cf^(l)) across that objects pairs.
-    # 2. Linear probe accuracy via StratifiedKFold LogisticRegression.
-    # Aggregates across objects -> per-layer mean and std.
-    #
-    # Args:
-    #   vis_orig : output of extract_vision_features_unified for original images.
-    #   vis_cf   : output of extract_vision_features_unified for CF images.
-    #   df_pairs : DataFrame with column "object_name" aligned with vis_orig rows.
-    #   seed     : Random seed for StratifiedKFold reproducibility.
-    #
-    # Returns: (raw_df, summary)
-    #   raw_df  : DataFrame — one row per (object_name, layer_name).
-    #             Columns: object_name, layer_name, n_pairs,
-    #                      cosine_sim_mean, probe_acc_pct
-    #   summary : Dict[layer_name -> {
-    #                 "cosine_sim": {"mean", "std", "per_object"},
-    #                 "probe_acc":  {"mean", "std", "per_object"},
-    #             }]
     import numpy as np
     import pandas as pd
     from sklearn.linear_model import LogisticRegression
-    from sklearn.model_selection import StratifiedKFold, cross_val_score
+    from sklearn.model_selection import GroupKFold, cross_val_score
 
     def _get_feats(vis, key):
         if key in vis["layers"]:
@@ -203,6 +186,7 @@ def compute_per_object_layerwise_stats(
     all_keys   = layer_keys + ["Pre-Projection", "+Final L2Norm"]
 
     object_names   = df_pairs["object_name"].values
+    pair_ids       = df_pairs["pair_id"].values if "pair_id" in df_pairs.columns else np.arange(len(df_pairs))
     unique_objects = sorted(df_pairs["object_name"].unique().tolist())
 
     per_cos = {k: [] for k in all_keys}
@@ -210,15 +194,21 @@ def compute_per_object_layerwise_stats(
     cos_obj = {k: {} for k in all_keys}
     prb_obj = {k: {} for k in all_keys}
 
-    print(f"  [Per-Object Layerwise] {len(unique_objects)} unique objects found.")
+    print(f"  [Per-Object Layerwise (GroupKFold pair_id)] {len(unique_objects)} unique objects found.")
 
     raw_records = []
     for obj in unique_objects:
-        mask  = (object_names == obj)
-        n_obj = int(np.sum(mask))
+        mask      = (object_names == obj)
+        n_obj     = int(np.sum(mask))
+        obj_pairs = pair_ids[mask]
+
         if n_obj < 2:
-            print(f"    Skip {repr(obj)} (n={n_obj} < 2).")
+            print(f"    Skip {repr(obj)} (n={n_obj} < 2 pairs).")
             continue
+
+        groups_all = np.concatenate([obj_pairs, obj_pairs])
+        n_unique_groups = len(np.unique(obj_pairs))
+        n_folds = min(5, n_unique_groups)
 
         for lk in all_keys:
             X_o = _get_feats(vis_orig, lk)[mask]
@@ -231,13 +221,14 @@ def compute_per_object_layerwise_stats(
 
             X_all = np.vstack([X_o_n, X_c_n])
             y_all = np.array([1] * n_obj + [0] * n_obj)
-            n_folds = min(5, n_obj)
+
             if n_folds < 2:
                 probe_acc = 50.0
             else:
-                skf    = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
-                clf    = LogisticRegression(C=1.0, max_iter=1000, random_state=seed)
-                scores = cross_val_score(clf, X_all, y_all, cv=skf, scoring="accuracy")
+                gkf = GroupKFold(n_splits=n_folds)
+                cv_splits = list(gkf.split(X_all, y_all, groups=groups_all))
+                clf = LogisticRegression(C=0.1, max_iter=1000, random_state=seed)
+                scores = cross_val_score(clf, X_all, y_all, cv=cv_splits, scoring="accuracy")
                 probe_acc = float(np.mean(scores) * 100)
 
             per_cos[lk].append(cos_mean)
@@ -251,7 +242,7 @@ def compute_per_object_layerwise_stats(
                 "cosine_sim_mean": cos_mean,
                 "probe_acc_pct":   probe_acc,
             })
-        print(f"    OK  {repr(obj)} (n={n_obj})")
+        print(f"    OK {repr(obj)} (n={n_obj} pairs, {n_folds}-fold GroupKFold)")
 
     raw_df = pd.DataFrame(raw_records)
 
