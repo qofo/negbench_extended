@@ -412,3 +412,101 @@ def render_2d_margin_state_space(
     plt.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close()
     print("  Saved: beaf_2d_margin_state_space.png")
+
+
+# =========================================================================== #
+# Per-Object Layerwise Analysis Renderer
+# =========================================================================== #
+
+def render_per_object_layerwise_plot(
+    summary: Dict[str, Any],
+    output_dir: str,
+    raw_df: Optional[pd.DataFrame] = None,
+) -> None:
+    """Render per-object layerwise cosine similarity and linear probe accuracy.
+
+    Produces a dual-Y-axis line plot where:
+      - Left Y-axis (blue): mean linear probe accuracy (%) +- 1 std across objects
+      - Right Y-axis (red): mean cosine similarity sim(orig, cf) +- 1 std across objects
+      - X-axis: Vision Transformer layers (Embedding, Layer 1..12, Pre-Proj, +Final L2Norm)
+    """
+    import json
+
+    layer_names = list(summary.keys())
+
+    probe_means = [summary[lk]["probe_acc"]["mean"]   for lk in layer_names]
+    probe_stds  = [summary[lk]["probe_acc"]["std"]    for lk in layer_names]
+    cos_means   = [summary[lk]["cosine_sim"]["mean"]  for lk in layer_names]
+    cos_stds    = [summary[lk]["cosine_sim"]["std"]   for lk in layer_names]
+
+    probe_means = np.array(probe_means, dtype=float)
+    probe_stds  = np.array(probe_stds,  dtype=float)
+    cos_means   = np.array(cos_means,   dtype=float)
+    cos_stds    = np.array(cos_stds,    dtype=float)
+
+    x = list(range(len(layer_names)))
+
+    fig, ax1 = plt.subplots(figsize=(16, 6))
+    ax2 = ax1.twinx()
+
+    color_probe = "#1f77b4"
+    ax1.plot(x, probe_means, "o-", color=color_probe, lw=2.5, ms=7, label="Linear Probe Acc (%) - mean across objects")
+    ax1.fill_between(x, probe_means - probe_stds, probe_means + probe_stds, color=color_probe, alpha=0.15, label="+-1 Std (objects)")
+    ax1.set_ylabel("Linear Probe Accuracy (%)", fontsize=12, color=color_probe)
+    ax1.tick_params(axis="y", labelcolor=color_probe)
+    ax1.set_ylim(max(0, float(np.nanmin(probe_means - probe_stds)) - 5), min(102, float(np.nanmax(probe_means + probe_stds)) + 5))
+
+    color_cos = "#d62728"
+    ax2.plot(x, cos_means, "s--", color=color_cos, lw=2.0, ms=6, label="Cosine Sim sim(orig, cf) - mean across objects")
+    ax2.fill_between(x, cos_means - cos_stds, cos_means + cos_stds, color=color_cos, alpha=0.12, label="+-1 Std (objects)")
+    ax2.set_ylabel("Cosine Similarity sim(orig, cf)", fontsize=12, color=color_cos)
+    ax2.tick_params(axis="y", labelcolor=color_cos)
+
+    try:
+        pre_proj_idx = layer_names.index("Pre-Projection")
+        ax1.axvline(x=pre_proj_idx - 0.5, color="gray", ls=":", lw=1.5, alpha=0.7, label="Post-Transformer Transformations")
+    except ValueError:
+        pass
+
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(layer_names, rotation=35, ha="right", fontsize=9)
+    ax1.set_xlabel("Vision Transformer Layer / Pipeline Step", fontsize=12)
+    ax1.grid(True, ls="--", alpha=0.4, axis="y")
+
+    n_objs = len(summary[layer_names[0]]["probe_acc"]["per_object"]) if layer_names else 0
+    ax1.set_title(f"Per-Object Layerwise: Linear Probe Accuracy & Cosine Similarity\nMean +- Std across {n_objs} objects", fontsize=13, fontweight="bold")
+
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, fontsize=9, loc="lower right")
+
+    plt.tight_layout()
+    png_path = os.path.join(output_dir, "beaf_per_object_layerwise_analysis.png")
+    plt.savefig(png_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print("  Saved: beaf_per_object_layerwise_analysis.png")
+
+    def _clean(obj):
+        if isinstance(obj, float) and (obj != obj):
+            return None
+        return obj
+
+    json_ready = {
+        lk: {
+            metric: {
+                k: (_clean(v) if not isinstance(v, dict) else {kk: _clean(vv) for kk, vv in v.items()})
+                for k, v in metric_data.items()
+            }
+            for metric, metric_data in layer_data.items()
+        }
+        for lk, layer_data in summary.items()
+    }
+    json_path = os.path.join(output_dir, "beaf_per_object_layerwise_analysis.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(json_ready, f, indent=2, ensure_ascii=False)
+    print("  Saved: beaf_per_object_layerwise_analysis.json")
+
+    if raw_df is not None and len(raw_df) > 0:
+        csv_path = os.path.join(output_dir, "beaf_per_object_layerwise_raw.csv")
+        raw_df.to_csv(csv_path, index=False)
+        print("  Saved: beaf_per_object_layerwise_raw.csv")

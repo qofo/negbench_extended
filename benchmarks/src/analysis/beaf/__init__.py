@@ -13,6 +13,7 @@ from analysis.beaf.visualizer import (
     render_scatter_by_object_category,
     render_2x2_factorial_anova_plots,
     render_2d_margin_state_space,
+    render_per_object_layerwise_plot,
 )
 from analysis.beaf.vision_mechanisms import (
     extract_vision_features_unified,
@@ -39,6 +40,7 @@ from analysis.beaf.object_experiment import (
 from analysis.beaf.beaf_stats import (
     compute_2x2_factorial_anova,
     compute_quadrant_bootstrap_ci,
+    compute_per_object_layerwise_stats,
 )
 from analysis.beaf.beaf_loader import (
     load_beaf_csv,
@@ -57,6 +59,7 @@ __all__ = [
     "render_scatter_by_object_category",
     "render_2x2_factorial_anova_plots",
     "render_2d_margin_state_space",
+    "render_per_object_layerwise_plot",
     # Vision Mechanisms
     "extract_vision_features_unified",
     "compute_vision_pipeline_breakdown",
@@ -80,6 +83,7 @@ __all__ = [
     # Statistics
     "compute_2x2_factorial_anova",
     "compute_quadrant_bootstrap_ci",
+    "compute_per_object_layerwise_stats",
     # Data Loading
     "load_beaf_csv",
     "load_and_verify_counterfactual_pairs",
