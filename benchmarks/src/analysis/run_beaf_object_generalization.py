@@ -256,13 +256,8 @@ def main():
             json.dump(probe_sweep_results, f, indent=2)
         print(f"Saved High-Order Vision Probe Sweep Summary to {sweep_json_out}")
 
-
-        if "error" not in res:
-            object_t_embs[obj] = (res["_pos_t_emb"], res["_neg_t_emb"])
-            object_results.append(res)
-            print(f"  [{obj:15s}] Pairs:{res['n_present_images']:3d} | Text Probe CV:{res['text_probe_cv_acc']*100:.1f}% | Unseen Tmpl Group:{res['unseen_template_group_acc_mean']*100:.1f}% | Vision Probe:{res['vision_probe_cv_acc']*100:.1f}% | Dual Probe:{res['dual_probe_overall_acc']*100:.1f}% | ZeroShot Acc:{res['overall_accuracy']*100:.1f}%")
-
     if not object_results:
+
         print("❌ No valid objects found for analysis.")
         return
 

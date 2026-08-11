@@ -4,28 +4,31 @@ CLIP Text Encoder Layer-wise Linear Probe Analysis Module.
 Evaluates linear separability of positive vs negative caption representations
 across ALL individual layers (Layer 0 to Layer 12) plus Final Projected Embedding
 using LogisticRegression with 5-Fold Stratified Cross-Validation.
+
+Reuses the unified feature extraction engine from `benchmarks.src.analysis.extractor`.
 """
 
 import os
 import argparse
 import json
+from typing import List, Dict, Any, Tuple
+
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import seaborn as sns
-from typing import List, Dict, Tuple, Any
 
 import open_clip
 
+from benchmarks.src.analysis.extractor import extract_all_features_unified
 
-def extract_all_layers_features(
+
+def extract_layerwise_feature_dict(
     model: nn.Module,
     tokenizer: Any,
     texts: List[str],
@@ -34,132 +37,51 @@ def extract_all_layers_features(
     batch_size: int = 256,
 ) -> Dict[str, np.ndarray]:
     """
-    Extract hidden states for ALL layers (Layer 0 to 12) AND fine-grained post-Layer 12 steps:
-      - Embedding (Layer 0)
-      - Layer 1 .. Layer 12 (Raw Transformer block output)
-      - Layer 12 + LN (ln_final applied)
-      - Projected (Unnormalized, after text_projection matrix)
-      - Final (L2 Normalized CLIP text embedding)
+    Extract layer-wise and pipeline step feature matrices using unified extractor.
 
     Returns:
-        feature_dict: Dict[step_name, np.ndarray of shape (N, D)]
+        feature_dict (Dict[str, np.ndarray]): Mapping from layer/step name to (N, D) features.
     """
-    model.eval()
-    all_tokens = tokenizer(texts).to(device)
-
-    text_tower = getattr(model, 'text', model)
-    token_embedding = getattr(text_tower, 'token_embedding', None)
-    positional_embedding = getattr(text_tower, 'positional_embedding', None)
-    transformer = getattr(text_tower, 'transformer', None)
-    ln_final = getattr(text_tower, 'ln_final', None)
-    text_projection = getattr(text_tower, 'text_projection', None)
-    attn_mask = getattr(text_tower, 'attn_mask', None)
-
-    resblocks = transformer.resblocks if hasattr(transformer, 'resblocks') else []
-    num_layers = 1 + len(resblocks)
-
-    layer_lists = [[] for _ in range(num_layers)]
-    ln_list = []
-    proj_list = []
-    final_list = []
-
-    for start in range(0, len(texts), batch_size):
-        end = min(start + batch_size, len(texts))
-        batch_tokens = all_tokens[start:end]
-
-        with torch.no_grad():
-            cast_dtype = transformer.get_cast_dtype() if hasattr(transformer, 'get_cast_dtype') else torch.float32
-            eot_indices = batch_tokens.argmax(dim=-1)
-            batch_idx = torch.arange(batch_tokens.shape[0], device=device)
-
-            x = token_embedding(batch_tokens).to(cast_dtype)
-            seq_len = batch_tokens.shape[1]
-            x = x + positional_embedding[:seq_len].to(cast_dtype)
-
-            hidden_states = [x]
-
-            x_perm = x.permute(1, 0, 2)
-            for block in resblocks:
-                x_perm = block(x_perm, attn_mask=attn_mask)
-                hidden_states.append(x_perm.permute(1, 0, 2))
-
-            # Pool token representations per layer
-            for l_idx, hs in enumerate(hidden_states):
-                hs_cpu = hs.float().cpu()
-                if target_token == "eot":
-                    feat = hs_cpu[batch_idx.cpu(), eot_indices.cpu()]
-                elif target_token == "mean":
-                    feat = hs_cpu.mean(dim=1)
-                else:
-                    feat = hs_cpu[batch_idx.cpu(), eot_indices.cpu()]
-                layer_lists[l_idx].append(feat)
-
-            # Post Layer 12 steps:
-            x_l12 = hidden_states[-1]
-            x_ln = ln_final(x_l12)
-
-            if target_token == "eot":
-                eot_ln = x_ln[batch_idx, eot_indices]
-            elif target_token == "mean":
-                eot_ln = x_ln.mean(dim=1)
-            else:
-                eot_ln = x_ln[batch_idx, eot_indices]
-
-            ln_list.append(eot_ln.float().cpu())
-
-            # Text projection step
-            if text_projection is not None:
-                if isinstance(text_projection, nn.Linear):
-                    eot_proj = text_projection(eot_ln.to(text_projection.weight.dtype))
-                else:
-                    eot_proj = eot_ln.to(text_projection.dtype) @ text_projection
-            else:
-                eot_proj = eot_ln.clone()
-
-            proj_list.append(eot_proj.float().cpu())
-
-            # Unit hyper-sphere normalization step
-            eot_final = F.normalize(eot_proj.float(), dim=-1)
-            final_list.append(eot_final.cpu())
+    res = extract_all_features_unified(
+        model=model,
+        tokenizer=tokenizer,
+        texts=texts,
+        device=device,
+        target_token=target_token,
+        batch_size=batch_size,
+    )
 
     feature_dict = {}
-    for l_idx, feats in enumerate(layer_lists):
-        name = "Embedding" if l_idx == 0 else f"Layer {l_idx}"
-        feature_dict[name] = torch.cat(feats, dim=0).numpy()
+    for name, feats in res["layers"].items():
+        feature_dict[name] = feats
 
-    feature_dict["Layer 12 + LN"] = torch.cat(ln_list, dim=0).numpy()
-    feature_dict["Projected (Unnorm)"] = torch.cat(proj_list, dim=0).numpy()
-    feature_dict["Final (L2 Normed)"] = torch.cat(final_list, dim=0).numpy()
+    # Post-Layer 12 pipeline transformation steps
+    pipeline_dict = res["pipeline"]
+    feature_dict["Layer 12 + LN"] = pipeline_dict["Layer 12 + LN"]
+    feature_dict["Projected (Unnorm)"] = pipeline_dict["Projected (Unnorm)"]
+    feature_dict["Final (L2 Normed)"] = pipeline_dict["Final (L2 Normed)"]
 
-    return feature_dict, feature_dict["Final (L2 Normed)"]
+    return feature_dict
 
 
-def run_layerwise_linear_probe(
-    model: nn.Module,
-    tokenizer: Any,
-    pos_texts: List[str],
-    neg_texts: List[str],
-    output_dir: str,
-    device: str = "cpu",
-    target_token: str = "eot",
-    batch_size: int = 256,
+def evaluate_layerwise_linear_probe(
+    pos_layer_dict: Dict[str, np.ndarray],
+    neg_layer_dict: Dict[str, np.ndarray],
     n_splits: int = 5,
 ) -> pd.DataFrame:
     """
-    Run Stratified 5-Fold Cross-Validation LogisticRegression Linear Probe for every layer and pipeline step.
+    Run Stratified 5-Fold Cross-Validation Logistic Regression Linear Probe for every layer/step.
+
+    Args:
+        pos_layer_dict (Dict[str, np.ndarray]): Layer features for positive captions.
+        neg_layer_dict (Dict[str, np.ndarray]): Layer features for negative captions.
+        n_splits (int): Number of folds for StratifiedKFold.
+
+    Returns:
+        df_res (pd.DataFrame): DataFrame containing accuracy stats per layer.
     """
-    print("=" * 70)
-    print(f"Executing Layer-wise & Pipeline-step Linear Probe Analysis ({n_splits}-Fold CV)")
-    print("=" * 70)
-
-    print("Extracting features for positive captions...")
-    pos_layer_dict, _ = extract_all_layers_features(model, tokenizer, pos_texts, device, target_token, batch_size)
-    
-    print("Extracting features for negative captions...")
-    neg_layer_dict, _ = extract_all_layers_features(model, tokenizer, neg_texts, device, target_token, batch_size)
-
-    n_pos = len(pos_texts)
-    n_neg = len(neg_texts)
+    n_pos = len(next(iter(pos_layer_dict.values())))
+    n_neg = len(next(iter(neg_layer_dict.values())))
     y = np.array([1] * n_pos + [0] * n_neg)
 
     results = []
@@ -170,7 +92,7 @@ def run_layerwise_linear_probe(
         X_neg = neg_layer_dict[l_name]
         X = np.vstack([X_pos, X_neg])
 
-        # Standardize or L2 normalize features before linear probing for numerical stability
+        # Standardize features (L2 normalization per sample)
         X_norm = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-8)
 
         clf = LogisticRegression(max_iter=1000, random_state=42, C=1.0)
@@ -193,17 +115,27 @@ def run_layerwise_linear_probe(
 
         print(f"  [{l_name:22s}] Acc: {mean_acc:6.2f}% (±{std_acc:4.2f}%) [Dim: {X.shape[1]}]")
 
-    df_res = pd.DataFrame(results)
+    return pd.DataFrame(results)
+
+
+def plot_and_export_results(df_res: pd.DataFrame, output_dir: str) -> Tuple[str, str, str]:
+    """
+    Save evaluation results to CSV, JSON, and PNG plot files.
+
+    Returns:
+        Tuple[str, str, str]: Paths to (csv_path, json_path, plot_path).
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    results = df_res.to_dict(orient="records")
+
     csv_path = os.path.join(output_dir, "layerwise_linear_probe.csv")
     df_res.to_csv(csv_path, index=False)
-    print(f"\nSaved CSV: {csv_path}")
 
     json_path = os.path.join(output_dir, "layerwise_linear_probe.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
-    print(f"Saved JSON: {json_path}")
 
-    # Plot Layer-wise & Pipeline-step Linear Probe Accuracy Line Plot
+    # Visualization plot
     fig, ax = plt.subplots(figsize=(12, 6))
     layers = df_res["layer"].values
     accs = df_res["mean_accuracy_pct"].values
@@ -213,7 +145,6 @@ def run_layerwise_linear_probe(
     ax.plot(x_coords, accs, "o-", color="#1f77b4", lw=2.5, ms=7, label="5-Fold CV Accuracy (%)")
     ax.fill_between(x_coords, accs - stds, accs + stds, color="#1f77b4", alpha=0.15)
 
-    # Highlight Post-Layer 12 steps boundary
     if "Layer 12" in layers:
         l12_idx = list(layers).index("Layer 12")
         ax.axvline(x=l12_idx + 0.5, color="crimson", ls="--", alpha=0.7, label="Post-Layer 12 Transformations")
@@ -231,7 +162,41 @@ def run_layerwise_linear_probe(
     plot_path = os.path.join(output_dir, "layerwise_linear_probe.png")
     plt.savefig(plot_path, dpi=300, bbox_inches="tight")
     plt.close()
-    print(f"Saved Plot: {plot_path}")
+
+    print(f"\nArtifacts saved successfully:")
+    print(f"  CSV : {csv_path}")
+    print(f"  JSON: {json_path}")
+    print(f"  Plot: {plot_path}")
+
+    return csv_path, json_path, plot_path
+
+
+def run_layerwise_linear_probe_pipeline(
+    model: nn.Module,
+    tokenizer: Any,
+    pos_texts: List[str],
+    neg_texts: List[str],
+    output_dir: str,
+    device: str = "cpu",
+    target_token: str = "eot",
+    batch_size: int = 256,
+    n_splits: int = 5,
+) -> pd.DataFrame:
+    """
+    Main orchestration function for layer-wise linear probing.
+    """
+    print("=" * 70)
+    print(f"Executing Layer-wise & Pipeline-step Linear Probe Analysis ({n_splits}-Fold CV)")
+    print("=" * 70)
+
+    print("Extracting features for positive captions...")
+    pos_layer_dict = extract_layerwise_feature_dict(model, tokenizer, pos_texts, device, target_token, batch_size)
+
+    print("Extracting features for negative captions...")
+    neg_layer_dict = extract_layerwise_feature_dict(model, tokenizer, neg_texts, device, target_token, batch_size)
+
+    df_res = evaluate_layerwise_linear_probe(pos_layer_dict, neg_layer_dict, n_splits=n_splits)
+    plot_and_export_results(df_res, output_dir)
 
     return df_res
 
@@ -267,7 +232,7 @@ if __name__ == "__main__":
     tokenizer = open_clip.get_tokenizer(args.model)
     model = model.to(device)
 
-    run_layerwise_linear_probe(
+    run_layerwise_linear_probe_pipeline(
         model=model,
         tokenizer=tokenizer,
         pos_texts=pos_texts,
@@ -278,4 +243,3 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         n_splits=args.n_splits,
     )
-
