@@ -1,13 +1,13 @@
 """
 BEAF Flexible Multi-Classifier Layerwise Probing Script.
 
-Evaluates CLIP vision features across layers using various linear probing algorithms
-(Logistic Regression, Linear SVM, Ridge, SGD) per object and per layer.
-Imports existing data loader and feature extractor modules.
+Evaluates CLIP vision features across layers using various linear, non-linear (MLP, RBF-SVM),
+and Bilinear (Full, Low-Rank) probing algorithms per object and per layer.
 """
 
 import os
 import json
+import math
 import argparse
 from typing import Dict, Any, List
 
@@ -22,8 +22,9 @@ from analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
 from analysis.beaf.vision_mechanisms import extract_vision_features_unified
 from analysis.beaf.probe_factory import (
     SUPPORTED_PROBES,
-    get_c_candidates,
+    get_param_candidates,
     create_probe_classifier,
+    format_params,
 )
 
 
@@ -43,7 +44,7 @@ def compute_flexible_per_object_stats(
     probe_type: str = "logistic",
     seed: int = 42,
 ) -> pd.DataFrame:
-    """Compute per-object layerwise Train vs Val probing accuracy using specified classifier."""
+    """Compute per-object layerwise Train vs Val probing accuracy with inner CV hyperparameter tuning."""
     layer_keys = list(vis_orig["layers"].keys())
     all_keys   = layer_keys + ["Pre-Projection", "+Final L2Norm"]
 
@@ -51,10 +52,11 @@ def compute_flexible_per_object_stats(
     pair_ids       = df_pairs["pair_id"].values if "pair_id" in df_pairs.columns else np.arange(len(df_pairs))
     unique_objects = sorted(df_pairs["object_name"].unique().tolist())
 
-    c_candidates = get_c_candidates(probe_type)
+    param_candidates = get_param_candidates(probe_type)
     raw_records = []
 
     print(f"\n  [Flexible Probing: {probe_type.upper()}] Processing {len(unique_objects)} objects across {len(all_keys)} layers...")
+    print(f"  [Tuning Grid] {len(param_candidates)} hyperparameter combinations per fold.")
 
     for obj in unique_objects:
         mask      = (object_names == obj)
@@ -81,14 +83,14 @@ def compute_flexible_per_object_stats(
             if n_folds < 2:
                 train_acc = 50.0
                 val_acc   = 50.0
-                best_c    = 0.1
+                best_param_str = format_params(param_candidates[0])
             else:
                 gkf = GroupKFold(n_splits=n_folds)
                 cv_splits = list(gkf.split(X_all, y_all, groups=groups_all))
 
                 train_scores = []
                 val_scores = []
-                best_c_list = []
+                best_param_list = []
 
                 for tr_idx, val_idx in cv_splits:
                     X_tr, y_tr = X_all[tr_idx], y_all[tr_idx]
@@ -100,31 +102,31 @@ def compute_flexible_per_object_stats(
                         inner_gkf = GroupKFold(n_splits=n_inner)
                         inner_cv = list(inner_gkf.split(X_tr, y_tr, groups=groups_tr))
 
-                        best_c_fold = c_candidates[0]
+                        best_p_fold = param_candidates[0]
                         best_inner_score = -1.0
 
-                        for c in c_candidates:
+                        for p_dict in param_candidates:
                             inner_scores = []
                             for in_tr, in_val in inner_cv:
-                                clf_in = create_probe_classifier(probe_type, C=c, seed=seed)
+                                clf_in = create_probe_classifier(probe_type, seed=seed, **p_dict)
                                 clf_in.fit(X_tr[in_tr], y_tr[in_tr])
                                 inner_scores.append(clf_in.score(X_tr[in_val], y_tr[in_val]))
                             mean_in = float(np.mean(inner_scores))
                             if mean_in > best_inner_score:
                                 best_inner_score = mean_in
-                                best_c_fold = c
+                                best_p_fold = p_dict
                     else:
-                        best_c_fold = 0.1
+                        best_p_fold = param_candidates[0]
 
-                    clf = create_probe_classifier(probe_type, C=best_c_fold, seed=seed)
+                    clf = create_probe_classifier(probe_type, seed=seed, **best_p_fold)
                     clf.fit(X_tr, y_tr)
                     train_scores.append(clf.score(X_tr, y_tr))
                     val_scores.append(clf.score(X_all[val_idx], y_all[val_idx]))
-                    best_c_list.append(best_c_fold)
+                    best_param_list.append(best_p_fold)
 
                 train_acc = float(np.mean(train_scores) * 100)
                 val_acc   = float(np.mean(val_scores)   * 100)
-                best_c    = float(np.median(best_c_list))
+                best_param_str = format_params(best_param_list[0]) if best_param_list else ""
 
             raw_records.append({
                 "probe_type":    probe_type,
@@ -134,7 +136,7 @@ def compute_flexible_per_object_stats(
                 "train_acc_pct": train_acc,
                 "val_acc_pct":   val_acc,
                 "gap_pct":       train_acc - val_acc,
-                "best_c":        best_c,
+                "best_params":   best_param_str,
             })
 
     return pd.DataFrame(raw_records)
@@ -163,17 +165,69 @@ def render_probe_summary_plot(raw_df: pd.DataFrame, probe_type: str, output_dir:
     ax.plot(x, val_means, "s--", color="#d62728", lw=2.5, ms=7, label="Val Acc (%) [Mean CV]")
     ax.fill_between(x, np.array(val_means) - np.array(val_stds), np.array(val_means) + np.array(val_stds), color="#d62728", alpha=0.15)
 
+    if "Pre-Projection" in layer_names:
+        idx = layer_names.index("Pre-Projection")
+        ax.axvline(x=idx - 0.5, color="gray", ls=":", lw=1.5, alpha=0.7, label="Post-Transformer Transformations")
+
     ax.set_xticks(x)
-    ax.set_xticklabels(layer_names, rotation=35, ha="right", fontsize=10)
+    ax.set_xticklabels(layer_names, rotation=35, ha="right", fontsize=9)
     ax.set_ylabel("Accuracy (%)", fontsize=12)
     ax.set_xlabel("Transformer Layer / Pipeline Step", fontsize=12)
-    ax.set_title(f"Per-Object Layerwise Probing: Train vs Val Acc ({probe_type.upper()})", fontsize=13, fontweight="bold")
-    ax.set_ylim(40, 100)
-    ax.grid(True, ls="--", alpha=0.5)
-    ax.legend(fontsize=11)
+    n_objs = len(raw_df["object_name"].unique())
+    ax.set_title(f"Per-Object Layerwise Probing: Train vs Val Acc ({probe_type.upper()}) [N={n_objs} Objects]", fontsize=13, fontweight="bold")
+    ax.set_ylim(40, 105)
+    ax.grid(True, ls="--", alpha=0.4)
+    ax.legend(fontsize=10, loc="lower right")
 
     plt.tight_layout()
-    out_path = os.path.join(output_dir, f"beaf_{probe_type}_summary.png")
+    out_path = os.path.join(output_dir, f"beaf_{probe_type}_train_val_summary.png")
+    plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {out_path}")
+
+
+def render_top_objects_grid(raw_df: pd.DataFrame, probe_type: str, output_dir: str, top_k: int = 16) -> None:
+    """Render a grid of subplots showing Train vs Val Accuracy per layer for top-k objects by sample count."""
+    obj_counts = raw_df.groupby("object_name")["n_pairs"].first().sort_values(ascending=False)
+    top_objects = obj_counts.head(top_k).index.tolist()
+
+    cols = 4
+    rows = math.ceil(len(top_objects) / cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(18, 3.5 * rows), sharex=True, sharey=True)
+    axes = axes.flatten()
+
+    layer_names = raw_df["layer_name"].unique().tolist()
+    x = np.arange(len(layer_names))
+
+    for i, obj in enumerate(top_objects):
+        ax = axes[i]
+        sub = raw_df[raw_df["object_name"] == obj].set_index("layer_name").reindex(layer_names)
+        n_pairs = int(sub["n_pairs"].iloc[0])
+
+        ax.plot(x, sub["train_acc_pct"], "o-", color="#1f77b4", lw=2, ms=5, label="Train Acc")
+        ax.plot(x, sub["val_acc_pct"], "s--", color="#d62728", lw=2, ms=5, label="Val Acc")
+
+        ax.set_title(f"{obj} (N={n_pairs} pairs)", fontsize=11, fontweight="bold")
+        ax.grid(True, ls="--", alpha=0.3)
+        ax.set_ylim(35, 105)
+
+        if i % cols == 0:
+            ax.set_ylabel("Accuracy (%)", fontsize=10)
+        if i >= (rows - 1) * cols:
+            ax.set_xticks(x)
+            ax.set_xticklabels(layer_names, rotation=45, ha="right", fontsize=8)
+
+    # Hide unused axes
+    for j in range(len(top_objects), len(axes)):
+        fig.delaxes(axes[j])
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 1.02), ncol=2, fontsize=12)
+
+    fig.suptitle(f"Per-Object Layerwise Probing: Train vs Val Accuracy ({probe_type.upper()})", fontsize=15, fontweight="bold", y=1.05)
+    plt.tight_layout()
+
+    out_path = os.path.join(output_dir, f"beaf_{probe_type}_train_val_top_grid.png")
     plt.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {out_path}")
@@ -181,7 +235,7 @@ def render_probe_summary_plot(raw_df: pd.DataFrame, probe_type: str, output_dir:
 
 def main():
     parser = argparse.ArgumentParser(description="BEAF Flexible Multi-Classifier Layerwise Probing")
-    parser.add_argument("--csv_path", type=str, required=True)
+    parser.add_argument("--csv_path", type=str, default="benchmarks/data/images/beaf_counterfactual_6col.csv")
     parser.add_argument("--image_root", type=str, default="")
     parser.add_argument("--output_dir", type=str, default="logs/evaluation/beaf_flexible_probe")
     parser.add_argument("--probe_type", type=str, default="logistic", choices=SUPPORTED_PROBES, help="Classifier algorithm")
@@ -220,6 +274,21 @@ def main():
     vis_orig = extract_vision_features_unified(model, preprocess, orig_paths, device=device, batch_size=args.batch_size)
     vis_cf   = extract_vision_features_unified(model, preprocess, cf_paths,   device=device, batch_size=args.batch_size)
 
+    # Filter out missing images
+    n_pairs = len(df_pairs)
+    flags_orig = np.array(vis_orig.get("loaded_flags", [True] * n_pairs))
+    flags_cf   = np.array(vis_cf.get("loaded_flags",   [True] * n_pairs))
+    valid_mask = flags_orig & flags_cf
+
+    df_pairs = df_pairs[valid_mask].reset_index(drop=True)
+    for k in vis_orig["layers"]:
+        vis_orig["layers"][k] = vis_orig["layers"][k][valid_mask]
+        vis_cf["layers"][k]   = vis_cf["layers"][k][valid_mask]
+    vis_orig["pre_proj"]     = vis_orig["pre_proj"][valid_mask]
+    vis_cf["pre_proj"]       = vis_cf["pre_proj"][valid_mask]
+    vis_orig["final_l2norm"] = vis_orig["final_l2norm"][valid_mask]
+    vis_cf["final_l2norm"]   = vis_cf["final_l2norm"][valid_mask]
+
     # 4. Compute Flexible Probing Statistics
     raw_df = compute_flexible_per_object_stats(vis_orig, vis_cf, df_pairs, probe_type=args.probe_type, seed=args.seed)
 
@@ -236,18 +305,19 @@ def main():
             "val_acc_mean":   float(sub["val_acc_pct"].mean()),
             "val_acc_std":    float(sub["val_acc_pct"].std()),
             "gap_mean":       float(sub["gap_pct"].mean()),
-            "best_c_median":  float(sub["best_c"].median()),
         }
 
     json_path = os.path.join(args.output_dir, f"beaf_{args.probe_type}_layerwise.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(summary_dict, f, indent=2)
 
-    # 5. Render Plot
+    # 5. Render Plots
     render_probe_summary_plot(raw_df, args.probe_type, args.output_dir)
+    render_top_objects_grid(raw_df, args.probe_type, args.output_dir, top_k=16)
 
     print(f"\n  ✅ Flexible Probing [{args.probe_type.upper()}] Finished! Outputs saved to {args.output_dir}")
 
 
 if __name__ == "__main__":
     main()
+
