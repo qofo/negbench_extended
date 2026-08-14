@@ -75,20 +75,52 @@ def compute_per_object_train_val_stats(
             if n_folds < 2:
                 train_acc = 50.0
                 val_acc   = 50.0
+                best_c    = 0.1
             else:
                 gkf = GroupKFold(n_splits=n_folds)
                 cv_splits = list(gkf.split(X_all, y_all, groups=groups_all))
-                clf = LogisticRegression(C=0.1, max_iter=1000, random_state=seed)
+
+                c_candidates = [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]
 
                 train_scores = []
                 val_scores = []
+                best_c_list = []
+
                 for tr_idx, val_idx in cv_splits:
-                    clf.fit(X_all[tr_idx], y_all[tr_idx])
-                    train_scores.append(clf.score(X_all[tr_idx], y_all[tr_idx]))
+                    X_tr, y_tr = X_all[tr_idx], y_all[tr_idx]
+                    groups_tr = groups_all[tr_idx]
+
+                    unique_tr_groups = len(np.unique(groups_tr))
+                    if unique_tr_groups >= 2:
+                        n_inner = min(3, unique_tr_groups)
+                        inner_gkf = GroupKFold(n_splits=n_inner)
+                        inner_cv = list(inner_gkf.split(X_tr, y_tr, groups=groups_tr))
+
+                        best_c_fold = c_candidates[0]
+                        best_inner_score = -1.0
+
+                        for c in c_candidates:
+                            inner_scores = []
+                            for in_tr, in_val in inner_cv:
+                                clf_in = LogisticRegression(C=c, max_iter=1000, random_state=seed)
+                                clf_in.fit(X_tr[in_tr], y_tr[in_tr])
+                                inner_scores.append(clf_in.score(X_tr[in_val], y_tr[in_val]))
+                            mean_in = float(np.mean(inner_scores))
+                            if mean_in > best_inner_score:
+                                best_inner_score = mean_in
+                                best_c_fold = c
+                    else:
+                        best_c_fold = 0.1
+
+                    clf = LogisticRegression(C=best_c_fold, max_iter=1000, random_state=seed)
+                    clf.fit(X_tr, y_tr)
+                    train_scores.append(clf.score(X_tr, y_tr))
                     val_scores.append(clf.score(X_all[val_idx], y_all[val_idx]))
+                    best_c_list.append(best_c_fold)
 
                 train_acc = float(np.mean(train_scores) * 100)
                 val_acc   = float(np.mean(val_scores)   * 100)
+                best_c    = float(np.median(best_c_list))
 
             raw_records.append({
                 "object_name":   obj,
@@ -97,6 +129,7 @@ def compute_per_object_train_val_stats(
                 "train_acc_pct": train_acc,
                 "val_acc_pct":   val_acc,
                 "gap_pct":       train_acc - val_acc,
+                "best_c":        best_c,
             })
 
     return pd.DataFrame(raw_records)
@@ -263,6 +296,7 @@ def main():
             "val_acc_mean":   float(sub["val_acc_pct"].mean()),
             "val_acc_std":    float(sub["val_acc_pct"].std()),
             "gap_mean":       float(sub["gap_pct"].mean()),
+            "best_c_median":  float(sub["best_c"].median()),
         }
     json_path = os.path.join(args.output_dir, "beaf_per_object_train_val_layerwise.json")
     with open(json_path, "w", encoding="utf-8") as f:
