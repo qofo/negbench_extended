@@ -180,6 +180,23 @@ def create_text_ablated_loader(
             new_targets[i] = new_pos
         sel_y = new_targets
 
+    elif ablation_mode == "shuffle_across_then_options":
+        # Combine BOTH:
+        # 1) Shuffle each option slot across questions (breaks question-specific semantics)
+        # 2) Randomly permute options within each question and track where correct option moved
+        K = sel_texts.shape[1]
+        for k in range(K):
+            perm_across = rng.permutation(N_sub)
+            sel_texts[:, k, :] = sel_texts[perm_across, k, :]
+        new_targets = sel_y.clone()
+        for i in range(N_sub):
+            perm_opts = rng.permutation(K)
+            sel_texts[i] = sel_texts[i][perm_opts]
+            orig_correct = sel_y[i].item()
+            new_pos = int(np.where(perm_opts == orig_correct)[0][0])
+            new_targets[i] = new_pos
+        sel_y = new_targets
+
     elif ablation_mode == "gaussian":
         # Replace all text embeddings with random Gaussian vectors.
         # Match the mean L2-norm of the original text embeddings.
@@ -280,7 +297,13 @@ def run_text_ablation_diagnostic(
         ("Deep MLP",            "deep_mlp",            "Very High"),
     ]
 
-    ablation_modes = ["original", "shuffle_across", "shuffle_options", "gaussian"]
+    ablation_modes = [
+        "original",
+        "shuffle_across",
+        "shuffle_options",
+        "shuffle_across_then_options",
+        "gaussian",
+    ]
 
     unique_qtypes, qtype_indices = np.unique(question_types, return_inverse=True)
     if len(unique_qtypes) < 2:
@@ -341,7 +364,7 @@ def run_text_ablation_diagnostic(
             orig  = model_results["original"]["total_accuracy"] if mode != "original" else total
             delta = total - model_results["original"]["total_accuracy"]
 
-            print(f"    [{mode:16s}] Total: {total:6.2f}%", end="")
+            print(f"    [{mode:27s}] Total: {total:6.2f}%", end="")
             for qt in ["positive", "negative", "hybrid"]:
                 k = f"{qt}_accuracy"
                 if k in metrics:
@@ -353,7 +376,7 @@ def run_text_ablation_diagnostic(
 
         # delta from original
         orig_total = model_results["original"]["total_accuracy"]
-        for mode in ["shuffle_across", "shuffle_options", "gaussian"]:
+        for mode in ["shuffle_across", "shuffle_options", "shuffle_across_then_options", "gaussian"]:
             model_results[mode]["delta_from_original"] = \
                 model_results[mode]["total_accuracy"] - orig_total
 
@@ -371,28 +394,35 @@ def plot_text_ablation_results(
     output_dir: str,
 ):
     models = list(results.keys())
-    conditions = ["original", "shuffle_across", "shuffle_options", "gaussian"]
+    conditions = [
+        "original",
+        "shuffle_across",
+        "shuffle_options",
+        "shuffle_across_then_options",
+        "gaussian",
+    ]
     condition_labels = [
         "Original",
         "Shuffle Across\n(cross-question)",
         "Shuffle Options\n(within-question)",
+        "Shuffle Both\n(across & options)",
         "Gaussian\n(random noise)",
     ]
-    colors  = ["#1f77b4", "#ff7f0e", "#2ca02c", "#9467bd"]
-    hatches = ["",         "\\\\",    "//",       "xx"]
+    colors  = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+    hatches = ["",         "\\\\",    "//",       "||",       "xx"]
 
     x     = np.arange(len(models))
-    width = 0.2
+    width = 0.16
 
     # ── Plot 1: Total Accuracy ──
-    fig, ax = plt.subplots(figsize=(16, 7))
+    fig, ax = plt.subplots(figsize=(18, 7))
 
     for i, (cond, label, color, hatch) in enumerate(
         zip(conditions, condition_labels, colors, hatches)
     ):
         accs = [results[m][cond]["total_accuracy"] for m in models]
         bars = ax.bar(
-            x + (i - 1.5) * width, accs, width,
+            x + (i - 2) * width, accs, width,
             label=label.replace("\n", " "), color=color, alpha=0.85,
             hatch=hatch, edgecolor="white"
         )
@@ -401,7 +431,7 @@ def plot_text_ablation_results(
                 f"{acc:.1f}",
                 xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
                 xytext=(0, 2), textcoords="offset points",
-                ha="center", va="bottom", fontsize=8, fontweight="bold"
+                ha="center", va="bottom", fontsize=7, fontweight="bold"
             )
 
     ax.axhline(25, color="red", ls="--", lw=1.5, alpha=0.7, label="25% (random baseline)")
@@ -424,7 +454,7 @@ def plot_text_ablation_results(
     print(f"  Saved: {out1}")
 
     # ── Plot 2: Per Question Type (Positive / Negative / Hybrid) ──
-    fig, axes = plt.subplots(1, 3, figsize=(22, 6), sharey=False)
+    fig, axes = plt.subplots(1, 3, figsize=(24, 6), sharey=False)
     fig.suptitle(
         "Text Ablation by Question Type: Positive / Negative / Hybrid",
         fontsize=14, fontweight="bold"
@@ -437,7 +467,7 @@ def plot_text_ablation_results(
         ):
             accs = [results[m][cond].get(key, 0.0) for m in models]
             bars = ax.bar(
-                x + (i - 1.5) * width, accs, width,
+                x + (i - 2) * width, accs, width,
                 label=label.replace("\n", " "), color=color, alpha=0.85,
                 hatch=hatch, edgecolor="white"
             )
@@ -446,7 +476,7 @@ def plot_text_ablation_results(
                     f"{acc:.0f}",
                     xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
                     xytext=(0, 2), textcoords="offset points",
-                    ha="center", va="bottom", fontsize=6
+                    ha="center", va="bottom", fontsize=5
                 )
         ax.axhline(25, color="red", ls="--", lw=1.5, alpha=0.6, label="25% random")
         ax.set_xticks(x)
@@ -464,8 +494,8 @@ def plot_text_ablation_results(
     print(f"  Saved: {out2}")
 
     # ── Plot 3: Delta Heatmap ──
-    ablated_conds = ["shuffle_across", "shuffle_options", "gaussian"]
-    ablated_labels = ["Shuffle Across", "Shuffle Options", "Gaussian"]
+    ablated_conds = ["shuffle_across", "shuffle_options", "shuffle_across_then_options", "gaussian"]
+    ablated_labels = ["Shuffle Across", "Shuffle Options", "Shuffle Both", "Gaussian"]
 
     delta_data = []
     for m in models:
@@ -476,11 +506,11 @@ def plot_text_ablation_results(
         delta_data.append(row)
 
     delta_arr = np.array(delta_data)
-    fig, ax = plt.subplots(figsize=(9, 6))
+    fig, ax = plt.subplots(figsize=(10, 6))
     im = ax.imshow(delta_arr, cmap="RdYlGn", aspect="auto", vmin=-70, vmax=5)
 
     ax.set_xticks(range(len(ablated_conds)))
-    ax.set_xticklabels(ablated_labels, fontsize=11)
+    ax.set_xticklabels(ablated_labels, fontsize=10)
     ax.set_yticks(range(len(models)))
     ax.set_yticklabels(models, fontsize=11)
 
@@ -490,7 +520,7 @@ def plot_text_ablation_results(
             color = "white" if abs(val) > 30 else "black"
             ax.text(j, i, f"{val:+.1f}%",
                     ha="center", va="center",
-                    fontsize=12, fontweight="bold", color=color)
+                    fontsize=11, fontweight="bold", color=color)
 
     ax.set_title(
         "Text Ablation: Accuracy Drop (delta %)\n"
@@ -510,16 +540,22 @@ def plot_text_ablation_results(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def print_summary_table(results: Dict[str, Dict[str, Dict]]):
-    modes = ["original", "shuffle_across", "shuffle_options", "gaussian"]
-    print("\n" + "=" * 130)
+    modes = [
+        "original",
+        "shuffle_across",
+        "shuffle_options",
+        "shuffle_across_then_options",
+        "gaussian",
+    ]
+    print("\n" + "=" * 140)
     print("  TEXT ABLATION SHORTCUT DIAGNOSTIC — COMPREHENSIVE SUMMARY")
-    print("=" * 130)
+    print("=" * 140)
     header = (
-        f"{'Scorer':22s} | {'Condition':18s} | {'Total':7s} | "
+        f"{'Scorer':22s} | {'Condition':28s} | {'Total':7s} | "
         f"{'Pos':7s} | {'Neg':7s} | {'Hyb':7s} | {'delta':8s} | {'Interpretation':20s}"
     )
     print(header)
-    print("-" * 130)
+    print("-" * 140)
 
     for model_name, model_results in results.items():
         orig_total = model_results["original"]["total_accuracy"]
@@ -541,18 +577,18 @@ def print_summary_table(results: Dict[str, Dict[str, Dict]]):
                 interp = "OK GENUINE USE"
 
             print(
-                f"  {model_name:20s} | {mode:18s} | {total:6.2f}% | "
+                f"  {model_name:20s} | {mode:28s} | {total:6.2f}% | "
                 f"{pos:6.2f}% | {neg:6.2f}% | {hyb:6.2f}% | "
                 f"{delta:+7.2f}% | {interp}"
             )
-        print("-" * 130)
+        print("-" * 140)
 
-    print("=" * 130)
+    print("=" * 140)
     print("  Interpretation:")
     print("    !! STYLE SHORTCUT  = delta < 3%  -> Model uses caption style, not content")
     print("    !  PARTIAL SEMANTIC = 3-15% drop -> Model partially uses text meaning")
     print("    OK GENUINE USE      = >15% drop  -> Model relies on true semantic content")
-    print("=" * 130)
+    print("=" * 140)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
