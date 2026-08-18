@@ -40,7 +40,7 @@ echo "  Max Samples : ${MAX_SAMPLES}"
 echo "  Image Root  : $([ -z \"${IMAGE_ROOT}\" ] && echo 'SKIP (no image_root)' || echo ${IMAGE_ROOT})"
 echo "=========================================================="
 
-CMD="python benchmarks/src/evaluation/pca_text_encoder.py \
+CMD="python -m benchmarks.src.analysis.run_analysis \
     --csv_path ${PAIRED_CSV} \
     --output_dir ${OUTPUT_DIR} \
     --model ${MODEL_NAME} \

@@ -156,6 +156,15 @@ class PyTorchProbeEstimator(BaseEstimator, ClassifierMixin):
 
         return self
 
+    def decision_function(self, X: np.ndarray) -> np.ndarray:
+        if len(X) == 0:
+            return np.empty((0,), dtype=np.float32)
+        self.model_.eval()
+        with torch.no_grad():
+            X_t = torch.tensor(X, dtype=torch.float32, device=self.device_)
+            logits = self.model_(X_t).cpu().numpy().flatten()
+            return logits
+
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         self.model_.eval()
         with torch.no_grad():

@@ -33,7 +33,7 @@ echo "  Batch Size  : ${BATCH_SIZE}"
 echo "  Image Root  : $([ -z \"${IMAGE_ROOT}\" ] && echo 'SKIP (no image_root)' || echo ${IMAGE_ROOT})"
 echo "=========================================================="
 
-CMD="python benchmarks/src/evaluation/pca_text_encoder_v4.py \
+CMD="python -m benchmarks.src.analysis.run_analysis \
     --csv_path ${PAIRED_CSV} \
     --output_dir ${OUTPUT_DIR} \
     --model ${MODEL_NAME} \

@@ -18,10 +18,10 @@
 
 ---
 
-## 2. 전체 파일 목록 및 모듈 맵 (총 27개 파일 전수 점검)
+## 2. 전체 파일 목록 및 모듈 맵 (핵심 액티브 파일 전수 점검)
 
 ```
-benchmarks/src/analysis/ (총 15개 파일)
+benchmarks/src/analysis/ (총 14개 핵심 파일)
 ├── __init__.py                     # 분석 패키지 공개 API (to_bool, get_layer_features, set_seed, config export)
 ├── config.py                       # PipelineStep, MetadataKey, 기하학 연산, to_bool, get_layer_features, set_seed, DEFAULT_TUNING_GRIDS
 ├── extractor.py                    # 단일 패스(Single-pass) 전 레이어/단계별 특징 추출 엔진
@@ -31,7 +31,6 @@ benchmarks/src/analysis/ (총 15개 파일)
 ├── analyze_internal_weights.py     # Linear Probe 가중치 및 Bilinear W 비대각 에너지(97.17%) 분석
 ├── reporter.py                     # PNG 시각화 렌더러 및 JSON/CSV 보고서 직렬화
 ├── run_analysis.py                 # 텍스트 인코더 기하 구조 분석 메인 오케스트레이터
-├── pca_text_encoder.py             # 모듈화 이전의 모놀리식 16-Step 원본 분석 스크립트 (독립 실행 가능)
 ├── run_beaf_analysis_v2.py         # BEAF Part A(4-Axis) + Part B(Vision) 통합 실행 엔트리포인트 (8-State 진리표)
 ├── train_beaf_dual_probes.py       # [이동됨] Dual Classifier (f_T, f_V) 학습 및 NPZ 가중치 저장
 ├── run_beaf_flexible_probing.py    # 9종 프로빙 분류기 전 레이어 스윕 (Nested GroupKFold)
@@ -40,7 +39,7 @@ benchmarks/src/analysis/ (총 15개 파일)
 
 benchmarks/src/analysis/beaf/ (총 12개 파일)
 ├── __init__.py                     # beaf 패키지 공개 API (프로브 클래스 4종 및 팩토리 export)
-├── probe_factory.py                # [Single Source of Truth] PyTorch 프로브 4종 및 Sklearn 래퍼
+├── probe_factory.py                # [Single Source of Truth] PyTorch 프로브 4종 및 Sklearn 래퍼 (decision_function 지원)
 ├── beaf_loader.py                  # Counterfactual 6-column CSV 로더 및 엄격한 Pair 무결성 검증
 ├── vision_mechanisms.py            # 비전 트랜스포머 레이어 분해, SVD 스윕, 방향성 보존 분석
 ├── object_experiment.py            # 4-Way Cross Cosine 분석, 문법 서식, 밸런스드 샘플링, 코사인 결합 Dual Probe 평가
@@ -52,6 +51,7 @@ benchmarks/src/analysis/beaf/ (총 12개 파일)
 ├── generate_probing_comparison.py  # 프로빙 정확도 수평 막대그래프 렌더러
 └── visualizer.py                   # BEAF 전용 플롯(히스토그램, 산점도, 2D 마진 공간, 4-Way 히트맵) 렌더러
 ```
+
 
 ---
 

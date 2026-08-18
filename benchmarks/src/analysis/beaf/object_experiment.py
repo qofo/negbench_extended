@@ -22,8 +22,10 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
 
-# Import PyTorch probe models from the canonical source (probe_factory)
+# Import PyTorch probe models and unified classifier factory from probe_factory
 from analysis.beaf.probe_factory import (
+    create_probe_classifier,
+    PyTorchProbeEstimator,
     MLPVisionPyTorch as PyTorchMLPProbe,
     LowRankBilinearPyTorch as PyTorchLowRankBilinearProbe,
 )
@@ -36,22 +38,16 @@ class VisionProbeWrapper:
 
     def decision_function(self, X: np.ndarray) -> np.ndarray:
         if len(X) == 0:
-            return np.empty((0,))
-        if self.probe_type == "linear":
-            return self.model_obj.decision_function(X)
-        elif self.probe_type == "quadratic":
+            return np.empty((0,), dtype=np.float32)
+        if self.probe_type == "quadratic":
             X_quad = np.hstack([X, X ** 2])
             return self.model_obj.decision_function(X_quad)
-        elif self.probe_type == "poly_kernel":
+        elif hasattr(self.model_obj, "decision_function"):
             return self.model_obj.decision_function(X)
-        elif self.probe_type in ["mlp", "low_rank_bilinear"]:
-            self.model_obj.eval()
-            with torch.no_grad():
-                t_X = torch.tensor(X, dtype=torch.float32)
-                out = self.model_obj(t_X).squeeze(-1).numpy()
-            return out
         else:
-            return self.model_obj.decision_function(X)
+            # Fallback for models with predict_proba
+            probs = self.model_obj.predict_proba(X)[:, 1]
+            return (probs - 0.5) * 2.0
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         scores = self.decision_function(X)
@@ -65,57 +61,33 @@ class VisionProbeWrapper:
 
 
 def _fit_single_vision_probe(probe_type: str, X_tr: np.ndarray, y_tr: np.ndarray, C: float = 1.0) -> VisionProbeWrapper:
-    """Helper to instantiate and fit a specific vision probe type on train data."""
+    """Helper to instantiate and fit vision probe via unified probe_factory."""
+    y_binary = np.where(y_tr == 1, 1, 0)
+    
     if probe_type == "linear":
-        clf = LogisticRegression(C=C, max_iter=1000, random_state=42)
-        clf.fit(X_tr, y_tr)
+        clf = create_probe_classifier("logistic", C=C, seed=42)
+        clf.fit(X_tr, y_binary)
         return VisionProbeWrapper("linear", clf)
     elif probe_type == "quadratic":
         X_tr_quad = np.hstack([X_tr, X_tr ** 2])
-        clf = LogisticRegression(C=C, max_iter=1000, random_state=42)
-        clf.fit(X_tr_quad, y_tr)
+        clf = create_probe_classifier("logistic", C=C, seed=42)
+        clf.fit(X_tr_quad, y_binary)
         return VisionProbeWrapper("quadratic", clf)
     elif probe_type == "poly_kernel":
         clf = SVC(kernel="poly", degree=2, C=C, random_state=42)
         clf.fit(X_tr, y_tr)
         return VisionProbeWrapper("poly_kernel", clf)
     elif probe_type == "mlp":
-        D = X_tr.shape[1]
-        model = PyTorchMLPProbe(D, hidden_dim=64)
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=1e-4)
-        criterion = nn.BCEWithLogitsLoss()
-        y_binary = np.where(y_tr == 1, 1.0, 0.0)
-        t_X = torch.tensor(X_tr, dtype=torch.float32)
-        t_y = torch.tensor(y_binary, dtype=torch.float32).unsqueeze(-1)
-        model.train()
-        for _ in range(80):
-            optimizer.zero_grad()
-            out = model(t_X)
-            loss = criterion(out, t_y)
-            loss.backward()
-            optimizer.step()
-        model.eval()
-        return VisionProbeWrapper("mlp", model)
-    elif probe_type == "low_rank_bilinear":
-        D = X_tr.shape[1]
-        model = PyTorchLowRankBilinearProbe(D, rank=4)
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=1e-4)
-        criterion = nn.BCEWithLogitsLoss()
-        y_binary = np.where(y_tr == 1, 1.0, 0.0)
-        t_X = torch.tensor(X_tr, dtype=torch.float32)
-        t_y = torch.tensor(y_binary, dtype=torch.float32).unsqueeze(-1)
-        model.train()
-        for _ in range(80):
-            optimizer.zero_grad()
-            out = model(t_X)
-            loss = criterion(out, t_y)
-            loss.backward()
-            optimizer.step()
-        model.eval()
-        return VisionProbeWrapper("low_rank_bilinear", model)
+        clf = create_probe_classifier("mlp", hidden_dim=64, epochs=80, seed=42)
+        clf.fit(X_tr, y_binary)
+        return VisionProbeWrapper("mlp", clf)
+    elif probe_type in ["low_rank_bilinear", "bilinear_lowrank"]:
+        clf = create_probe_classifier("bilinear_lowrank", rank=4, epochs=80, seed=42)
+        clf.fit(X_tr, y_binary)
+        return VisionProbeWrapper("low_rank_bilinear", clf)
     else:
-        clf = LogisticRegression(C=C, max_iter=1000, random_state=42)
-        clf.fit(X_tr, y_tr)
+        clf = create_probe_classifier("logistic", C=C, seed=42)
+        clf.fit(X_tr, y_binary)
         return VisionProbeWrapper("linear", clf)
 
 
@@ -449,7 +421,14 @@ def evaluate_dual_classifier_product_scorer(
     neg_t_emb: np.ndarray,
     use_tanh: bool = False,
 ) -> Dict[str, float]:
-    """Evaluate S(v, t) = cos(v, t) * (f_V(v) * f_T(t)) Product Scorer on 1:1 Present/Absent images."""
+    """
+    Evaluate S(v, t) = cos(v, t) * (f_V(v) * f_T(t)) Product Scorer on 1:1 Present/Absent images.
+
+    Note (Theoretical Limitation):
+        The unconditional dual probe formulation f_V(v) * f_T(t) suffers from an unconditional scoring paradox
+        where f_V(v) outputs a single scalar independent of the text candidate. For expressive scoring without
+        this paradox, use conditional scoring heads (e.g. BilinearScorer v^T W t).
+    """
     if v_clf is None or t_clf is None or len(pos_v_emb) == 0 or len(neg_v_emb) == 0:
         return {
             "dual_probe_pos_acc": 0.5,

@@ -63,18 +63,10 @@ from analysis.beaf import (
 )
 
 
+
 # =========================================================================== #
 # Image Encoding Helper
 # =========================================================================== #
-
-def _encode_image_paths_simple(csv_path: str, image_root: str) -> None:
-    pass  # Stub — kept for backward compat; actual encoding done by extract_vision_features_unified
-
-
-def _dummy_placeholder() -> None:
-    pass  # load_beaf_csv, load_and_verify_counterfactual_pairs moved to analysis.beaf.beaf_loader
-          # compute_2x2_factorial_anova, compute_quadrant_bootstrap_ci moved to analysis.beaf.beaf_stats
-
 
 
 
