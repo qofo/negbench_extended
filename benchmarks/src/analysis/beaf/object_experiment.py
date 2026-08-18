@@ -441,14 +441,15 @@ def train_eval_vision_linear_probe(
 
 
 def evaluate_dual_classifier_product_scorer(
-    v_clf: Optional[LogisticRegression],
+    v_clf: Optional[Any],
     t_clf: Optional[LogisticRegression],
     pos_v_emb: np.ndarray,
     neg_v_emb: np.ndarray,
     pos_t_emb: np.ndarray,
-    neg_t_emb: np.ndarray
+    neg_t_emb: np.ndarray,
+    use_tanh: bool = False,
 ) -> Dict[str, float]:
-    """Evaluate S(v, t) = f_V(v) * f_T(t) Product Scorer on 1:1 Present/Absent images."""
+    """Evaluate S(v, t) = cos(v, t) * (f_V(v) * f_T(t)) Product Scorer on 1:1 Present/Absent images."""
     if v_clf is None or t_clf is None or len(pos_v_emb) == 0 or len(neg_v_emb) == 0:
         return {
             "dual_probe_pos_acc": 0.5,
@@ -456,20 +457,49 @@ def evaluate_dual_classifier_product_scorer(
             "dual_probe_overall_acc": 0.5,
         }
 
-    # Decision functions
-    f_V_pos = v_clf.decision_function(pos_v_emb)  # [M]
-    f_V_neg = v_clf.decision_function(neg_v_emb)  # [M]
+    # Normalize vectors for cosine similarity
+    def _norm(x: np.ndarray) -> np.ndarray:
+        return x / (np.linalg.norm(x, axis=-1, keepdims=True) + 1e-8)
 
+    pos_v_norm = _norm(pos_v_emb)
+    neg_v_norm = _norm(neg_v_emb)
+    pos_t_norm = _norm(pos_t_emb)
+    neg_t_norm = _norm(neg_t_emb)
 
-    f_T_pos = np.mean(t_clf.decision_function(pos_t_emb))  # scalar
-    f_T_neg = np.mean(t_clf.decision_function(neg_t_emb))  # scalar
+    # Decision functions (margins)
+    if hasattr(v_clf, "decision_function"):
+        f_V_pos = v_clf.decision_function(pos_v_emb)  # [M]
+        f_V_neg = v_clf.decision_function(neg_v_emb)  # [M]
+    else:
+        f_V_pos = np.ones(len(pos_v_emb))
+        f_V_neg = -np.ones(len(neg_v_emb))
 
-    # Product scores S(v, t) = f_V(v) * f_T(t)
-    S_pos_v_pos_t = f_V_pos * f_T_pos
-    S_pos_v_neg_t = f_V_pos * f_T_neg
+    f_T_pos = np.mean(t_clf.decision_function(pos_t_emb))  # scalar > 0
+    f_T_neg = np.mean(t_clf.decision_function(neg_t_emb))  # scalar < 0
 
-    S_neg_v_pos_t = f_V_neg * f_T_pos
-    S_neg_v_neg_t = f_V_neg * f_T_neg
+    # Mean cosine similarities between images and text template ensembles
+    if pos_t_norm.ndim == 2:
+        cos_pos_v_pos_t = np.mean(pos_v_norm @ pos_t_norm.T, axis=1)  # [M]
+        cos_pos_v_neg_t = np.mean(pos_v_norm @ neg_t_norm.T, axis=1)  # [M]
+        cos_neg_v_pos_t = np.mean(neg_v_norm @ pos_t_norm.T, axis=1)  # [M]
+        cos_neg_v_neg_t = np.mean(neg_v_norm @ neg_t_norm.T, axis=1)  # [M]
+    else:
+        cos_pos_v_pos_t = np.sum(pos_v_norm * pos_t_norm, axis=-1)
+        cos_pos_v_neg_t = np.sum(pos_v_norm * neg_t_norm, axis=-1)
+        cos_neg_v_pos_t = np.sum(neg_v_norm * pos_t_norm, axis=-1)
+        cos_neg_v_neg_t = np.sum(neg_v_norm * neg_t_norm, axis=-1)
+
+    # Product scores S(v, t) = cos(v, t) * (f_V(v) * f_T(t)) (without sigmoid to preserve sign alignment)
+    if use_tanh:
+        S_pos_v_pos_t = cos_pos_v_pos_t * np.tanh(f_V_pos * f_T_pos)
+        S_pos_v_neg_t = cos_pos_v_neg_t * np.tanh(f_V_pos * f_T_neg)
+        S_neg_v_pos_t = cos_neg_v_pos_t * np.tanh(f_V_neg * f_T_pos)
+        S_neg_v_neg_t = cos_neg_v_neg_t * np.tanh(f_V_neg * f_T_neg)
+    else:
+        S_pos_v_pos_t = cos_pos_v_pos_t * (f_V_pos * f_T_pos)
+        S_pos_v_neg_t = cos_pos_v_neg_t * (f_V_pos * f_T_neg)
+        S_neg_v_pos_t = cos_neg_v_pos_t * (f_V_neg * f_T_pos)
+        S_neg_v_neg_t = cos_neg_v_neg_t * (f_V_neg * f_T_neg)
 
     # Present Image: S(v_pos, t_pos) > S(v_pos, t_neg)
     pos_correct = np.sum(S_pos_v_pos_t > S_pos_v_neg_t)
@@ -480,8 +510,8 @@ def evaluate_dual_classifier_product_scorer(
     overall_acc = float(pos_correct + neg_correct) / total if total > 0 else 0.0
 
     return {
-        "dual_probe_pos_acc": float(pos_correct) / len(pos_v_emb),
-        "dual_probe_neg_acc": float(neg_correct) / len(neg_v_emb),
+        "dual_probe_pos_acc": float(pos_correct) / len(pos_v_emb) if len(pos_v_emb) > 0 else 0.0,
+        "dual_probe_neg_acc": float(neg_correct) / len(neg_v_emb) if len(neg_v_emb) > 0 else 0.0,
         "dual_probe_overall_acc": overall_acc,
     }
 

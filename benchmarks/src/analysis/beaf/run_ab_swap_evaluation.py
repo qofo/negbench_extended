@@ -124,13 +124,14 @@ def evaluate_image_blind_forced_choice(
     sim_xy = (dummy_img * F.normalize(text_embs_xy, p=2, dim=-1)).sum(dim=-1)
     sim_yx = (dummy_img * F.normalize(text_embs_yx, p=2, dim=-1)).sum(dim=-1)
 
-    # Choice accuracy based purely on text norm / bias
+    # Choice rate based purely on text norm / coordinate bias towards XY vs YX
     choice = (sim_xy > sim_yx).float()
-    acc_pct = float(choice.mean() * 100.0)
+    pref_pct = float(choice.mean() * 100.0)
 
     return {
-        "image_blind_accuracy_pct": acc_pct,
-        "chance_level_diff_pct": float(abs(acc_pct - 50.0)),
+        "image_blind_xy_preference_pct": pref_pct,
+        "image_blind_accuracy_pct": pref_pct,  # backward compatibility alias
+        "chance_level_diff_pct": float(abs(pref_pct - 50.0)),
     }
 
 

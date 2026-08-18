@@ -13,6 +13,8 @@ from analysis.config import (
     batch_cosine_similarity,
     batch_dot_product,
     batch_l2_distance,
+    set_seed,
+    DEFAULT_TUNING_GRIDS,
 )
 
 __all__ = [
@@ -26,4 +28,6 @@ __all__ = [
     "batch_cosine_similarity",
     "batch_dot_product",
     "batch_l2_distance",
+    "set_seed",
+    "DEFAULT_TUNING_GRIDS",
 ]

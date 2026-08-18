@@ -151,3 +151,32 @@ def get_layer_features(vis: dict, key: str) -> np.ndarray:
         return vis["pre_proj"]
     else:
         return vis["final_l2norm"]
+
+
+def set_seed(seed: int = 42) -> None:
+    """
+    Globally set random seeds across Python random, NumPy, and PyTorch (CPU & CUDA) for strict reproducibility.
+
+    Args:
+        seed (int): Random seed integer.
+    """
+    import random
+    random.seed(seed)
+    np.random.seed(seed)
+    try:
+        import torch
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+    except ImportError:
+        pass
+
+
+DEFAULT_TUNING_GRIDS = {
+    "logistic": {"C": [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]},
+    "ridge": {"alpha": [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]},
+    "svm_linear": {"C": [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0]},
+    "svm_rbf": {"C": [0.1, 1.0, 10.0], "gamma": ["scale", "auto", 0.01, 0.1]},
+    "mlp": {"hidden_dim": [32, 64, 128], "lr": [1e-2, 1e-3], "weight_decay": [1e-4, 1e-3]},
+    "bilinear_lowrank": {"rank": [2, 4, 8, 16], "lr": [1e-2, 1e-3], "weight_decay": [1e-4, 1e-3]},
+}

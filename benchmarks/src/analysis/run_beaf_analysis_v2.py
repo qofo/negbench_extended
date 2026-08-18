@@ -125,7 +125,7 @@ def _encode_image_paths(
 
 
 def _classify_failure_mode(A: float, B: float, C: float, D: float) -> str:
-    """Classify a 2x2 similarity quad into one of 5 mutually exclusive outcome categories.
+    """Classify a 2x2 similarity quad into mutually exclusive outcome categories based on a 3-bit diagnostic truth table.
 
     2x2 Matrix:
         caption=pos  caption=neg
@@ -137,26 +137,36 @@ def _classify_failure_mode(A: float, B: float, C: float, D: float) -> str:
         visual_ok : A > C  - model distinguishes object-present from object-absent image
         cf_coh_ok : D > C  - counterfactual image scores higher with negative caption
 
-    Categories:
-        PASS             : all 3 conditions met
-        FAIL_BOTH        : text_ok and visual_ok both fail (total failure)
-        FAIL_TEXT_ONLY   : only text_ok fails (negation not encoded, but vision works)
-        FAIL_VISUAL_ONLY : only visual_ok fails (negation encoded, but vision insensitive)
-        FAIL_CF_COHERENCE: text_ok and visual_ok pass, but cf_coh_ok fails
+    Mutually Exclusive Categories (3-bit Truth Table):
+        PASS                 : text_ok=T, visual_ok=T, cf_coh_ok=T (all 3 pass)
+        FAIL_CF_COHERENCE    : text_ok=T, visual_ok=T, cf_coh_ok=F (only counterfactual coherence fails)
+        FAIL_VISUAL_ONLY     : text_ok=T, visual_ok=F, cf_coh_ok=T (only visual discrimination fails)
+        FAIL_TEXT_ONLY       : text_ok=F, visual_ok=T, cf_coh_ok=T (only text negation fails)
+        FAIL_TEXT_AND_CF     : text_ok=F, visual_ok=T, cf_coh_ok=F (both text and counterfactual fail)
+        FAIL_VISUAL_AND_CF   : text_ok=T, visual_ok=F, cf_coh_ok=F (both visual and counterfactual fail)
+        FAIL_BOTH            : text_ok=F, visual_ok=F, cf_coh_ok=T (both text and visual fail, cf passes)
+        FAIL_ALL             : text_ok=F, visual_ok=F, cf_coh_ok=F (all 3 fail)
     """
-    text_ok   = A > B
-    visual_ok = A > C
-    cf_coh_ok = D > C
+    text_ok   = bool(A > B)
+    visual_ok = bool(A > C)
+    cf_coh_ok = bool(D > C)
 
     if text_ok and visual_ok and cf_coh_ok:
         return "PASS"
-    if not text_ok and not visual_ok:
-        return "FAIL_BOTH"
-    if not text_ok:
-        return "FAIL_TEXT_ONLY"
-    if not visual_ok:
+    elif text_ok and visual_ok and not cf_coh_ok:
+        return "FAIL_CF_COHERENCE"
+    elif text_ok and not visual_ok and cf_coh_ok:
         return "FAIL_VISUAL_ONLY"
-    return "FAIL_CF_COHERENCE"
+    elif not text_ok and visual_ok and cf_coh_ok:
+        return "FAIL_TEXT_ONLY"
+    elif not text_ok and visual_ok and not cf_coh_ok:
+        return "FAIL_TEXT_AND_CF"
+    elif text_ok and not visual_ok and not cf_coh_ok:
+        return "FAIL_VISUAL_AND_CF"
+    elif not text_ok and not visual_ok and cf_coh_ok:
+        return "FAIL_BOTH"
+    else:  # not text_ok and not visual_ok and not cf_coh_ok
+        return "FAIL_ALL"
 
 
 def compute_image_image_cosine(
