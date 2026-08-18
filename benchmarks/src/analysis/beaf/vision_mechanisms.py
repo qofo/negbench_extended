@@ -34,6 +34,10 @@ from analysis.config import (
     batch_l2_distance,
     batch_dot_product,
 )
+from analysis.beaf.probe_factory import (
+    ElementWiseNonLinearPyTorch,
+    LowRankBilinearPyTorch,
+)
 
 
 def extract_vision_features_unified(
@@ -535,19 +539,8 @@ def compute_vision_direction_preservation(
     return report
 
 
-class ElementWiseNonLinearPyTorch(nn.Module):
-    """Element-wise Non-linear Probe: f(x) = sum_d (w_d * GELU(x_d)) + b.
-    Guarantees 0% dimension mixing to isolate pure non-linearity from bilinear/MLP dimension cross-talk.
-    """
-    def __init__(self, d_in: int):
-        super().__init__()
-        self.w = nn.Parameter(torch.ones(d_in))
-        self.bias = nn.Parameter(torch.zeros(1))
-        self.act = nn.GELU()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        h = self.act(x)
-        return torch.sum(h * self.w, dim=-1) + self.bias.squeeze(-1)
+# ElementWiseNonLinearPyTorch and LowRankBilinearPyTorch are imported from
+# analysis.beaf.probe_factory (Single Source of Truth for all PyTorch probe models).
 
 
 def train_eval_element_wise_gelu(
@@ -580,22 +573,6 @@ def train_eval_element_wise_gelu(
         preds = (torch.sigmoid(model(X_te)) >= 0.5).float()
         acc = float((preds == y_te).float().mean().item() * 100)
     return acc
-
-
-class LowRankBilinearPyTorch(nn.Module):
-    def __init__(self, d_in: int, rank: int):
-        super().__init__()
-        self.U = nn.Parameter(torch.randn(d_in, rank) * (1.0 / np.sqrt(d_in)))
-        self.V = nn.Parameter(torch.randn(d_in, rank) * (1.0 / np.sqrt(d_in)))
-        self.w_lin = nn.Parameter(torch.zeros(d_in))
-        self.bias = nn.Parameter(torch.zeros(1))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        z = torch.matmul(x, self.U)
-        h = torch.matmul(x, self.V)
-        quad = torch.sum(z * h, dim=-1)
-        lin = torch.matmul(x, self.w_lin)
-        return quad + lin + self.bias.squeeze(-1)
 
 
 def train_eval_low_rank_bilinear(

@@ -18,6 +18,7 @@ from sklearn.model_selection import GroupKFold
 import matplotlib.pyplot as plt
 
 import open_clip
+from analysis.config import get_layer_features as _get_feats
 from analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
 from analysis.beaf.vision_mechanisms import extract_vision_features_unified
 from analysis.beaf.probe_factory import (
@@ -26,15 +27,6 @@ from analysis.beaf.probe_factory import (
     create_probe_classifier,
     format_params,
 )
-
-
-def _get_feats(vis: Dict[str, Any], key: str) -> np.ndarray:
-    if key in vis["layers"]:
-        return vis["layers"][key]
-    elif key == "Pre-Projection":
-        return vis["pre_proj"]
-    else:
-        return vis["final_l2norm"]
 
 
 def compute_flexible_per_object_stats(

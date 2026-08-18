@@ -46,6 +46,17 @@ from analysis.beaf.beaf_loader import (
     load_beaf_csv,
     load_and_verify_counterfactual_pairs,
 )
+from analysis.beaf.probe_factory import (
+    SUPPORTED_PROBES,
+    LowRankBilinearPyTorch,
+    FullBilinearPyTorch,
+    MLPVisionPyTorch,
+    ElementWiseNonLinearPyTorch,
+    PyTorchProbeEstimator,
+    create_probe_classifier,
+    get_param_candidates,
+    format_params,
+)
 
 __all__ = [
     # Visualizers
@@ -87,4 +98,14 @@ __all__ = [
     # Data Loading
     "load_beaf_csv",
     "load_and_verify_counterfactual_pairs",
+    # Probe Factory
+    "SUPPORTED_PROBES",
+    "LowRankBilinearPyTorch",
+    "FullBilinearPyTorch",
+    "MLPVisionPyTorch",
+    "ElementWiseNonLinearPyTorch",
+    "PyTorchProbeEstimator",
+    "create_probe_classifier",
+    "get_param_candidates",
+    "format_params",
 ]

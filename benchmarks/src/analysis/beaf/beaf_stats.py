@@ -15,6 +15,8 @@ from scipy import stats as scipy_stats
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 
+from analysis.config import get_layer_features
+
 
 def compute_2x2_factorial_anova(
     sim_orig_pos: np.ndarray,
@@ -174,13 +176,7 @@ def compute_per_object_layerwise_stats(
     from sklearn.linear_model import LogisticRegression
     from sklearn.model_selection import GroupKFold, cross_val_score
 
-    def _get_feats(vis, key):
-        if key in vis["layers"]:
-            return vis["layers"][key]
-        elif key == "Pre-Projection":
-            return vis["pre_proj"]
-        else:
-            return vis["final_l2norm"]
+    _get_feats = get_layer_features
 
     layer_keys = list(vis_orig["layers"].keys())
     all_keys   = layer_keys + ["Pre-Projection", "+Final L2Norm"]

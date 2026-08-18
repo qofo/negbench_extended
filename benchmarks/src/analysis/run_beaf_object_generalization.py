@@ -28,6 +28,7 @@ import open_clip
 # Add current module path if needed
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from analysis.config import to_bool
 from analysis.beaf.object_experiment import (
     instantiate_templates,
     get_balanced_beaf_object_df,
@@ -83,14 +84,7 @@ def main():
         raise FileNotFoundError(f"BEAF CSV not found: {args.csv_path}")
     df = pd.read_csv(args.csv_path)
 
-    def _to_bool(v):
-        if isinstance(v, bool):
-            return v
-        if isinstance(v, str):
-            return v.strip().lower() == "true"
-        return bool(v)
-
-    df["object_in_image"] = df["object_in_image"].apply(_to_bool)
+    df["object_in_image"] = df["object_in_image"].apply(to_bool)
     if args.image_root:
         df["abs_image_path"] = df["image_path"].apply(lambda p: os.path.join(args.image_root, p))
     else:

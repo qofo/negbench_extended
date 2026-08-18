@@ -108,3 +108,46 @@ def batch_l2_distance(u: np.ndarray, v: np.ndarray) -> np.ndarray:
         np.ndarray: Euclidean distance vector of shape (N,).
     """
     return np.linalg.norm(u - v, axis=-1)
+
+
+def to_bool(v: Optional[object], default: bool = False) -> bool:
+    """
+    Parse a boolean or string representation into a clean boolean value.
+
+    Args:
+        v: Input value (bool, str, int, None, etc.).
+        default (bool): Fallback value if v is None or unrecognized.
+
+    Returns:
+        bool: Normalized boolean value.
+    """
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("true", "1", "t", "yes", "y"):
+            return True
+        if s in ("false", "0", "f", "no", "n"):
+            return False
+    if v is None:
+        return default
+    return bool(v)
+
+
+def get_layer_features(vis: dict, key: str) -> np.ndarray:
+    """
+    Extract intermediate representations by layer/step key from unified feature dictionaries.
+
+    Args:
+        vis (dict): Unified feature dictionary returned by vision/text extractor.
+        key (str): Layer key (e.g. 'layer0', 'Layer12', 'Pre-Projection', '+Final L2Norm').
+
+    Returns:
+        np.ndarray: Feature tensor corresponding to the specified layer/transformation step.
+    """
+    if "layers" in vis and key in vis["layers"]:
+        return vis["layers"][key]
+    elif key == "Pre-Projection" and "pre_proj" in vis:
+        return vis["pre_proj"]
+    else:
+        return vis["final_l2norm"]

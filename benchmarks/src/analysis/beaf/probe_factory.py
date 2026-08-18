@@ -78,6 +78,21 @@ class MLPVisionPyTorch(nn.Module):
         return self.fc2(self.act(self.fc1(x))).squeeze(-1)
 
 
+class ElementWiseNonLinearPyTorch(nn.Module):
+    """Element-wise Non-linear Probe: f(x) = sum_d (w_d * GELU(x_d)) + b.
+    Guarantees 0% dimension mixing to isolate pure non-linearity from bilinear/MLP dimension cross-talk.
+    """
+    def __init__(self, d_in: int):
+        super().__init__()
+        self.w = nn.Parameter(torch.ones(d_in))
+        self.bias = nn.Parameter(torch.zeros(1))
+        self.act = nn.GELU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.act(x)
+        return torch.sum(h * self.w, dim=-1) + self.bias.squeeze(-1)
+
+
 # ==============================================================================
 # Scikit-Learn Compatible Estimator Wrappers
 # ==============================================================================

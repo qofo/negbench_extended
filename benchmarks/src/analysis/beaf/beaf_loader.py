@@ -11,7 +11,7 @@ from typing import List, Dict, Tuple, Optional
 import numpy as np
 import pandas as pd
 
-from analysis.config import MetadataKey
+from analysis.config import MetadataKey, to_bool
 
 
 def load_beaf_csv(csv_path: str, image_root: str) -> Tuple[pd.DataFrame, List[dict]]:
@@ -22,14 +22,7 @@ def load_beaf_csv(csv_path: str, image_root: str) -> Tuple[pd.DataFrame, List[di
     else:
         df["abs_image_path"] = df["image_path"]
 
-    def _to_bool(v) -> Optional[bool]:
-        if isinstance(v, bool):
-            return v
-        if isinstance(v, str):
-            return v.strip().lower() == "true"
-        return None
-
-    df["object_in_image"] = df["object_in_image"].apply(_to_bool)
+    df["object_in_image"] = df["object_in_image"].apply(to_bool)
 
     pair_metadata = []
     for _, row in df.iterrows():
@@ -82,15 +75,8 @@ def load_and_verify_counterfactual_pairs(
                     return candidate3
         return os.path.join(root, p_str) if root else p_str
 
-    def _to_bool(v) -> bool:
-        if isinstance(v, bool):
-            return v
-        if isinstance(v, str):
-            return v.strip().lower() == "true"
-        return False
-
     df["abs_image_path"] = df["image_path"].apply(lambda p: _resolve_path(p, image_root))
-    df["object_in_image"] = df["object_in_image"].apply(_to_bool)
+    df["object_in_image"] = df["object_in_image"].apply(to_bool)
 
     pair_metadata = []
     for _, row in df.iterrows():

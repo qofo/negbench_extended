@@ -22,34 +22,11 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
 
-
-class PyTorchMLPProbe(nn.Module):
-    def __init__(self, in_dim: int, hidden_dim: int = 64):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, 1)
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
-
-class PyTorchLowRankBilinearProbe(nn.Module):
-    def __init__(self, in_dim: int, rank: int = 4):
-        super().__init__()
-        self.U = nn.Parameter(torch.randn(in_dim, rank) * 0.01)
-        self.V = nn.Parameter(torch.randn(in_dim, rank) * 0.01)
-        self.w = nn.Parameter(torch.zeros(in_dim))
-        self.b = nn.Parameter(torch.zeros(1))
-
-    def forward(self, x):
-        z = torch.matmul(x, self.U)
-        h = torch.matmul(x, self.V)
-        quad = torch.sum(z * h, dim=-1)
-        lin = torch.sum(x * self.w, dim=-1)
-        return (quad + lin + self.b).unsqueeze(-1)
+# Import PyTorch probe models from the canonical source (probe_factory)
+from analysis.beaf.probe_factory import (
+    MLPVisionPyTorch as PyTorchMLPProbe,
+    LowRankBilinearPyTorch as PyTorchLowRankBilinearProbe,
+)
 
 
 class VisionProbeWrapper:
