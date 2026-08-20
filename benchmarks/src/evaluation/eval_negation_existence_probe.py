@@ -599,8 +599,7 @@ def main():
     # ── Save Report ──
     report_path = os.path.join(args.output_dir, "full_report.json")
     with open(report_path, "w", encoding="utf-8") as f:
-        json.dump(json.loads(json.dumps(full_report, default=str)), f,
-                  indent=2, ensure_ascii=False)
+        json.dump(full_report, f, indent=2, ensure_ascii=False, default=str)
 
     print(f"\n  Full report : {report_path}")
     print("=" * 65)

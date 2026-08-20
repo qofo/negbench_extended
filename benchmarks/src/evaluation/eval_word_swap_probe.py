@@ -45,12 +45,7 @@ import matplotlib.pyplot as plt
 import open_clip
 
 
-def set_seed(seed: int = 42):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+from benchmarks.src.analysis.config import set_seed  # noqa: E402 — centralized seed control
 
 
 def generate_word_swap_pairs(df: pd.DataFrame) -> List[Tuple[str, str, str, str]]:

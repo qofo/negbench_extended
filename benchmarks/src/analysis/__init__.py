@@ -15,6 +15,7 @@ from analysis.config import (
     batch_l2_distance,
     set_seed,
     DEFAULT_TUNING_GRIDS,
+    filter_vision_dict,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "batch_l2_distance",
     "set_seed",
     "DEFAULT_TUNING_GRIDS",
+    "filter_vision_dict",
 ]

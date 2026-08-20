@@ -10,6 +10,7 @@ Provides utilities for:
 
 import os
 import json
+from analysis.config import l2_normalize
 import numpy as np
 import pandas as pd
 import torch
@@ -436,14 +437,11 @@ def evaluate_dual_classifier_product_scorer(
             "dual_probe_overall_acc": 0.5,
         }
 
-    # Normalize vectors for cosine similarity
-    def _norm(x: np.ndarray) -> np.ndarray:
-        return x / (np.linalg.norm(x, axis=-1, keepdims=True) + 1e-8)
-
-    pos_v_norm = _norm(pos_v_emb)
-    neg_v_norm = _norm(neg_v_emb)
-    pos_t_norm = _norm(pos_t_emb)
-    neg_t_norm = _norm(neg_t_emb)
+    # Normalize vectors for cosine similarity (using centralized l2_normalize)
+    pos_v_norm = l2_normalize(pos_v_emb)
+    neg_v_norm = l2_normalize(neg_v_emb)
+    pos_t_norm = l2_normalize(pos_t_emb)
+    neg_t_norm = l2_normalize(neg_t_emb)
 
     # Decision functions (margins)
     if hasattr(v_clf, "decision_function"):

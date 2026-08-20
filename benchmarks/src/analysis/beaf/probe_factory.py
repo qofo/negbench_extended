@@ -24,6 +24,7 @@ SUPPORTED_PROBES = [
     "mlp",
     "bilinear_lowrank",
     "bilinear_full",
+    "elementwise",
 ]
 
 
@@ -128,6 +129,8 @@ class PyTorchProbeEstimator(BaseEstimator, ClassifierMixin):
             return LowRankBilinearPyTorch(d_in, self.rank)
         elif self.model_type == "bilinear_full":
             return FullBilinearPyTorch(d_in)
+        elif self.model_type == "elementwise":
+            return ElementWiseNonLinearPyTorch(d_in)
         else:
             raise ValueError(f"Unknown model_type '{self.model_type}'")
 
@@ -228,6 +231,12 @@ def get_param_candidates(probe_type: str) -> List[Dict[str, Any]]:
                 candidates.append({"lr": lr, "weight_decay": wd, "epochs": 200})
         return candidates
 
+    elif p_type == "elementwise":
+        candidates = []
+        for wd in [1e-4, 1e-3, 1e-2, 1e-1]:
+            candidates.append({"lr": 0.01, "weight_decay": wd, "epochs": 200})
+        return candidates
+
     else:
         raise ValueError(
             f"Unsupported probe_type '{probe_type}'. Supported probes: {SUPPORTED_PROBES}"
@@ -287,7 +296,7 @@ def create_probe_classifier(probe_type: str, seed: int = 42, **params) -> Any:
         gamma = params.get("gamma", "scale")
         return SVC(kernel="rbf", C=c, gamma=gamma, random_state=seed)
 
-    elif p_type in ["mlp", "bilinear_lowrank", "bilinear_full"]:
+    elif p_type in ["mlp", "bilinear_lowrank", "bilinear_full", "elementwise"]:
         hidden_dim = params.get("hidden_dim", 64)
         rank = params.get("rank", 4)
         lr = params.get("lr", 1e-2)

@@ -180,3 +180,29 @@ DEFAULT_TUNING_GRIDS = {
     "mlp": {"hidden_dim": [32, 64, 128], "lr": [1e-2, 1e-3], "weight_decay": [1e-4, 1e-3]},
     "bilinear_lowrank": {"rank": [2, 4, 8, 16], "lr": [1e-2, 1e-3], "weight_decay": [1e-4, 1e-3]},
 }
+
+
+def filter_vision_dict(vis: dict, mask: np.ndarray) -> dict:
+    """
+    Apply a boolean mask to all arrays in a unified vision feature dictionary.
+
+    Filters all ndarray entries in 'layers', 'pre_proj', 'final_l2norm', and any
+    other ndarray values at the top level, so that new feature keys are never silently dropped.
+
+    Args:
+        vis (dict): Unified vision feature dictionary from extract_vision_features_unified.
+        mask (np.ndarray): Boolean mask of shape (N,).
+
+    Returns:
+        dict: Filtered copy of the vision feature dictionary.
+    """
+    result = {}
+    for key, val in vis.items():
+        if key == "layers" and isinstance(val, dict):
+            result["layers"] = {k: v[mask] for k, v in val.items()}
+        elif isinstance(val, np.ndarray) and val.ndim >= 1 and val.shape[0] == mask.shape[0]:
+            result[key] = val[mask]
+        else:
+            result[key] = val
+    return result
+

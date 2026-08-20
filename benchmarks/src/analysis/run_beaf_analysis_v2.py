@@ -33,6 +33,7 @@ from analysis.config import (
     RetrievalConfig,
     l2_normalize,
     batch_cosine_similarity,
+    filter_vision_dict,
 )
 from analysis.extractor import extract_all_features_unified
 from analysis.metrics import (
@@ -276,6 +277,8 @@ def main():
     parser.add_argument("--img_batch",   type=int, default=64)
     parser.add_argument("--max_samples", type=int, default=0, help="Cap number of CSV rows loaded (0 = no cap)")
     parser.add_argument("--seed",        type=int, default=42)
+    parser.add_argument("--run_full_4axis", action="store_true", default=False,
+                        help="Enable full 4-Axis analyses (Direction Preservation, Image-Image Cosine, 4-Way Matrix). Default: ANOVA-only fast run.")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -341,13 +344,8 @@ def main():
     pos_embs = pos_embs[valid_mask]
     neg_embs = neg_embs[valid_mask]
 
-    for k in vis_orig["layers"]:
-        vis_orig["layers"][k] = vis_orig["layers"][k][valid_mask]
-        vis_cf["layers"][k]   = vis_cf["layers"][k][valid_mask]
-    vis_orig["pre_proj"]     = vis_orig["pre_proj"][valid_mask]
-    vis_cf["pre_proj"]       = vis_cf["pre_proj"][valid_mask]
-    vis_orig["final_l2norm"] = vis_orig["final_l2norm"][valid_mask]
-    vis_cf["final_l2norm"]   = vis_cf["final_l2norm"][valid_mask]
+    vis_orig = filter_vision_dict(vis_orig, valid_mask)
+    vis_cf   = filter_vision_dict(vis_cf, valid_mask)
 
     n_pairs = n_valid
     orig_embs = vis_orig["final_l2norm"]
@@ -398,13 +396,14 @@ def main():
     render_per_object_layerwise_plot(obj_layer_summary, args.output_dir, raw_df=raw_obj_df)
 
 
-    # vis_dir_pres  = compute_vision_direction_preservation(vis_orig, vis_cf, args.output_dir, seed=args.seed)
-    # pos_features_v1 = extract_all_features_unified(model, tokenizer, pos_texts_v1, device, "eot", args.batch_size)
-    # neg_features_v1 = extract_all_features_unified(model, tokenizer, neg_texts_v1, device, "eot", args.batch_size)
-    # pipeline_data = compute_pipeline_and_layer_breakdown(pos_features_v1, neg_features_v1)
-    # retrieval_data = compute_image_text_retrieval_metrics(model, tokenizer, preprocess, pair_metadata, pos_texts_v1, neg_texts_v1, retrieval_cfg)
-    # img_img_df = compute_image_image_cosine(df_pairs, model, preprocess, device, args.img_batch)
-    # matrix_df  = compute_4way_matrix(df_pairs, model, tokenizer, preprocess, device, args.batch_size, args.img_batch)
+    # Steps 6-10: Full 4-Axis analyses (optional, gated by --run_full_4axis)
+    if args.run_full_4axis:
+        print("\n[Steps 6-10] Running full 4-Axis analyses (Direction Preservation, Image-Image Cosine, 4-Way Matrix) ...")
+        vis_dir_pres  = compute_vision_direction_preservation(vis_orig, vis_cf, args.output_dir, seed=args.seed)
+        img_img_df = compute_image_image_cosine(df_pairs, model, preprocess, device, args.img_batch)
+        matrix_df  = compute_4way_matrix(df_pairs, model, tokenizer, preprocess, device, args.batch_size, args.img_batch)
+    else:
+        print("\n[Steps 6-10] Skipped (use --run_full_4axis to enable Direction Preservation, Image-Image Cosine, 4-Way Matrix).")
 
     # 11. Write Comprehensive Summary Report (2x2 Factorial ANOVA Focus)
     print("\n[Step 11] Writing 2x2 Factorial ANOVA Summary Report ...")

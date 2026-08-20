@@ -81,12 +81,7 @@ from src.evaluation.eval_scoring_heads import extract_mcq_embeddings
 # Utilities
 # ──────────────────────────────────────────────────────────────────────────────
 
-def set_seed(seed: int = 42):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+from benchmarks.src.analysis.config import set_seed  # noqa: E402 — centralized seed control
 
 
 def compute_extended_breakdown(
