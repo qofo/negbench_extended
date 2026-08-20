@@ -10,8 +10,8 @@ set -e
 # Base and Data Directory Settings
 BASE_DIR="."
 DATA_DIR="${BASE_DIR}/benchmarks/data"
-SCORER_DIR="logs/evaluation/scoring_head_experiments/checkpoints"
-OUTPUT_DIR="logs/evaluation/all_benchmarks_transfer"
+SCORER_DIR="${BASE_DIR}/logs/evaluation/scoring_head_experiments/checkpoints"
+OUTPUT_DIR="${BASE_DIR}/logs/evaluation/all_benchmarks_transfer"
 MODEL="ViT-B-32"
 PRETRAINED="openai"
 
@@ -38,7 +38,7 @@ for csv in "${BENCHMARKS[@]}"; do
         echo "Evaluating Benchmark: ${csv}"
         echo "======================================================================"
         
-        python -m benchmarks.src.evaluation.eval_zero_shot_transfer \
+        python -m src.evaluation.eval_zero_shot_transfer \
             --model ${MODEL} \
             --pretrained ${PRETRAINED} \
             --scorer-dir ${SCORER_DIR} \
@@ -54,3 +54,4 @@ echo "======================================================================"
 echo "✅ All benchmark evaluations completed successfully!"
 echo "Master Summary saved to: ${OUTPUT_DIR}/zero_shot_transfer_summary.csv"
 echo "======================================================================"
+

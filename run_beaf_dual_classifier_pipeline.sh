@@ -35,7 +35,7 @@ echo "🚀 STAGE 1: Training Dual Classifiers (+1/-1) on BEAF Data"
 echo " Target BEAF CSV: ${BEAF_CSV}"
 echo "======================================================================"
 
-python train_beaf_dual_probes.py \
+python -m benchmarks.src.analysis.train_beaf_dual_probes \
     --csv_path "${BEAF_CSV}" \
     --model_name "${MODEL}" \
     --pretrained "${PRETRAINED}" \
