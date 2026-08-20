@@ -271,11 +271,13 @@ def run_per_object_polarity_probe(
     layer_names = list(global_feats.keys())
     print(f"  Layers extracted: {layer_names}\n")
 
-    # ── Per-object probe ──
+    # ── Per-object probe (Train vs Val across layers) ──
+    raw_records = []
     per_obj_rows = []
-    layer_macro_scores: Dict[str, List[float]] = {l: [] for l in layer_names}
+    layer_macro_train: Dict[str, List[float]] = {l: [] for l in layer_names}
+    layer_macro_val: Dict[str, List[float]] = {l: [] for l in layer_names}
 
-    print("  Running per-object logistic regression probes...")
+    print("  Running per-object logistic regression probes (Train vs Val)...")
     for obj in valid_objects:
         aff_sents = obj_affirmed[obj]
         neg_sents = obj_negated[obj]
@@ -293,15 +295,47 @@ def run_per_object_polarity_probe(
                 global_feats[l_name][neg_idx],
             ])
             X_norm = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-8)
-            clf = LogisticRegression(max_iter=1000, C=1.0, random_state=42)
-            cv = StratifiedKFold(n_splits=eff_splits, shuffle=True, random_state=42)
-            acc = float(np.mean(cross_val_score(clf, X_norm, y, cv=cv, scoring="accuracy"))) * 100.0
-            row[l_name] = acc
-            layer_macro_scores[l_name].append(acc)
 
-        print(f"    [{obj:15s}] n={n:3d}  Final L2Norm acc: "
-              f"{row.get('Final (L2 Normed)', row.get(layer_names[-1], 0.0)):.1f}%")
+            cv = StratifiedKFold(n_splits=eff_splits, shuffle=True, random_state=42)
+            train_fold_scores = []
+            val_fold_scores = []
+
+            for tr_idx, val_idx in cv.split(X_norm, y):
+                X_tr, y_tr = X_norm[tr_idx], y[tr_idx]
+                X_val, y_val = X_norm[val_idx], y[val_idx]
+
+                clf = LogisticRegression(max_iter=1000, C=1.0, random_state=42)
+                clf.fit(X_tr, y_tr)
+
+                train_fold_scores.append(float(clf.score(X_tr, y_tr)) * 100.0)
+                val_fold_scores.append(float(clf.score(X_val, y_val)) * 100.0)
+
+            train_acc = float(np.mean(train_fold_scores))
+            val_acc = float(np.mean(val_fold_scores))
+
+            row[f"{l_name}_train"] = train_acc
+            row[f"{l_name}_val"] = val_acc
+            row[l_name] = val_acc
+
+            layer_macro_train[l_name].append(train_acc)
+            layer_macro_val[l_name].append(val_acc)
+
+            raw_records.append({
+                "object_name": obj,
+                "layer_name": l_name,
+                "n_pairs": n,
+                "train_acc_pct": train_acc,
+                "val_acc_pct": val_acc,
+                "gap_pct": train_acc - val_acc,
+            })
+
+        final_key = "Final (L2 Normed)" if "Final (L2 Normed)" in layer_names else layer_names[-1]
+        print(f"    [{obj:15s}] n={n:3d}  Final Train Acc: {row[f'{final_key}_train']:.1f}% | Val Acc: {row[f'{final_key}_val']:.1f}%")
         per_obj_rows.append(row)
+
+    df_raw = pd.DataFrame(raw_records)
+    raw_csv = os.path.join(output_dir, "expB_per_object_train_val_records.csv")
+    df_raw.to_csv(raw_csv, index=False)
 
     df_per_obj = pd.DataFrame(per_obj_rows)
     per_obj_csv = os.path.join(output_dir, "expB_per_object_accuracy_breakdown.csv")
@@ -310,101 +344,153 @@ def run_per_object_polarity_probe(
     # ── Macro-Average per layer ──
     macro_rows = []
     for l_name in layer_names:
-        scores = layer_macro_scores[l_name]
+        tr_scores = layer_macro_train[l_name]
+        val_scores = layer_macro_val[l_name]
         macro_rows.append({
             "layer": l_name,
-            "macro_mean_pct": float(np.mean(scores)),
-            "macro_std_pct": float(np.std(scores)),
-            "min_object_pct": float(np.min(scores)),
-            "max_object_pct": float(np.max(scores)),
-            "n_objects": len(scores),
+            "train_macro_mean_pct": float(np.mean(tr_scores)),
+            "train_macro_std_pct": float(np.std(tr_scores)),
+            "val_macro_mean_pct": float(np.mean(val_scores)),
+            "val_macro_std_pct": float(np.std(val_scores)),
+            "gap_pct": float(np.mean(tr_scores) - np.mean(val_scores)),
+            "min_val_object_pct": float(np.min(val_scores)),
+            "max_val_object_pct": float(np.max(val_scores)),
+            "n_objects": len(val_scores),
         })
 
     df_macro = pd.DataFrame(macro_rows)
     macro_csv = os.path.join(output_dir, "expB_layerwise_macro_accuracy.csv")
     df_macro.to_csv(macro_csv, index=False)
 
-    # ── Plot ──
-    fig, axes = plt.subplots(1, 2, figsize=(18, 6))
-    x = list(range(len(layer_names)))
-    macro_acc = df_macro["macro_mean_pct"].values
-    macro_std = df_macro["macro_std_pct"].values
-
-    # Left: Macro-average accuracy curve
-    ax = axes[0]
-    ax.plot(x, macro_acc, "o-", color="#8e44ad", lw=2.5, ms=7,
-            label=f"Macro-Avg Accuracy ({len(valid_objects)} objects)")
-    ax.fill_between(x, macro_acc - macro_std, macro_acc + macro_std,
-                    color="#8e44ad", alpha=0.15, label="Inter-Object Std Dev")
-    ax.axhline(y=50.0, color="#27ae60", ls="--", lw=2, alpha=0.8, label="Chance Level (50%)")
-    ax.set_ylabel("Polarity Classification Accuracy (%)", fontsize=12)
-    ax.set_xlabel("Transformer Layer / Pipeline Step", fontsize=12)
-    ax.set_title(
-        f"Exp B: Per-Object Polarity Probe\n"
-        f"({len(valid_objects)} objects, Macro-Average, Diverse Templates)",
-        fontsize=12, fontweight="bold",
-    )
-    ax.set_xticks(x)
-    ax.set_xticklabels(layer_names, rotation=35, ha="right", fontsize=9)
-    ax.set_ylim(40, max(90, max(macro_acc) + 8))
-    ax.grid(True, ls="--", alpha=0.4)
-    ax.legend(fontsize=10, loc="upper left")
-
-    # Right: Per-object accuracy at final layer (bar chart, sorted)
-    final_col = "Final (L2 Normed)" if "Final (L2 Normed)" in df_per_obj.columns \
-        else df_per_obj.columns[-3]
-    df_sorted = df_per_obj.sort_values(by=final_col, ascending=True)
-    ax = axes[1]
-    colors = [
-        "#e74c3c" if v < 55 else "#f39c12" if v < 65 else "#27ae60"
-        for v in df_sorted[final_col]
-    ]
-    ax.barh(df_sorted["object"], df_sorted[final_col], color=colors,
-            edgecolor="white", linewidth=0.8)
-    ax.axvline(x=50.0, color="gray", ls="--", lw=1.5, alpha=0.7, label="Chance (50%)")
-    ax.set_xlabel("Final Layer Polarity Accuracy (%)", fontsize=12)
-    ax.set_title(
-        "Exp B: Per-Object Final Layer Accuracy\n(Green ≥ 65%, Orange 55–65%, Red < 55%)",
-        fontsize=12, fontweight="bold",
-    )
-    ax.set_xlim(40, max(100, df_sorted[final_col].max() + 5))
-    ax.legend(fontsize=10)
-    ax.grid(axis="x", ls="--", alpha=0.4)
-
-    plt.suptitle(
-        "Per-Object Polarity Probe: Is Negation Information Linearly Encoded?\n"
-        "Identical-Word Pairs — Zero Lexical Shortcut",
-        fontsize=13, fontweight="bold", y=1.02,
-    )
-    plt.tight_layout()
-
-    plot_path = os.path.join(output_dir, "expB_layerwise_per_object_macro_accuracy.png")
-    plt.savefig(plot_path, dpi=300, bbox_inches="tight")
-    plt.close()
+    # ── Render Exactly Matching Train vs Val Summary Plot ──
+    render_train_val_summary_plot(df_macro, df_raw, output_dir)
+    render_top_objects_grid(df_raw, output_dir, top_k=16)
 
     # ── Summary ──
-    final_macro_acc = float(df_macro.iloc[-1]["macro_mean_pct"])
-    max_macro_acc = float(df_macro["macro_mean_pct"].max())
-    argmax_layer = df_macro.loc[df_macro["macro_mean_pct"].idxmax(), "layer"]
-    verdict = "POLARITY_EXISTS" if max_macro_acc > 65.0 else "WEAK_OR_ABSENT"
+    final_col = "Final (L2 Normed)" if "Final (L2 Normed)" in df_per_obj.columns else df_per_obj.columns[-1]
+    final_macro_val = float(df_macro.iloc[-1]["val_macro_mean_pct"])
+    final_macro_train = float(df_macro.iloc[-1]["train_macro_mean_pct"])
+    max_macro_val = float(df_macro["val_macro_mean_pct"].max())
+    argmax_layer = df_macro.loc[df_macro["val_macro_mean_pct"].idxmax(), "layer"]
+    verdict = "POLARITY_EXISTS" if max_macro_val > 65.0 else "WEAK_OR_ABSENT"
 
-    print(f"\n  Best layer            : {argmax_layer} ({max_macro_acc:.2f}%)")
-    print(f"  Final layer macro acc : {final_macro_acc:.2f}%")
+    print(f"\n  Best layer (Val)      : {argmax_layer} ({max_macro_val:.2f}%)")
+    print(f"  Final layer Val acc   : {final_macro_val:.2f}% (Train: {final_macro_train:.2f}%)")
     print(f"  Verdict               : {verdict}")
     print(f"  Saved: {per_obj_csv}")
     print(f"  Saved: {macro_csv}")
-    print(f"  Saved: {plot_path}")
 
+    df_sorted = df_per_obj.sort_values(by=final_col, ascending=True)
     return {
         "verdict": verdict,
         "n_valid_objects": len(valid_objects),
         "best_layer": argmax_layer,
-        "best_layer_macro_accuracy_pct": max_macro_acc,
-        "final_layer_macro_accuracy_pct": final_macro_acc,
+        "best_layer_macro_accuracy_pct": max_macro_val,
+        "final_layer_val_macro_accuracy_pct": final_macro_val,
+        "final_layer_train_macro_accuracy_pct": final_macro_train,
         "per_layer_macro": macro_rows,
         "top5_objects": df_sorted.tail(5)[["object", final_col]].to_dict(orient="records"),
         "bottom5_objects": df_sorted.head(5)[["object", final_col]].to_dict(orient="records"),
     }
+
+
+def render_train_val_summary_plot(df_macro: pd.DataFrame, raw_df: pd.DataFrame, output_dir: str) -> None:
+    """
+    Render layerwise Train vs Val accuracy plot with exact matching aesthetics to
+    beaf_per_object_train_val_summary.png.
+    """
+    layer_names = df_macro["layer"].tolist()
+    train_means = df_macro["train_macro_mean_pct"].values
+    train_stds = df_macro["train_macro_std_pct"].values
+    val_means = df_macro["val_macro_mean_pct"].values
+    val_stds = df_macro["val_macro_std_pct"].values
+
+    x = np.arange(len(layer_names))
+    fig, ax = plt.subplots(figsize=(14, 7))
+
+    ax.plot(x, train_means, "o-", color="#1f77b4", lw=2.5, ms=7, label="Train Acc (%) [Mean]")
+    ax.fill_between(x, train_means - train_stds, train_means + train_stds, color="#1f77b4", alpha=0.15)
+
+    ax.plot(x, val_means, "s--", color="#d62728", lw=2.5, ms=7, label="Val Acc (%) [Mean CV]")
+    ax.fill_between(x, val_means - val_stds, val_means + val_stds, color="#d62728", alpha=0.15)
+
+    # Post-Transformer vertical line
+    post_keys = ["Layer 12 + LN", "Projected (Unnorm)", "Pre-Projection"]
+    for pk in post_keys:
+        if pk in layer_names:
+            idx = layer_names.index(pk)
+            ax.axvline(x=idx - 0.5, color="gray", ls=":", lw=1.5, alpha=0.7, label="Post-Transformer Transformations")
+            break
+
+    ax.set_ylabel("Linear Probe Accuracy (%)", fontsize=12)
+    ax.set_xlabel("Text Transformer Layer / Pipeline Step", fontsize=12)
+    ax.set_xticks(x)
+    ax.set_xticklabels(layer_names, rotation=35, ha="right", fontsize=9)
+    ax.set_ylim(45, 105)
+    ax.grid(True, ls="--", alpha=0.4)
+
+    n_objs = len(raw_df["object_name"].unique())
+    ax.set_title(
+        f"Layerwise Linear Probe: Train vs Val Accuracy (Mean ± Std across {n_objs} Objects)",
+        fontsize=13,
+        fontweight="bold",
+    )
+    ax.legend(fontsize=10, loc="lower right")
+
+    plt.tight_layout()
+    out_path = os.path.join(output_dir, "beaf_per_object_train_val_summary.png")
+    plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    # Also save as layerwise_per_object_polarity_train_val.png for clarity
+    alt_path = os.path.join(output_dir, "layerwise_per_object_train_val_summary.png")
+    plt.savefig(alt_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {out_path}")
+
+
+def render_top_objects_grid(raw_df: pd.DataFrame, output_dir: str, top_k: int = 16) -> None:
+    """Render a grid of subplots showing Train vs Val Accuracy per layer for top-k objects by sample count."""
+    import math
+    obj_counts = raw_df.groupby("object_name")["n_pairs"].first().sort_values(ascending=False)
+    top_objects = obj_counts.head(top_k).index.tolist()
+
+    cols = 4
+    rows = math.ceil(len(top_objects) / cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(18, 3.5 * rows), sharex=True, sharey=True)
+    axes = axes.flatten()
+
+    layer_names = raw_df["layer_name"].unique().tolist()
+    x = np.arange(len(layer_names))
+
+    for i, obj in enumerate(top_objects):
+        ax = axes[i]
+        sub = raw_df[raw_df["object_name"] == obj].set_index("layer_name").reindex(layer_names)
+        n_pairs = int(sub["n_pairs"].iloc[0])
+
+        ax.plot(x, sub["train_acc_pct"], "o-", color="#1f77b4", lw=2, ms=5, label="Train Acc")
+        ax.plot(x, sub["val_acc_pct"], "s--", color="#d62728", lw=2, ms=5, label="Val Acc")
+
+        ax.set_title(f"{obj} (N={n_pairs} pairs)", fontsize=11, fontweight="bold")
+        ax.grid(True, ls="--", alpha=0.3)
+        ax.set_ylim(35, 105)
+
+        if i % cols == 0:
+            ax.set_ylabel("Accuracy (%)", fontsize=10)
+        if i >= (rows - 1) * cols:
+            ax.set_xticks(x)
+            ax.set_xticklabels(layer_names, rotation=45, ha="right", fontsize=8)
+
+    for j in range(len(top_objects), len(axes)):
+        fig.delaxes(axes[j])
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper right", bbox_to_anchor=(0.98, 0.98), fontsize=11)
+    plt.suptitle(f"Top-{len(top_objects)} Objects: Layerwise Train vs Val Accuracy", fontsize=14, fontweight="bold", y=1.01)
+    plt.tight_layout()
+
+    out_grid = os.path.join(output_dir, "beaf_top_objects_train_val_grid.png")
+    plt.savefig(out_grid, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {out_grid}")
 
 
 # ============================================================
