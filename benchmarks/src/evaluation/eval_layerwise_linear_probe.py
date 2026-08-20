@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 
 import open_clip
 
+from benchmarks.src.analysis.config import PipelineStep
 from benchmarks.src.analysis.extractor import extract_all_features_unified
 
 
@@ -57,9 +58,16 @@ def extract_layerwise_feature_dict(
 
     # Post-Layer 12 pipeline transformation steps
     pipeline_dict = res["pipeline"]
-    feature_dict["Layer 12 + LN"] = pipeline_dict["Layer 12 + LN"]
-    feature_dict["Projected (Unnorm)"] = pipeline_dict["Projected (Unnorm)"]
-    feature_dict["Final (L2 Normed)"] = pipeline_dict["Final (L2 Normed)"]
+    ln_key = PipelineStep.LAYER12_LN.value if PipelineStep.LAYER12_LN.value in pipeline_dict else "Layer 12 + LN"
+    proj_key = PipelineStep.PROJECTED_UNNORM.value if PipelineStep.PROJECTED_UNNORM.value in pipeline_dict else "Projected (Unnorm)"
+    final_key = PipelineStep.FINAL_L2NORM.value if PipelineStep.FINAL_L2NORM.value in pipeline_dict else "Final (L2 Normed)"
+
+    if ln_key in pipeline_dict:
+        feature_dict["Layer 12 + LN"] = pipeline_dict[ln_key]
+    if proj_key in pipeline_dict:
+        feature_dict["Projected (Unnorm)"] = pipeline_dict[proj_key]
+    if final_key in pipeline_dict:
+        feature_dict["Final (L2 Normed)"] = pipeline_dict[final_key]
 
     return feature_dict
 
