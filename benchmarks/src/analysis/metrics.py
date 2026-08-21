@@ -167,7 +167,8 @@ def compute_direction_preservation(
 def compute_linear_probe_and_subsets(
     pos_features: Dict[str, Any],
     neg_features: Dict[str, Any],
-    pair_metadata: List[dict]
+    pair_metadata: List[dict],
+    fit_intercept: bool = True,
 ) -> Dict[str, Any]:
     """
     Evaluate linear separability of negation representations using 5-fold cross-validated logistic regression.
@@ -176,6 +177,7 @@ def compute_linear_probe_and_subsets(
         pos_features (Dict[str, Any]): Positive caption features.
         neg_features (Dict[str, Any]): Negative caption features.
         pair_metadata (List[dict]): Metadata dictionary for sub-dataset template decomposition.
+        fit_intercept (bool): Whether to include bias / intercept term in LogisticRegression (default: True).
 
     Returns:
         Dict[str, Any]: Cross-validated probing accuracies and template-specific probe breakdowns.
@@ -194,7 +196,7 @@ def compute_linear_probe_and_subsets(
         X = np.vstack([X_pos, X_neg])
         X_norm = l2_normalize(X)
 
-        clf = LogisticRegression(max_iter=1000, random_state=42)
+        clf = LogisticRegression(max_iter=1000, random_state=42, fit_intercept=fit_intercept)
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
         scores = cross_val_score(clf, X_norm, y, cv=cv, scoring="accuracy")
 
@@ -222,7 +224,7 @@ def compute_linear_probe_and_subsets(
             X_sub = np.vstack([X_pos_sub, X_neg_sub])
             X_sub_norm = l2_normalize(X_sub)
 
-            clf_sub = LogisticRegression(max_iter=1000, random_state=42)
+            clf_sub = LogisticRegression(max_iter=1000, random_state=42, fit_intercept=fit_intercept)
             cv_sub = StratifiedKFold(n_splits=min(5, n_sub // 2), shuffle=True, random_state=42)
             scores_sub = cross_val_score(clf_sub, X_sub_norm, y_sub, cv=cv_sub, scoring="accuracy")
 

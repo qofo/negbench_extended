@@ -63,12 +63,12 @@ class WeightedCosineScorer(BaseScorer):
     Formula: s(v, t) = sum_d w_d * (v_d * t_d) + b
     """
 
-    def __init__(self, feature_dim: int):
+    def __init__(self, feature_dim: int, use_bias: bool = True):
         super().__init__()
         self.feature_dim = feature_dim
         # Initialize weights to 1.0 so initial prediction matches standard cosine
         self.weight = nn.Parameter(torch.ones(feature_dim))
-        self.bias = nn.Parameter(torch.zeros(1))
+        self.bias = nn.Parameter(torch.zeros(1)) if use_bias else None
 
     def forward(self, img_emb: torch.Tensor, text_emb: torch.Tensor) -> torch.Tensor:
         if img_emb.dim() == 2:
@@ -79,7 +79,9 @@ class WeightedCosineScorer(BaseScorer):
         
         # Elementwise product: (B, K, D)
         elem_prod = v_norm * t_norm
-        scores = torch.sum(elem_prod * self.weight, dim=-1) + self.bias
+        scores = torch.sum(elem_prod * self.weight, dim=-1)
+        if self.bias is not None:
+            scores = scores + self.bias
         return scores  # (B, K)
 
 
@@ -91,12 +93,12 @@ class BilinearScorer(BaseScorer):
     Formula: s(v, t) = v^T W t + b
     """
 
-    def __init__(self, feature_dim: int):
+    def __init__(self, feature_dim: int, use_bias: bool = True):
         super().__init__()
         self.feature_dim = feature_dim
         # Initialize W near Identity for fast convergence to cosine similarity
         self.W = nn.Parameter(torch.eye(feature_dim))
-        self.bias = nn.Parameter(torch.zeros(1))
+        self.bias = nn.Parameter(torch.zeros(1)) if use_bias else None
 
     def forward(self, img_emb: torch.Tensor, text_emb: torch.Tensor) -> torch.Tensor:
         if img_emb.dim() == 2:
@@ -109,7 +111,9 @@ class BilinearScorer(BaseScorer):
         v_W = torch.matmul(v_norm, self.W)
         
         # (v @ W) * t -> sum over D -> (B, K)
-        scores = torch.sum(v_W * t_norm, dim=-1) + self.bias
+        scores = torch.sum(v_W * t_norm, dim=-1)
+        if self.bias is not None:
+            scores = scores + self.bias
         return scores
 
 
@@ -121,11 +125,11 @@ class LogisticRegressionScorer(BaseScorer):
     Input feature vector: x = [v, t] (2 * D)
     """
 
-    def __init__(self, feature_dim: int):
+    def __init__(self, feature_dim: int, use_bias: bool = True):
         super().__init__()
         self.feature_dim = feature_dim
         self.in_dim = feature_dim * 2
-        self.linear = nn.Linear(self.in_dim, 1)
+        self.linear = nn.Linear(self.in_dim, 1, bias=use_bias)
 
     def _construct_features(self, img_emb: torch.Tensor, text_emb: torch.Tensor) -> torch.Tensor:
         if img_emb.dim() == 2:
@@ -152,16 +156,16 @@ class ShallowMLPScorer(BaseScorer):
     Architecture: 2D -> 256 -> GELU -> Dropout -> 1
     """
 
-    def __init__(self, feature_dim: int, hidden_dim: int = 256, dropout: float = 0.1):
+    def __init__(self, feature_dim: int, hidden_dim: int = 256, dropout: float = 0.1, use_bias: bool = True):
         super().__init__()
         self.feature_dim = feature_dim
         self.in_dim = feature_dim * 2
         
         self.mlp = nn.Sequential(
-            nn.Linear(self.in_dim, hidden_dim),
+            nn.Linear(self.in_dim, hidden_dim, bias=use_bias),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, 1)
+            nn.Linear(hidden_dim, 1, bias=use_bias)
         )
 
     def _construct_features(self, img_emb: torch.Tensor, text_emb: torch.Tensor) -> torch.Tensor:
@@ -187,30 +191,30 @@ class DeepMLPScorer(BaseScorer):
     Architecture: 2D -> 512 -> 256 -> 128 -> 1
     """
 
-    def __init__(self, feature_dim: int, dropout: float = 0.1):
+    def __init__(self, feature_dim: int, dropout: float = 0.1, use_bias: bool = True):
         super().__init__()
         self.feature_dim = feature_dim
         self.in_dim = feature_dim * 2
         
         self.layer1 = nn.Sequential(
-            nn.Linear(self.in_dim, 512),
+            nn.Linear(self.in_dim, 512, bias=use_bias),
             nn.LayerNorm(512),
             nn.GELU(),
             nn.Dropout(dropout)
         )
         self.layer2 = nn.Sequential(
-            nn.Linear(512, 256),
+            nn.Linear(512, 256, bias=use_bias),
             nn.LayerNorm(256),
             nn.GELU(),
             nn.Dropout(dropout)
         )
         self.layer3 = nn.Sequential(
-            nn.Linear(256, 128),
+            nn.Linear(256, 128, bias=use_bias),
             nn.LayerNorm(128),
             nn.GELU(),
             nn.Dropout(dropout)
         )
-        self.out_head = nn.Linear(128, 1)
+        self.out_head = nn.Linear(128, 1, bias=use_bias)
 
     def _construct_features(self, img_emb: torch.Tensor, text_emb: torch.Tensor) -> torch.Tensor:
         if img_emb.dim() == 2:
@@ -241,14 +245,14 @@ class LowRankBilinearScorer(BaseScorer):
                   -> O(1) offline caching for Bi-Encoder retrieval preserved.
     """
 
-    def __init__(self, feature_dim: int, rank: int = 32):
+    def __init__(self, feature_dim: int, rank: int = 32, use_bias: bool = True):
         super().__init__()
         self.feature_dim = feature_dim
         self.rank = rank
         # Initialize A, B near zero for stable early training
         self.proj_v = nn.Linear(feature_dim, rank, bias=False)
         self.proj_t = nn.Linear(feature_dim, rank, bias=False)
-        self.bias = nn.Parameter(torch.zeros(1))
+        self.bias = nn.Parameter(torch.zeros(1)) if use_bias else None
         nn.init.normal_(self.proj_v.weight, std=0.02)
         nn.init.normal_(self.proj_t.weight, std=0.02)
 
@@ -266,7 +270,9 @@ class LowRankBilinearScorer(BaseScorer):
         Bt = torch.matmul(t_norm, self.proj_t.weight.T)
 
         # Inner product over rank dimension
-        scores = torch.sum(Av * Bt, dim=-1) + self.bias  # (B, K)
+        scores = torch.sum(Av * Bt, dim=-1)
+        if self.bias is not None:
+            scores = scores + self.bias
         return scores
 
 
@@ -281,14 +287,14 @@ class NonLinearBiEncoderScorer(BaseScorer):
                   -> O(1) offline caching preserved despite non-linearity.
     """
 
-    def __init__(self, feature_dim: int, rank: int = 32):
+    def __init__(self, feature_dim: int, rank: int = 32, use_bias: bool = True):
         super().__init__()
         self.feature_dim = feature_dim
         self.rank = rank
-        self.proj_v = nn.Linear(feature_dim, rank, bias=True)
-        self.proj_t = nn.Linear(feature_dim, rank, bias=True)
+        self.proj_v = nn.Linear(feature_dim, rank, bias=use_bias)
+        self.proj_t = nn.Linear(feature_dim, rank, bias=use_bias)
         self.act = nn.GELU()
-        self.bias = nn.Parameter(torch.zeros(1))
+        self.bias = nn.Parameter(torch.zeros(1)) if use_bias else None
         nn.init.normal_(self.proj_v.weight, std=0.02)
         nn.init.normal_(self.proj_t.weight, std=0.02)
 
@@ -424,32 +430,33 @@ class DualClassifierProductScorer(BaseScorer):
 
 
 
-def build_scorer(model_type: str, feature_dim: int, rank: int = 32) -> BaseScorer:
+def build_scorer(model_type: str, feature_dim: int, rank: int = 32, use_bias: bool = True) -> BaseScorer:
     """Factory function to build a scoring head model by name.
 
     Args:
         model_type: Name of the scoring head (e.g., 'cosine', 'bilinear', 'dual_classifier_product').
         feature_dim: Dimensionality of CLIP embeddings (typically 512).
         rank: Rank k for LowRankBilinearScorer and NonLinearBiEncoderScorer (default 32).
+        use_bias: Whether to enable bias/intercept parameters (default: True).
     """
     name_lower = model_type.lower().replace(" ", "_").replace("-", "_")
 
     if name_lower in ["cosine", "cosine_similarity"]:
         return CosineScorer(feature_dim)
     elif name_lower in ["weighted_cosine", "weighted_cosine_similarity"]:
-        return WeightedCosineScorer(feature_dim)
+        return WeightedCosineScorer(feature_dim, use_bias=use_bias)
     elif name_lower in ["bilinear", "bilinear_matrix"]:
-        return BilinearScorer(feature_dim)
+        return BilinearScorer(feature_dim, use_bias=use_bias)
     elif name_lower in ["logistic_regression", "log_reg", "linear"]:
-        return LogisticRegressionScorer(feature_dim)
+        return LogisticRegressionScorer(feature_dim, use_bias=use_bias)
     elif name_lower in ["shallow_mlp", "mlp_shallow"]:
-        return ShallowMLPScorer(feature_dim)
+        return ShallowMLPScorer(feature_dim, use_bias=use_bias)
     elif name_lower in ["deep_mlp", "mlp_deep"]:
-        return DeepMLPScorer(feature_dim)
+        return DeepMLPScorer(feature_dim, use_bias=use_bias)
     elif name_lower in ["low_rank_bilinear", "lr_bilinear", "low_rank"]:
-        return LowRankBilinearScorer(feature_dim, rank=rank)
+        return LowRankBilinearScorer(feature_dim, rank=rank, use_bias=use_bias)
     elif name_lower in ["nonlinear_biencoder", "nl_biencoder", "nonlinear_bi", "nl_bi"]:
-        return NonLinearBiEncoderScorer(feature_dim, rank=rank)
+        return NonLinearBiEncoderScorer(feature_dim, rank=rank, use_bias=use_bias)
     elif name_lower in ["dual_classifier_product", "product_probe", "dual_classifier"]:
         return DualClassifierProductScorer(feature_dim)
     else:

@@ -279,6 +279,8 @@ def main():
     parser.add_argument("--seed",        type=int, default=42)
     parser.add_argument("--run_full_4axis", action="store_true", default=False,
                         help="Enable full 4-Axis analyses (Direction Preservation, Image-Image Cosine, 4-Way Matrix). Default: ANOVA-only fast run.")
+    parser.add_argument("--no_bias", "--no-bias", action="store_true", default=False,
+                        help="Disable bias/intercept in linear probes (default: bias enabled)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -291,6 +293,7 @@ def main():
     print(f"  Model      : {args.model} ({args.pretrained})")
     print(f"  CSV        : {args.csv_path}")
     print(f"  Output dir : {args.output_dir}")
+    print(f"  Use Bias   : {not args.no_bias}")
     print("=" * 60)
 
     # 1. Load Data
@@ -389,6 +392,7 @@ def main():
         object_names=object_names,
         pair_ids=pair_ids,
         seed=args.seed,
+        fit_intercept=not args.no_bias,
     )
 
     # Per-object layerwise analysis & visualization (mean + std shaded area)
@@ -415,6 +419,7 @@ def main():
     comprehensive_summary = {
         "model":         args.model,
         "pretrained":    args.pretrained,
+        "use_bias":      not args.no_bias,
         "n_raw_rows":    len(df_raw),
         "n_exact_pairs": n_pairs,
         "part_b_scatter_pos_vs_neg": {

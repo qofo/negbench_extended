@@ -397,6 +397,7 @@ def compute_vision_linear_probe(
     object_names: Optional[np.ndarray] = None,
     pair_ids: Optional[np.ndarray] = None,
     seed: int = 42,
+    fit_intercept: bool = True,
 ) -> Dict[str, Any]:
     """Train 5-fold cross-validated Linear Probe on Vision Transformer features to classify object_in_image.
 
@@ -449,7 +450,7 @@ def compute_vision_linear_probe(
         X = np.vstack([X_orig, X_cf])
         X_norm = l2_normalize(X)
 
-        clf = LogisticRegression(max_iter=1000, random_state=42)
+        clf = LogisticRegression(max_iter=1000, random_state=42, fit_intercept=fit_intercept)
         scores = cross_val_score(clf, X_norm, y, cv=cv_splits, scoring="accuracy")
 
         mean_acc = float(np.mean(scores) * 100)

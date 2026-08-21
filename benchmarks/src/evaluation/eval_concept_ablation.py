@@ -77,6 +77,7 @@ from benchmarks.src.analysis.config import set_seed  # noqa: E402 — centralize
 def extract_negation_direction(
     text_embeds: torch.Tensor,
     question_types: List[str],
+    fit_intercept: bool = True,
 ) -> torch.Tensor:
     """
     Fit a logistic regression probe on text embeddings to find the negation
@@ -119,9 +120,9 @@ def extract_negation_direction(
         np.ones(len(X_neg),  dtype=int),
     ])
 
-    print(f"\nFitting negation probe:  n_positive={len(X_pos)}, n_negative={len(X_neg)}")
+    print(f"\nFitting negation probe:  n_positive={len(X_pos)}, n_negative={len(X_neg)} (Fit Intercept: {fit_intercept})")
 
-    clf = LogisticRegression(max_iter=2000, C=1.0, random_state=42)
+    clf = LogisticRegression(max_iter=2000, C=1.0, random_state=42, fit_intercept=fit_intercept)
     clf.fit(X, y)
     acc_train = clf.score(X, y)
     print(f"  Probe train accuracy: {acc_train*100:.2f}%")
@@ -180,6 +181,7 @@ def evaluate_scorers_on_embeds(
     lr: float = 1e-3,
     batch_size: int = 64,
     seed: int = 42,
+    use_bias: bool = True,
 ) -> Dict[str, Dict]:
     """Run 5-Fold CV for each scorer on provided embeddings."""
     feature_dim = img_embeds.shape[1]
@@ -194,7 +196,7 @@ def evaluate_scorers_on_embeds(
     all_results = {}
 
     for display_name, model_type, rank in scorer_configs:
-        print(f"\n  Evaluating: {display_name}")
+        print(f"\n  Evaluating: {display_name} (Use Bias: {use_bias})")
         oof_preds = np.zeros(N, dtype=int)
 
         for fold_i, (train_idx, val_idx) in enumerate(
@@ -213,7 +215,7 @@ def evaluate_scorers_on_embeds(
             train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
             val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False)
 
-            scorer = build_scorer(model_type, feature_dim, rank=rank)
+            scorer = build_scorer(model_type, feature_dim, rank=rank, use_bias=use_bias)
             _, fold_preds = train_and_eval_fold(
                 scorer, train_loader, val_loader,
                 device=device, epochs=epochs, lr=lr,
@@ -244,6 +246,7 @@ def evaluate_intervention_ablation(
     lr: float = 1e-3,
     batch_size: int = 64,
     seed: int = 42,
+    use_bias: bool = True,
 ) -> Dict[str, Dict]:
     """
     Mode A (Intervention Ablation):
@@ -262,7 +265,7 @@ def evaluate_intervention_ablation(
     all_results = {}
 
     for display_name, model_type, rank in scorer_configs:
-        print(f"\n  Evaluating Intervention Mode A: {display_name}")
+        print(f"\n  Evaluating Intervention Mode A: {display_name} (Use Bias: {use_bias})")
         oof_preds = np.zeros(N, dtype=int)
 
         for fold_i, (train_idx, val_idx) in enumerate(
@@ -376,12 +379,14 @@ def main():
     parser.add_argument("--lr",         type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--batch-size", type=int,  default=64,   help="Batch size")
     parser.add_argument("--seed",       type=int,  default=42,   help="Random seed")
+    parser.add_argument("--no_bias", "--no-bias", action="store_true", default=False,
+                        help="Disable bias/intercept in probes and scoring heads (default: bias enabled)")
     args = parser.parse_args()
 
     set_seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Device: {device}  |  Best rank k = {args.best_rank}")
+    print(f"Device: {device}  |  Best rank k = {args.best_rank}  |  Use Bias = {not args.no_bias}")
 
     # Load CLIP
     print(f"\nLoading OpenCLIP {args.model} ({args.pretrained})...")
@@ -399,7 +404,7 @@ def main():
     )
 
     # ── Step 1: Extract negation direction w_neg ────────────────────────────
-    w_neg = extract_negation_direction(text_embeds, question_types)
+    w_neg = extract_negation_direction(text_embeds, question_types, fit_intercept=not args.no_bias)
     print(f"  w_neg norm check: {w_neg.norm().item():.4f}  (should be ≈1.0)")
 
     # ── Step 2: Ablate text embeddings ─────────────────────────────────────
@@ -427,6 +432,7 @@ def main():
         device=device, n_splits=args.n_splits,
         epochs=args.epochs, lr=args.lr,
         batch_size=args.batch_size, seed=args.seed,
+        use_bias=not args.no_bias,
     )
 
     # ── Step 5: Evaluate Mode A (Intervention: Train Original -> Test Ablated)
@@ -439,6 +445,7 @@ def main():
         device=device, n_splits=args.n_splits,
         epochs=args.epochs, lr=args.lr,
         batch_size=args.batch_size, seed=args.seed,
+        use_bias=not args.no_bias,
     )
 
     # ── Step 6: Evaluate Mode B (Retrained: Train Ablated -> Test Ablated) ──
@@ -451,6 +458,7 @@ def main():
         device=device, n_splits=args.n_splits,
         epochs=args.epochs, lr=args.lr,
         batch_size=args.batch_size, seed=args.seed,
+        use_bias=not args.no_bias,
     )
 
     # ── Step 7: Print Summary Comparison Table ──────────────────────────────

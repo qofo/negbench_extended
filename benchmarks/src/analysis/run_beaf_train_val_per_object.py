@@ -29,6 +29,7 @@ def compute_per_object_train_val_stats(
     vis_cf: Dict[str, Any],
     df_pairs: pd.DataFrame,
     seed: int = 42,
+    fit_intercept: bool = True,
 ) -> pd.DataFrame:
     """Compute per-object layerwise Train vs Val Linear Probe accuracy using GroupKFold."""
     layer_keys = list(vis_orig["layers"].keys())
@@ -40,7 +41,7 @@ def compute_per_object_train_val_stats(
 
     raw_records = []
 
-    print(f"\n  [Train vs Val Linear Probe] Processing {len(unique_objects)} objects across {len(all_keys)} layers...")
+    print(f"\n  [Train vs Val Linear Probe] Processing {len(unique_objects)} objects across {len(all_keys)} layers | Fit Intercept: {fit_intercept}...")
 
     for obj in unique_objects:
         mask      = (object_names == obj)
@@ -94,7 +95,7 @@ def compute_per_object_train_val_stats(
                         for c in c_candidates:
                             inner_scores = []
                             for in_tr, in_val in inner_cv:
-                                clf_in = LogisticRegression(C=c, max_iter=1000, random_state=seed)
+                                clf_in = LogisticRegression(C=c, max_iter=1000, random_state=seed, fit_intercept=fit_intercept)
                                 clf_in.fit(X_tr[in_tr], y_tr[in_tr])
                                 inner_scores.append(clf_in.score(X_tr[in_val], y_tr[in_val]))
                             mean_in = float(np.mean(inner_scores))
@@ -104,7 +105,7 @@ def compute_per_object_train_val_stats(
                     else:
                         best_c_fold = 0.1
 
-                    clf = LogisticRegression(C=best_c_fold, max_iter=1000, random_state=seed)
+                    clf = LogisticRegression(C=best_c_fold, max_iter=1000, random_state=seed, fit_intercept=fit_intercept)
                     clf.fit(X_tr, y_tr)
                     train_scores.append(clf.score(X_tr, y_tr))
                     val_scores.append(clf.score(X_all[val_idx], y_all[val_idx]))
@@ -228,6 +229,8 @@ def main():
     parser.add_argument("--pretrained", type=str, default="openai")
     parser.add_argument("--img_batch", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--no_bias", "--no-bias", action="store_true", default=False,
+                        help="Disable bias/intercept in linear probes (default: bias enabled)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -240,6 +243,7 @@ def main():
     print(f"  Model      : {args.model} ({args.pretrained})")
     print(f"  CSV        : {args.csv_path}")
     print(f"  Output dir : {args.output_dir}")
+    print(f"  Use Bias   : {not args.no_bias}")
     print("=" * 60)
 
     # 1. Load Data
@@ -271,7 +275,7 @@ def main():
     vis_cf["final_l2norm"]   = vis_cf["final_l2norm"][valid_mask]
 
     # 4. Compute Train vs Val Stats
-    raw_df = compute_per_object_train_val_stats(vis_orig, vis_cf, df_pairs, seed=args.seed)
+    raw_df = compute_per_object_train_val_stats(vis_orig, vis_cf, df_pairs, seed=args.seed, fit_intercept=not args.no_bias)
 
     # Save CSV
     csv_path = os.path.join(args.output_dir, "beaf_per_object_train_val_layerwise.csv")

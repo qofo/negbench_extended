@@ -202,6 +202,7 @@ def run_per_object_polarity_probe(
     min_samples_per_class: int = 10,
     n_splits: int = 5,
     batch_size: int = 256,
+    fit_intercept: bool = True,
 ) -> Dict[str, Any]:
     """
     For each object O, split all sentences containing O into:
@@ -214,6 +215,7 @@ def run_per_object_polarity_probe(
     print("\n" + "=" * 65)
     print("Experiment B: Per-Object Polarity Probe (Macro-Average)")
     print(f"  Min samples per class : {min_samples_per_class}")
+    print(f"  Fit Intercept / Bias  : {fit_intercept}")
     print("  Hypothesis: Accuracy >> 50% → polarity direction exists in embedding space.")
     print("=" * 65)
 
@@ -304,7 +306,7 @@ def run_per_object_polarity_probe(
                 X_tr, y_tr = X_norm[tr_idx], y[tr_idx]
                 X_val, y_val = X_norm[val_idx], y[val_idx]
 
-                clf = LogisticRegression(max_iter=1000, C=1.0, random_state=42)
+                clf = LogisticRegression(max_iter=1000, C=1.0, random_state=42, fit_intercept=fit_intercept)
                 clf.fit(X_tr, y_tr)
 
                 train_fold_scores.append(float(clf.score(X_tr, y_tr)) * 100.0)
@@ -515,6 +517,8 @@ def main():
     parser.add_argument("--min_samples", type=int, default=10,
                         help="Min sentences per class for Experiment B")
     parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--no_bias", "--no-bias", action="store_true", default=False,
+                        help="Disable bias/intercept in linear probes (default: bias enabled)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -525,7 +529,8 @@ def main():
     print("╚═══════════════════════════════════════════════════════════╝")
     print(f"  Model      : {args.model} ({args.pretrained}) | Device: {device}")
     print(f"  CSV        : {args.csv_path}")
-    print(f"  Output     : {args.output_dir}\n")
+    print(f"  Output     : {args.output_dir}")
+    print(f"  Use Bias   : {not args.no_bias}\n")
 
     # ── Load Data ──
     df = pd.read_csv(args.csv_path)
@@ -559,6 +564,7 @@ def main():
         "pretrained": args.pretrained,
         "csv_path": args.csv_path,
         "n_pairs": len(df_unique),
+        "use_bias": not args.no_bias,
     }
 
     # ── Experiment A ──
@@ -574,6 +580,7 @@ def main():
         device, args.output_dir,
         min_samples_per_class=args.min_samples,
         batch_size=args.batch_size,
+        fit_intercept=not args.no_bias,
     )
     full_report["experiment_B_per_object_polarity"] = exp_b
 

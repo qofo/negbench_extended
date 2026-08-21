@@ -124,6 +124,7 @@ def fit_linear_probe(
     X_neg: np.ndarray,
     n_splits: int = 5,
     seed: int = 42,
+    fit_intercept: bool = True,
 ) -> Tuple[float, float, np.ndarray, float]:
     """
     Fit Logistic Regression linear probe on pos vs neg features.
@@ -137,14 +138,14 @@ def fit_linear_probe(
 
     eff_splits = max(2, min(n_splits, n))
     cv = StratifiedKFold(n_splits=eff_splits, shuffle=True, random_state=seed)
-    clf = LogisticRegression(max_iter=1000, C=1.0, random_state=seed)
+    clf = LogisticRegression(max_iter=1000, C=1.0, random_state=seed, fit_intercept=fit_intercept)
     scores = cross_val_score(clf, X_norm, y, cv=cv, scoring="accuracy")
 
     # Fit on all data for normal vector
     clf.fit(X_norm, y)
     w = clf.coef_[0]
     w_unit = w / (np.linalg.norm(w) + 1e-8)
-    b = float(clf.intercept_[0])
+    b = float(clf.intercept_[0]) if fit_intercept else 0.0
 
     return float(np.mean(scores)) * 100.0, float(np.std(scores)) * 100.0, w_unit, b
 
@@ -241,16 +242,19 @@ def compute_2x2_margin(
 # ============================================================
 class BilinearMatcher(nn.Module):
     """Bilinear Interaction Head: s(v, t) = v^T W t + b."""
-    def __init__(self, dim: int):
+    def __init__(self, dim: int, use_bias: bool = True):
         super().__init__()
         self.W = nn.Parameter(torch.eye(dim) + 0.01 * torch.randn(dim, dim))
-        self.bias = nn.Parameter(torch.zeros(1))
+        self.bias = nn.Parameter(torch.zeros(1)) if use_bias else None
 
     def forward(self, v: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         # v: (B, D), t: (B, D)
         # s(v, t) = sum_i sum_j v_i W_ij t_j
         vW = torch.matmul(v, self.W)
-        return torch.sum(vW * t, dim=-1) + self.bias
+        scores = torch.sum(vW * t, dim=-1)
+        if self.bias is not None:
+            scores = scores + self.bias
+        return scores
 
 
 def train_bilinear_matcher(
@@ -262,6 +266,7 @@ def train_bilinear_matcher(
     lr: float = 1e-2,
     weight_decay: float = 1e-3,
     seed: int = 42,
+    use_bias: bool = True,
 ) -> np.ndarray:
     """
     Train Bilinear Scorer using Margin Ranking Loss on 2x2 pairs.
@@ -269,7 +274,7 @@ def train_bilinear_matcher(
     """
     torch.manual_seed(seed)
     dim = v_pos.shape[-1]
-    model = BilinearMatcher(dim)
+    model = BilinearMatcher(dim, use_bias=use_bias)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     criterion = nn.MarginRankingLoss(margin=0.1)
 
@@ -357,6 +362,7 @@ def run_unary_mechanistic_analysis(
     target_objects: Optional[List[str]] = None,
     min_pairs_per_obj: int = 8,
     batch_size: int = 256,
+    use_bias: bool = True,
 ):
     os.makedirs(output_dir, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -366,7 +372,8 @@ def run_unary_mechanistic_analysis(
     print("╚═══════════════════════════════════════════════════════════╝")
     print(f"  Model       : {model_name} ({pretrained}) | Device: {device}")
     print(f"  Input CSV   : {csv_path}")
-    print(f"  Output Dir  : {output_dir}\n")
+    print(f"  Output Dir  : {output_dir}")
+    print(f"  Use Bias    : {use_bias}\n")
 
     # Load dataset
     df = pd.read_csv(csv_path)
@@ -448,8 +455,8 @@ def run_unary_mechanistic_analysis(
         analyzed_objects.append(obj)
 
         # ── Stage E1: Information Probing ──
-        acc_v, std_v, w_I, b_I = fit_linear_probe(v_pos.numpy(), v_neg.numpy())
-        acc_t, std_t, w_T, b_T = fit_linear_probe(t_pos.numpy(), t_neg.numpy())
+        acc_v, std_v, w_I, b_I = fit_linear_probe(v_pos.numpy(), v_neg.numpy(), fit_intercept=use_bias)
+        acc_t, std_t, w_T, b_T = fit_linear_probe(t_pos.numpy(), t_neg.numpy(), fit_intercept=use_bias)
 
         d_I = np.mean(v_pos.numpy(), axis=0) - np.mean(v_neg.numpy(), axis=0)
         d_T = np.mean(t_pos.numpy(), axis=0) - np.mean(t_neg.numpy(), axis=0)
@@ -472,14 +479,15 @@ def run_unary_mechanistic_analysis(
         scatter_objects.append(obj)
 
         # ── Stage E4: Bilinear Ablation (W = D + O) ──
-        W_learned = train_bilinear_matcher(v_pos, v_neg, t_pos, t_neg)
+        W_learned = train_bilinear_matcher(v_pos, v_neg, t_pos, t_neg, use_bias=use_bias)
         ablation_res = evaluate_bilinear_ablation(v_pos, v_neg, t_pos, t_neg, W_learned)
 
         print("  [E4 Ablation]")
         for sc_name, sc_data in ablation_res.items():
-            print(f"    - {sc_name:28s}: Acc = {sc_data['accuracy_pct']:5.1f}% (M = {sc_data['margin_mean']:+.4f})")
+            print(f"    - {sc_name:28s}: Acc = {sc_data['accuracy_pct']:5.1f}% | Margin = {sc_data['margin_mean']:+.4f}")
             ablation_accs_summary[sc_name].append(sc_data["accuracy_pct"])
 
+        # Record summary row
         all_obj_records.append({
             "object": obj,
             "n_pairs": len(valid_idx),
@@ -497,42 +505,38 @@ def run_unary_mechanistic_analysis(
         })
 
     if not all_obj_records:
-        print("No valid objects analyzed. Check image paths or dataset filters.")
+        print("No valid objects analyzed.")
         return
 
+    # Export Summary Table
     df_summary = pd.DataFrame(all_obj_records)
     summary_csv = os.path.join(output_dir, "e1_to_e4_summary_table.csv")
     df_summary.to_csv(summary_csv, index=False)
 
-    # ── Correlations for E3 ──
-    corr_w, p_w = stats.pearsonr(scatter_data_w, scatter_margins) if len(scatter_data_w) > 2 else (0.0, 1.0)
-    corr_d, p_d = stats.pearsonr(scatter_data_d, scatter_margins) if len(scatter_data_d) > 2 else (0.0, 1.0)
-    spear_d, sp_d = stats.spearmanr(scatter_data_d, scatter_margins) if len(scatter_data_d) > 2 else (0.0, 1.0)
+    # Correlation Analysis
+    corr_w, p_w = stats.pearsonr(scatter_data_w, scatter_margins)
+    spear_w, _ = stats.spearmanr(scatter_data_w, scatter_margins)
+    corr_d, p_d = stats.pearsonr(scatter_data_d, scatter_margins)
+    spear_d, _ = stats.spearmanr(scatter_data_d, scatter_margins)
 
     print("\n" + "=" * 65)
-    print("  STAGE E3 CORRELATION SUMMARY")
+    print("  Cross-Modal Alignment vs Cosine Margin Correlation:")
+    print(f"  Normal Alignment   : Pearson r = {corr_w:+.4f} (p={p_w:.4f}), Spearman rho = {spear_w:+.4f}")
+    print(f"  Centroid Alignment : Pearson r = {corr_d:+.4f} (p={p_d:.4f}), Spearman rho = {spear_d:+.4f}")
     print("=" * 65)
-    print(f"  Pearson  r(A_centroid, Margin M) : {corr_d:+.4f} (p = {p_d:.4f})")
-    print(f"  Spearman ρ(A_centroid, Margin M) : {spear_d:+.4f} (p = {sp_d:.4f})")
-    print(f"  Pearson  r(A_normal, Margin M)   : {corr_w:+.4f} (p = {p_w:.4f})")
 
-    # ── Render Figure 1: Probing Representation (E1) ──
+    # Render Figures
     _render_fig1_probing(df_summary, output_dir)
-
-    # ── Render Figure 2: Alignment Distribution vs Random Null (E2) ──
     _render_fig2_alignment(df_summary, output_dir)
-
-    # ── Render Figure 3: Alignment vs Margin Scatter (E3) ──
     _render_fig3_scatter(scatter_data_d, scatter_margins, scatter_objects, corr_d, p_d, output_dir)
-
-    # ── Render Figure 4: Bilinear Ablation (E4) ──
     _render_fig4_bilinear_ablation(ablation_accs_summary, output_dir)
 
-    # ── Full JSON Report ──
+    # Full JSON Report
     report = {
         "model": model_name,
         "pretrained": pretrained,
-        "n_objects_analyzed": len(df_summary),
+        "use_bias": use_bias,
+        "n_objects_analyzed": len(analyzed_objects),
         "analyzed_objects": analyzed_objects,
         "e1_probing_mean": {
             "image_probe_acc": float(df_summary["e1_image_probe_acc"].mean()),
@@ -598,45 +602,65 @@ def _render_fig1_probing(df_summary: pd.DataFrame, output_dir: str):
 
 def _render_fig2_alignment(df_summary: pd.DataFrame, output_dir: str):
     """Figure 2: Cross-Modal Alignment vs Random Null Distribution."""
-    fig, ax = plt.subplots(figsize=(10, 5))
-    x = np.arange(len(df_summary))
-    width = 0.35
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
-    ax.bar(x - width/2, df_summary["e2_a_centroid"], width, label="Centroid Shift Alignment cos(d_I, d_T)", color="#2ecc71")
-    ax.bar(x + width/2, df_summary["e2_a_normal"], width, label="Probe Normal Alignment cos(w_I, w_T)", color="#3498db")
+    ax1 = axes[0]
+    ax1.hist(df_summary["e2_a_normal"], bins=20, color="#3498db", edgecolor="black", alpha=0.75, label="Normal Align cos(w_I, w_T)")
+    ax1.axvline(x=0.0, color="red", ls="--", lw=1.5, label="Null Expectation (0.0)")
+    ax1.axvline(x=df_summary["e2_a_normal"].mean(), color="green", ls="-", lw=2,
+                label=f"Mean = {df_summary['e2_a_normal'].mean():+.3f}")
+    ax1.set_xlabel("Alignment cos(w_I, w_T)", fontsize=11)
+    ax1.set_ylabel("Number of Objects", fontsize=11)
+    ax1.set_title("Probe Normal Vector Alignment", fontsize=12, fontweight="bold")
+    ax1.legend(fontsize=9)
+    ax1.grid(True, ls="--", alpha=0.4)
 
-    ax.axhline(y=0.0, color="black", lw=1)
-    ax.axhspan(-0.05, 0.05, color="gray", alpha=0.2, label="Random Null Distribution (95% CI)")
+    ax2 = axes[1]
+    ax2.hist(df_summary["e2_a_centroid"], bins=20, color="#9b59b6", edgecolor="black", alpha=0.75, label="Centroid Align cos(d_I, d_T)")
+    ax2.axvline(x=0.0, color="red", ls="--", lw=1.5, label="Null Expectation (0.0)")
+    ax2.axvline(x=df_summary["e2_a_centroid"].mean(), color="green", ls="-", lw=2,
+                label=f"Mean = {df_summary['e2_a_centroid'].mean():+.3f}")
+    ax2.set_xlabel("Alignment cos(d_I, d_T)", fontsize=11)
+    ax2.set_ylabel("Number of Objects", fontsize=11)
+    ax2.set_title("Centroid Difference Vector Alignment", fontsize=12, fontweight="bold")
+    ax2.legend(fontsize=9)
+    ax2.grid(True, ls="--", alpha=0.4)
 
-    ax.set_ylabel("Cosine Alignment Score", fontsize=12)
-    ax.set_title("E2: Cross-Modal Semantic Alignment of Negation/Absence Signals", fontsize=13, fontweight="bold")
-    ax.set_xticks(x)
-    ax.set_xticklabels(df_summary["object"], rotation=35, ha="right", fontsize=10)
-    ax.grid(axis="y", ls="--", alpha=0.4)
-    ax.legend(fontsize=10, loc="upper right")
     plt.tight_layout()
-
     out_path = os.path.join(output_dir, "fig2_alignment_distribution.png")
     plt.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close()
 
 
-def _render_fig3_scatter(scatter_d, scatter_m, objects, corr, p_val, output_dir):
-    """Figure 3: Alignment vs Margin Scatter Plot & Regression."""
+def _render_fig3_scatter(
+    x_vals: List[float],
+    y_vals: List[float],
+    obj_labels: List[str],
+    r: float,
+    p: float,
+    output_dir: str,
+):
+    """Figure 3: Centroid Alignment vs Cosine Margin M Scatter."""
     fig, ax = plt.subplots(figsize=(8, 6))
+    ax.scatter(x_vals, y_vals, color="#2c3e50", alpha=0.8, s=60, edgecolors="white", label="Objects")
 
-    ax.scatter(scatter_d, scatter_m, s=80, color="#8e44ad", edgecolors="black", linewidths=1.2, zorder=3)
-    for i, txt in enumerate(objects):
-        ax.annotate(txt, (scatter_d[i], scatter_m[i]), fontsize=9, xytext=(5, 5), textcoords="offset points")
+    # Fit linear regression trend
+    if len(x_vals) > 2:
+        slope, intercept, _, _, _ = stats.linregress(x_vals, y_vals)
+        x_line = np.linspace(min(x_vals), max(x_vals), 100)
+        y_line = slope * x_line + intercept
+        ax.plot(x_line, y_line, color="#e74c3c", ls="-", lw=2,
+                label=f"Trend (Pearson r={r:+.3f}, p={p:.3f})")
 
-    # Linear trendline
-    if len(scatter_d) > 2:
-        m_slope, b_inter = np.polyfit(scatter_d, scatter_m, 1)
-        x_seq = np.linspace(min(scatter_d) - 0.05, max(scatter_d) + 0.05, 50)
-        ax.plot(x_seq, m_slope * x_seq + b_inter, color="crimson", ls="--", lw=2,
-                label=f"Trendline (r = {corr:+.3f}, p = {p_val:.3f})")
+    ax.axhline(y=0.0, color="gray", ls="--", lw=1.2, alpha=0.7)
+    ax.axvline(x=0.0, color="gray", ls="--", lw=1.2, alpha=0.7)
 
-    ax.axhline(y=0.0, color="gray", ls=":", lw=1.5, alpha=0.8, label="Correct Matching Boundary (M=0)")
+    # Annotate top objects
+    for i, obj in enumerate(obj_labels):
+        if abs(y_vals[i]) > 0.025 or x_vals[i] > 0.2:
+            ax.annotate(obj, (x_vals[i], y_vals[i]), textcoords="offset points",
+                        xytext=(4, 4), fontsize=8, alpha=0.85)
+
     ax.set_xlabel("Centroid Shift Alignment cos(d_I, d_T)", fontsize=12)
     ax.set_ylabel("Cosine Correctness Margin M", fontsize=12)
     ax.set_title("E3: Does Semantic Alignment Predict Cosine Matching Success?", fontsize=13, fontweight="bold")
@@ -686,6 +710,8 @@ if __name__ == "__main__":
     parser.add_argument("--target_objects", nargs="+", default=None)
     parser.add_argument("--min_pairs", type=int, default=6)
     parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--no_bias", "--no-bias", action="store_true", default=False,
+                        help="Disable bias/intercept in linear probes and Bilinear matching head (default: bias enabled)")
     args = parser.parse_args()
 
     run_unary_mechanistic_analysis(
@@ -696,4 +722,5 @@ if __name__ == "__main__":
         target_objects=args.target_objects,
         min_pairs_per_obj=args.min_pairs,
         batch_size=args.batch_size,
+        use_bias=not args.no_bias,
     )

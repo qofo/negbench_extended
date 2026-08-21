@@ -278,7 +278,8 @@ def evaluate_all_scoring_heads(
     epochs: int = 15,
     lr: float = 1e-3,
     batch_size: int = 64,
-    seed: int = 42
+    seed: int = 42,
+    use_bias: bool = True,
 ) -> Dict[str, Dict[str, Any]]:
     """Run 5-Fold Stratified CV across 6 scoring models and collect OOF metrics."""
     feature_dim = img_embeds.shape[1]
@@ -305,7 +306,7 @@ def evaluate_all_scoring_heads(
 
     for model_name, expr_level, hypothesis in scoring_models:
         print(f"\n" + "="*70)
-        print(f"Evaluating Model: {model_name:20s} | Expressiveness: {expr_level:10s}")
+        print(f"Evaluating Model: {model_name:20s} | Expressiveness: {expr_level:10s} | Use Bias: {use_bias}")
         print(f"Hypothesis       : {hypothesis}")
         print("="*70)
 
@@ -322,7 +323,7 @@ def evaluate_all_scoring_heads(
             val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
             # Build fresh scorer for fold
-            scorer = build_scorer(model_name, feature_dim)
+            scorer = build_scorer(model_name, feature_dim, use_bias=use_bias)
             _, fold_preds = train_and_eval_fold(
                 scorer, train_loader, val_loader, device=device, epochs=epochs, lr=lr
             )
@@ -368,14 +369,13 @@ def plot_scoring_head_comparison(results: Dict[str, Dict[str, Any]], output_dir:
     # Annotate bars with total accuracy
     for bar, acc in zip(ax.patches[:len(models)], total_accs):
         h = bar.get_height()
-        ax.annotate(f"{acc:.1f}%", xy=(bar.get_x() + bar.get_width() / 2, h),
-                    xytext=(0, 3), textcoords="offset points", ha="center", va="bottom", fontweight="bold", fontsize=9)
+        ax.text(bar.get_x() + bar.get_width()/2., h + 1.0, f"{h:.1f}%", ha="center", va="bottom", fontsize=8, fontweight="bold")
 
     plt.tight_layout()
-    plot_path = os.path.join(output_dir, "scoring_head_comparison.png")
-    plt.savefig(plot_path, dpi=300, bbox_inches="tight")
+    plot_path = os.path.join(output_dir, "scoring_heads_expressiveness_comparison.png")
+    plt.savefig(plot_path, dpi=300)
     plt.close()
-    print(f"✅ Saved comparison bar plot to: {plot_path}")
+    print(f"\n📊 Expressiveness comparison chart saved to: {plot_path}")
 
 
 def train_and_save_full_scorer(
@@ -387,11 +387,12 @@ def train_and_save_full_scorer(
     device: str = "cuda",
     epochs: int = 15,
     lr: float = 1e-3,
-    batch_size: int = 64
+    batch_size: int = 64,
+    use_bias: bool = True,
 ):
     """Train a full-dataset scorer model and export state_dict checkpoint."""
     feature_dim = img_embeds.shape[1]
-    scorer = build_scorer(model_name, feature_dim).to(device)
+    scorer = build_scorer(model_name, feature_dim, use_bias=use_bias).to(device)
     if isinstance(scorer, CosineScorer):
         print("CosineScorer has no trainable parameters to save.")
         return
@@ -401,7 +402,7 @@ def train_and_save_full_scorer(
     optimizer = torch.optim.AdamW(scorer.parameters(), lr=lr, weight_decay=1e-4)
     criterion = nn.CrossEntropyLoss()
 
-    print(f"\nTraining full-dataset '{model_name}' scorer for checkpoint export...")
+    print(f"\nTraining full-dataset '{model_name}' scorer for checkpoint export (Use Bias: {use_bias})...")
     for epoch in range(epochs):
         scorer.train()
         for imgs, texts, y in train_loader:
@@ -416,7 +417,8 @@ def train_and_save_full_scorer(
     torch.save({
         "state_dict": scorer.state_dict(),
         "model_name": model_name,
-        "feature_dim": feature_dim
+        "feature_dim": feature_dim,
+        "use_bias": use_bias,
     }, save_path)
     print(f"✅ Saved trained '{model_name}' scorer checkpoint to: {save_path}")
 
@@ -429,7 +431,8 @@ def train_and_save_all_scorers(
     device: str = "cuda",
     epochs: int = 15,
     lr: float = 1e-3,
-    batch_size: int = 64
+    batch_size: int = 64,
+    use_bias: bool = True,
 ):
     """Train all 7 trainable scorer models on full dataset and export their .pt checkpoints."""
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -444,7 +447,7 @@ def train_and_save_all_scorers(
     ]
 
     print("\n" + "="*80)
-    print(f"EXPORTING ALL {len(models_to_export)} TRAINABLE SCORER CHECKPOINTS TO: {checkpoint_dir}")
+    print(f"EXPORTING ALL {len(models_to_export)} TRAINABLE SCORER CHECKPOINTS TO: {checkpoint_dir} (Use Bias: {use_bias})")
     print("="*80)
 
     for display_name, mtype, r in models_to_export:
@@ -452,7 +455,7 @@ def train_and_save_all_scorers(
         save_path = os.path.join(checkpoint_dir, filename)
         train_and_save_full_scorer(
             mtype, img_embeds, text_embeds, targets, save_path,
-            device=device, epochs=epochs, lr=lr, batch_size=batch_size
+            device=device, epochs=epochs, lr=lr, batch_size=batch_size, use_bias=use_bias,
         )
 
     print("="*80)
@@ -474,12 +477,14 @@ def main():
     parser.add_argument("--epochs", type=int, default=15, help="Training epochs per fold")
     parser.add_argument("--lr", type=float, default=1e-3, help="Optimizer learning rate")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--no_bias", "--no-bias", action="store_true", default=False,
+                        help="Disable bias/intercept in scoring head architectures (default: bias enabled)")
     args = parser.parse_args()
 
     set_seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Running evaluation on device: {device}")
+    print(f"Running evaluation on device: {device} | Use Bias: {not args.no_bias}")
 
     # Fallback CSV path resolution
     if not os.path.exists(args.coco_mcq):
@@ -509,7 +514,8 @@ def main():
     # Step 2: Evaluate 6 Scoring Heads via 5-Fold Stratified Cross Validation
     results = evaluate_all_scoring_heads(
         img_embeds, text_embeds, targets, question_types,
-        device=device, n_splits=args.n_splits, epochs=args.epochs, lr=args.lr, batch_size=args.batch_size, seed=args.seed
+        device=device, n_splits=args.n_splits, epochs=args.epochs, lr=args.lr, batch_size=args.batch_size, seed=args.seed,
+        use_bias=not args.no_bias,
     )
 
     # Step 3: Export Summary Table & JSON
@@ -550,7 +556,8 @@ def main():
     if args.save_all_scorers:
         train_and_save_all_scorers(
             img_embeds, text_embeds, targets, checkpoint_dir,
-            device=device, epochs=args.epochs, lr=args.lr, batch_size=args.batch_size
+            device=device, epochs=args.epochs, lr=args.lr, batch_size=args.batch_size,
+            use_bias=not args.no_bias,
         )
     else:
         save_checkpoint_path = args.save_scorer_path
@@ -559,7 +566,8 @@ def main():
 
         train_and_save_full_scorer(
             args.save_scorer_model, img_embeds, text_embeds, targets, save_checkpoint_path,
-            device=device, epochs=args.epochs, lr=args.lr, batch_size=args.batch_size
+            device=device, epochs=args.epochs, lr=args.lr, batch_size=args.batch_size,
+            use_bias=not args.no_bias,
         )
 
     print(f"\n✅ All results, comparison plots, and scorer checkpoints successfully saved to: {args.output_dir}")

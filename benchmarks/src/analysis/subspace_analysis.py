@@ -34,6 +34,8 @@ def parse_args():
     parser.add_argument("--max_samples", type=int, default=60000, help="Maximum number of caption pairs")
     parser.add_argument("--batch_size", type=int, default=256, help="Mini-batch size")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.add_argument("--no_bias", "--no-bias", action="store_true", default=False,
+                        help="Disable bias/intercept in logistic regression probes (default: bias enabled)")
     return parser.parse_args()
 
 
@@ -85,13 +87,12 @@ def evaluate_cross_category_transfer(
         neg_features (np.ndarray): Negative caption embeddings.
         pair_metadata (List[dict]): Metadata dictionary list.
         split_by (str): Split criterion ('object_name' for category generalization, 'source_template' for template transfer).
-        seed (int): Random seed for reproducible splitting.
+    Train Linear Probe on 80% categories / templates and evaluate generalization on 20% unseen categories.
     """
     df_meta = pd.DataFrame(pair_metadata)
-    tmpl_key = MetadataKey.SOURCE_TEMPLATE.value
     obj_key = MetadataKey.OBJECT_NAME.value
+    tmpl_key = MetadataKey.SOURCE_TEMPLATE.value
 
-    # Prioritize user-specified split_by, with graceful fallback
     if split_by == "object_name" and obj_key in df_meta.columns:
         group_col = obj_key
     elif split_by == "source_template" and tmpl_key in df_meta.columns:
@@ -135,14 +136,14 @@ def evaluate_cross_category_transfer(
     X_test = l2_normalize(np.vstack([X_test_pos, X_test_neg]))
     y_test = np.array([1] * n_test + [0] * n_test)
 
-    clf = LogisticRegression(max_iter=1000, random_state=seed)
+    clf = LogisticRegression(max_iter=1000, random_state=seed, fit_intercept=fit_intercept)
     clf.fit(X_train, y_train)
 
     train_acc = float(clf.score(X_train, y_train)) * 100
     test_acc = float(clf.score(X_test, y_test)) * 100
 
     probe_weight = clf.coef_[0]  # Shape (D,)
-    probe_bias = float(clf.intercept_[0])
+    probe_bias = float(clf.intercept_[0]) if fit_intercept else 0.0
 
     return {
         "split_by": group_col,
@@ -167,6 +168,7 @@ def main():
     print(f"  Model      : {args.model} ({args.pretrained})")
     print(f"  CSV Path   : {args.csv_path}")
     print(f"  Output Dir : {args.output_dir}")
+    print(f"  Use Bias   : {not args.no_bias}")
     print("==========================================================")
 
     if not os.path.exists(args.csv_path):
@@ -216,7 +218,9 @@ def main():
     U_neg_top5 = Vh[:5, :] # Top 5 singular vectors as negation basis matrix (5, D)
 
     # 2. Cross-Category / Template Transfer Probe
-    transfer_report = evaluate_cross_category_transfer(pos_final, neg_final, pair_metadata, split_by=args.split_by, seed=args.seed)
+    transfer_report = evaluate_cross_category_transfer(
+        pos_final, neg_final, pair_metadata, split_by=args.split_by, seed=args.seed, fit_intercept=not args.no_bias
+    )
     probe_weight = transfer_report.pop("probe_weight", None)
     probe_bias = transfer_report.pop("probe_bias", None)
 

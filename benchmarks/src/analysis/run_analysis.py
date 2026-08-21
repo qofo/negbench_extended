@@ -40,6 +40,8 @@ def main():
     parser.add_argument("--image_root", type=str, default="", help="Root directory containing COCO image files")
     parser.add_argument("--batch_size", type=int, default=256, help="Text processing mini-batch size")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for statistical reproducibility")
+    parser.add_argument("--no_bias", "--no-bias", action="store_true", default=False,
+                        help="Disable bias/intercept in linear probes (default: bias enabled)")
     args = parser.parse_args()
 
     # Construct configuration object
@@ -58,7 +60,7 @@ def main():
     reporter = AnalysisReporter(cfg.output_dir)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Device: {device}")
+    print(f"Device: {device} | Use Bias: {not args.no_bias}")
 
     pos_texts = []
     neg_texts = []
@@ -112,7 +114,7 @@ def main():
     reporter.render_direction_preservation(dir_pres_report)
 
     # Stage 1-C: Linear Probe & Sub-dataset Template Analysis
-    probe_results = compute_linear_probe_and_subsets(pos_features, neg_features, pair_metadata)
+    probe_results = compute_linear_probe_and_subsets(pos_features, neg_features, pair_metadata, fit_intercept=not args.no_bias)
     reporter.render_linear_probe(probe_results)
 
     # Stage 1-D: Intrinsic Dimensionality & Negation Subspace Analysis

@@ -76,6 +76,7 @@ def evaluate_layerwise_linear_probe(
     pos_layer_dict: Dict[str, np.ndarray],
     neg_layer_dict: Dict[str, np.ndarray],
     n_splits: int = 5,
+    fit_intercept: bool = True,
 ) -> pd.DataFrame:
     """
     Run Stratified 5-Fold Cross-Validation Logistic Regression Linear Probe for every layer/step.
@@ -84,6 +85,7 @@ def evaluate_layerwise_linear_probe(
         pos_layer_dict (Dict[str, np.ndarray]): Layer features for positive captions.
         neg_layer_dict (Dict[str, np.ndarray]): Layer features for negative captions.
         n_splits (int): Number of folds for StratifiedKFold.
+        fit_intercept (bool): Whether to fit intercept in Logistic Regression (default: True).
 
     Returns:
         df_res (pd.DataFrame): DataFrame containing accuracy stats per layer.
@@ -103,7 +105,7 @@ def evaluate_layerwise_linear_probe(
         # Standardize features (L2 normalization per sample)
         X_norm = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-8)
 
-        clf = LogisticRegression(max_iter=1000, random_state=42, C=1.0)
+        clf = LogisticRegression(max_iter=1000, random_state=42, C=1.0, fit_intercept=fit_intercept)
         cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
         scores = cross_val_score(clf, X_norm, y, cv=cv, scoring="accuracy")
 
@@ -128,55 +130,50 @@ def evaluate_layerwise_linear_probe(
 
 def plot_and_export_results(df_res: pd.DataFrame, output_dir: str) -> Tuple[str, str, str]:
     """
-    Save evaluation results to CSV, JSON, and PNG plot files.
-
-    Returns:
-        Tuple[str, str, str]: Paths to (csv_path, json_path, plot_path).
+    Save results to CSV, JSON and generate high-resolution Layer-wise Accuracy plot.
     """
-    os.makedirs(output_dir, exist_ok=True)
-    results = df_res.to_dict(orient="records")
-
     csv_path = os.path.join(output_dir, "layerwise_linear_probe.csv")
-    df_res.to_csv(csv_path, index=False)
-
     json_path = os.path.join(output_dir, "layerwise_linear_probe.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2)
+    png_path = os.path.join(output_dir, "layerwise_linear_probe.png")
 
-    # Visualization plot
-    fig, ax = plt.subplots(figsize=(12, 6))
+    df_res.to_csv(csv_path, index=False)
+    df_res.to_json(json_path, orient="records", indent=2)
+
+    # Plotting
+    plt.figure(figsize=(13, 6))
     layers = df_res["layer"].values
     accs = df_res["mean_accuracy_pct"].values
     stds = df_res["std_accuracy_pct"].values
 
-    x_coords = list(range(len(layers)))
-    ax.plot(x_coords, accs, "o-", color="#1f77b4", lw=2.5, ms=7, label="5-Fold CV Accuracy (%)")
-    ax.fill_between(x_coords, accs - stds, accs + stds, color="#1f77b4", alpha=0.15)
+    x = np.arange(len(layers))
+    plt.plot(x, accs, marker="o", color="#1f77b4", linewidth=2.5, markersize=7, label="5-Fold CV Accuracy (%)")
+    plt.fill_between(x, accs - stds, accs + stds, color="#1f77b4", alpha=0.15)
 
-    if "Layer 12" in layers:
+    # Mark chance level
+    plt.axhline(y=50.0, color="gray", linestyle="--", linewidth=1.5, label="Random Chance (50.0%)")
+
+    # Mark pipeline separation
+    if "Layer 12" in list(layers):
         l12_idx = list(layers).index("Layer 12")
-        ax.axvline(x=l12_idx + 0.5, color="crimson", ls="--", alpha=0.7, label="Post-Layer 12 Transformations")
+        plt.axvline(x=l12_idx + 0.5, color="crimson", linestyle="--", alpha=0.7, label="Post-Layer 12 Projections")
 
-    ax.set_ylabel("Linear Probe Accuracy (%)", fontsize=12)
-    ax.set_xlabel("Transformer Layer / Pipeline Step", fontsize=12)
-    ax.set_title("CLIP Text Encoder Layer-wise & Pipeline-step Linear Probe Accuracy", fontsize=13, fontweight="bold")
-    ax.set_xticks(x_coords)
-    ax.set_xticklabels(layers, rotation=35, ha="right", fontsize=10)
-    ax.set_ylim(min(accs) - 5, min(100, max(accs) + 5))
-    ax.grid(True, ls="--", alpha=0.5)
-    ax.legend(fontsize=11)
+    plt.xticks(x, layers, rotation=35, ha="right", fontsize=9)
+    plt.ylabel("Linear Probe Accuracy (%)", fontsize=12)
+    plt.title("CLIP Text Encoder Layer-wise Linear Probe on Negation Pairs", fontsize=14, fontweight="bold")
+    plt.ylim(40, 105)
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.legend(fontsize=10, loc="lower right")
     plt.tight_layout()
 
-    plot_path = os.path.join(output_dir, "layerwise_linear_probe.png")
-    plt.savefig(plot_path, dpi=300, bbox_inches="tight")
+    plt.savefig(png_path, dpi=300)
     plt.close()
 
-    print(f"\nArtifacts saved successfully:")
+    print(f"\n[Saved Outputs]")
     print(f"  CSV : {csv_path}")
     print(f"  JSON: {json_path}")
-    print(f"  Plot: {plot_path}")
+    print(f"  PNG : {png_path}\n")
 
-    return csv_path, json_path, plot_path
+    return csv_path, json_path, png_path
 
 
 def run_layerwise_linear_probe_pipeline(
@@ -185,16 +182,17 @@ def run_layerwise_linear_probe_pipeline(
     pos_texts: List[str],
     neg_texts: List[str],
     output_dir: str,
-    device: str = "cpu",
+    device: str,
     target_token: str = "eot",
     batch_size: int = 256,
     n_splits: int = 5,
+    fit_intercept: bool = True,
 ) -> pd.DataFrame:
     """
     Main orchestration function for layer-wise linear probing.
     """
     print("=" * 70)
-    print(f"Executing Layer-wise & Pipeline-step Linear Probe Analysis ({n_splits}-Fold CV)")
+    print(f"Executing Layer-wise & Pipeline-step Linear Probe Analysis ({n_splits}-Fold CV, Fit Intercept: {fit_intercept})")
     print("=" * 70)
 
     print("Extracting features for positive captions...")
@@ -203,7 +201,7 @@ def run_layerwise_linear_probe_pipeline(
     print("Extracting features for negative captions...")
     neg_layer_dict = extract_layerwise_feature_dict(model, tokenizer, neg_texts, device, target_token, batch_size)
 
-    df_res = evaluate_layerwise_linear_probe(pos_layer_dict, neg_layer_dict, n_splits=n_splits)
+    df_res = evaluate_layerwise_linear_probe(pos_layer_dict, neg_layer_dict, n_splits=n_splits, fit_intercept=fit_intercept)
     plot_and_export_results(df_res, output_dir)
 
     return df_res
@@ -219,6 +217,8 @@ if __name__ == "__main__":
     parser.add_argument("--max_samples", type=int, default=60000)
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--n_splits", type=int, default=5)
+    parser.add_argument("--no_bias", "--no-bias", action="store_true", default=False,
+                        help="Disable bias/intercept in linear probes (default: bias enabled)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -250,4 +250,5 @@ if __name__ == "__main__":
         target_token=args.target_token,
         batch_size=args.batch_size,
         n_splits=args.n_splits,
+        fit_intercept=not args.no_bias,
     )

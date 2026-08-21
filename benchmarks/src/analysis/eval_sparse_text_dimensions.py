@@ -47,11 +47,12 @@ import open_clip
 class PyTorchLogisticRegression:
     """PyTorch-based Logistic Regression Fallback when sklearn is unavailable."""
 
-    def __init__(self, C: float = 1.0, max_iter: int = 1000, lr: float = 0.05, random_state: int = 42):
+    def __init__(self, C: float = 1.0, max_iter: int = 1000, lr: float = 0.05, random_state: int = 42, fit_intercept: bool = True):
         self.C = C
         self.max_iter = max_iter
         self.lr = lr
         self.random_state = random_state
+        self.fit_intercept = fit_intercept
         self.coef_ = None
         self.intercept_ = None
 
@@ -61,7 +62,7 @@ class PyTorchLogisticRegression:
         X_t = torch.tensor(X, dtype=torch.float32)
         y_t = torch.tensor(y, dtype=torch.float32).unsqueeze(1)
 
-        linear = nn.Linear(D, 1)
+        linear = nn.Linear(D, 1, bias=self.fit_intercept)
         optimizer = torch.optim.AdamW(linear.parameters(), lr=self.lr, weight_decay=1.0 / self.C)
         criterion = nn.BCEWithLogitsLoss()
 
@@ -76,13 +77,13 @@ class PyTorchLogisticRegression:
         linear.eval()
         with torch.no_grad():
             self.coef_ = linear.weight.detach().cpu().numpy()  # (1, D)
-            self.intercept_ = linear.bias.detach().cpu().numpy() # (1,)
+            self.intercept_ = linear.bias.detach().cpu().numpy() if self.fit_intercept else np.array([0.0]) # (1,)
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         X_t = torch.tensor(X, dtype=torch.float32)
         with torch.no_grad():
             w_t = torch.tensor(self.coef_, dtype=torch.float32).T
-            b_t = torch.tensor(self.intercept_, dtype=torch.float32)
+            b_t = torch.tensor(self.intercept_, dtype=torch.float32) if self.intercept_ is not None else 0.0
             logits = torch.matmul(X_t, w_t) + b_t
             probs_1 = torch.sigmoid(logits).cpu().numpy().flatten()
             probs_0 = 1.0 - probs_1
@@ -229,20 +230,21 @@ def analyze_sparse_dimensions(
     modality_name: str,
     k_list: List[int],
     C: float = 1.0,
-    random_state: int = 42
+    random_state: int = 42,
+    fit_intercept: bool = True,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     Fit LogisticRegression, rank weight coefficients by magnitude |w_i|,
     and evaluate Top-k Norm Ratio, Energy Ratio, and Zero-shot Ablated Accuracy.
     """
     if HAS_SKLEARN:
-        clf = LogisticRegression(C=C, max_iter=1000, random_state=random_state)
+        clf = LogisticRegression(C=C, max_iter=1000, random_state=random_state, fit_intercept=fit_intercept)
     else:
-        clf = PyTorchLogisticRegression(C=C, max_iter=1000, random_state=random_state)
+        clf = PyTorchLogisticRegression(C=C, max_iter=1000, random_state=random_state, fit_intercept=fit_intercept)
     clf.fit(X, y)
 
     w = clf.coef_[0].astype(np.float64)  # (D,)
-    b = float(clf.intercept_[0])
+    b = float(clf.intercept_[0]) if fit_intercept else 0.0
     D = len(w)
 
     # Calculate full model baseline accuracy
@@ -310,11 +312,13 @@ def main():
     parser.add_argument("--beaf_csv", type=str, default="benchmarks/data/images/beaf_counterfactual_6col.csv", help="Path to BEAF dataset CSV")
     parser.add_argument("--output_dir", type=str, default="logs/evaluation/sparse_text_dimensions", help="Output directory")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--no_bias", "--no-bias", action="store_true", default=False,
+                        help="Disable bias/intercept in logistic regression probes (default: bias enabled)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"🚀 Running Sparse Dimension Analysis (Critique #1) on Device: {device}")
+    print(f"🚀 Running Sparse Dimension Analysis (Critique #1) on Device: {device} (Use Bias: {not args.no_bias})")
 
     # Load OpenCLIP model
     print(f"Loading OpenCLIP {args.model} ({args.pretrained})...")
@@ -339,11 +343,15 @@ def main():
 
     # 3. Analyze Sparse Dimensions for Text
     print("\n3. Analyzing Top-k Dimension Sparsity for TEXT Probe...")
-    text_results, text_meta = analyze_sparse_dimensions(X_text, y_text, "Text", k_list, random_state=args.seed)
+    text_results, text_meta = analyze_sparse_dimensions(
+        X_text, y_text, "Text", k_list, random_state=args.seed, fit_intercept=not args.no_bias
+    )
 
     # 4. Analyze Sparse Dimensions for Vision
     print("4. Analyzing Top-k Dimension Sparsity for VISION Probe...")
-    vision_results, vision_meta = analyze_sparse_dimensions(X_vision, y_vision, "Vision", k_list, random_state=args.seed)
+    vision_results, vision_meta = analyze_sparse_dimensions(
+        X_vision, y_vision, "Vision", k_list, random_state=args.seed, fit_intercept=not args.no_bias
+    )
 
     # Combine results
     all_results = text_results + vision_results

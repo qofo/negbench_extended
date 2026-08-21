@@ -35,45 +35,51 @@ SUPPORTED_PROBES = [
 class LowRankBilinearPyTorch(nn.Module):
     """Low-Rank Bilinear Probe: f(x) = sum_r (x U_r)(x V_r) + x w_lin + b."""
 
-    def __init__(self, d_in: int, rank: int):
+    def __init__(self, d_in: int, rank: int, use_bias: bool = True):
         super().__init__()
         self.U = nn.Parameter(torch.randn(d_in, rank) * (1.0 / np.sqrt(d_in)))
         self.V = nn.Parameter(torch.randn(d_in, rank) * (1.0 / np.sqrt(d_in)))
         self.w_lin = nn.Parameter(torch.zeros(d_in))
-        self.bias = nn.Parameter(torch.zeros(1))
+        self.bias = nn.Parameter(torch.zeros(1)) if use_bias else None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         z = torch.matmul(x, self.U)
         h = torch.matmul(x, self.V)
         quad = torch.sum(z * h, dim=-1)
         lin = torch.matmul(x, self.w_lin)
-        return quad + lin + self.bias.squeeze(-1)
+        out = quad + lin
+        if self.bias is not None:
+            out = out + self.bias.squeeze(-1)
+        return out
 
 
 class FullBilinearPyTorch(nn.Module):
     """Full Bilinear Quadratic Probe: f(x) = x^T W x + x w_lin + b."""
 
-    def __init__(self, d_in: int):
+    def __init__(self, d_in: int, use_bias: bool = True):
         super().__init__()
         self.W = nn.Parameter(torch.randn(d_in, d_in) * (1.0 / np.sqrt(d_in)))
         self.w_lin = nn.Parameter(torch.zeros(d_in))
-        self.bias = nn.Parameter(torch.zeros(1))
+        self.bias = nn.Parameter(torch.zeros(1)) if use_bias else None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         z = torch.matmul(x, self.W)  # (B, d_in)
         quad = torch.sum(z * x, dim=-1)
         lin = torch.matmul(x, self.w_lin)
-        return quad + lin + self.bias.squeeze(-1)
+        out = quad + lin
+        if self.bias is not None:
+            out = out + self.bias.squeeze(-1)
+        return out
 
 
 class MLPVisionPyTorch(nn.Module):
     """MLP Vision Classifier: f_V(x) = fc2(GELU(fc1(x)))."""
 
-    def __init__(self, d_in: int, hidden_dim: int = 64):
+    def __init__(self, d_in: int, hidden_dim: int = 64, use_bias: bool = True):
         super().__init__()
-        self.fc1 = nn.Linear(d_in, hidden_dim)
+        self.fc1 = nn.Linear(d_in, hidden_dim, bias=use_bias)
         self.act = nn.GELU()
-        self.fc2 = nn.Linear(hidden_dim, 1)
+        self.fc2 = nn.Linear(hidden_dim, 1, bias=use_bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.fc2(self.act(self.fc1(x))).squeeze(-1)
@@ -83,15 +89,18 @@ class ElementWiseNonLinearPyTorch(nn.Module):
     """Element-wise Non-linear Probe: f(x) = sum_d (w_d * GELU(x_d)) + b.
     Guarantees 0% dimension mixing to isolate pure non-linearity from bilinear/MLP dimension cross-talk.
     """
-    def __init__(self, d_in: int):
+    def __init__(self, d_in: int, use_bias: bool = True):
         super().__init__()
         self.w = nn.Parameter(torch.ones(d_in))
-        self.bias = nn.Parameter(torch.zeros(1))
+        self.bias = nn.Parameter(torch.zeros(1)) if use_bias else None
         self.act = nn.GELU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         h = self.act(x)
-        return torch.sum(h * self.w, dim=-1) + self.bias.squeeze(-1)
+        out = torch.sum(h * self.w, dim=-1)
+        if self.bias is not None:
+            out = out + self.bias.squeeze(-1)
+        return out
 
 
 # ==============================================================================
@@ -110,6 +119,7 @@ class PyTorchProbeEstimator(BaseEstimator, ClassifierMixin):
         weight_decay: float = 1e-4,
         epochs: int = 200,
         seed: int = 42,
+        use_bias: bool = True,
     ):
         self.model_type = model_type
         self.hidden_dim = hidden_dim
@@ -118,19 +128,20 @@ class PyTorchProbeEstimator(BaseEstimator, ClassifierMixin):
         self.weight_decay = weight_decay
         self.epochs = epochs
         self.seed = seed
+        self.use_bias = use_bias
         self.classes_ = np.array([0, 1])
         self.model_ = None
         self.device_ = "cuda" if torch.cuda.is_available() else "cpu"
 
     def _build_model(self, d_in: int) -> nn.Module:
         if self.model_type == "mlp":
-            return MLPVisionPyTorch(d_in, self.hidden_dim)
+            return MLPVisionPyTorch(d_in, self.hidden_dim, use_bias=self.use_bias)
         elif self.model_type == "bilinear_lowrank":
-            return LowRankBilinearPyTorch(d_in, self.rank)
+            return LowRankBilinearPyTorch(d_in, self.rank, use_bias=self.use_bias)
         elif self.model_type == "bilinear_full":
-            return FullBilinearPyTorch(d_in)
+            return FullBilinearPyTorch(d_in, use_bias=self.use_bias)
         elif self.model_type == "elementwise":
-            return ElementWiseNonLinearPyTorch(d_in)
+            return ElementWiseNonLinearPyTorch(d_in, use_bias=self.use_bias)
         else:
             raise ValueError(f"Unknown model_type '{self.model_type}'")
 
@@ -254,23 +265,25 @@ def format_params(params: Dict[str, Any]) -> str:
     return ", ".join(items)
 
 
-def create_probe_classifier(probe_type: str, seed: int = 42, **params) -> Any:
+def create_probe_classifier(probe_type: str, seed: int = 42, fit_intercept: bool = True, **params) -> Any:
     """
     Instantiate classifier based on probe_type and hyperparameter dictionary.
 
     Args:
         probe_type (str): Probe algorithm identifier.
         seed (int): Random seed for reproducibility.
+        fit_intercept (bool): Whether to include bias / intercept term (default: True).
         **params: Hyperparameters for the classifier.
 
     Returns:
         Scikit-learn compatible classifier instance.
     """
     p_type = probe_type.lower().strip()
+    use_bias = params.get("use_bias", fit_intercept)
 
     if p_type == "logistic":
         c = params.get("C", 1.0)
-        return LogisticRegression(C=c, max_iter=1000, random_state=seed)
+        return LogisticRegression(C=c, max_iter=1000, random_state=seed, fit_intercept=use_bias)
 
     elif p_type == "svm_linear":
         c = params.get("C", 1.0)
@@ -279,17 +292,17 @@ def create_probe_classifier(probe_type: str, seed: int = 42, **params) -> Any:
     elif p_type == "ridge":
         c = params.get("C", 1.0)
         alpha = 1.0 / max(c, 1e-6)
-        return RidgeClassifier(alpha=alpha, random_state=seed)
+        return RidgeClassifier(alpha=alpha, random_state=seed, fit_intercept=use_bias)
 
     elif p_type == "sgd_log":
         c = params.get("C", 1.0)
         alpha = 1.0 / max(c * 1000.0, 1e-6)
-        return SGDClassifier(loss="log_loss", alpha=alpha, max_iter=1000, random_state=seed)
+        return SGDClassifier(loss="log_loss", alpha=alpha, max_iter=1000, random_state=seed, fit_intercept=use_bias)
 
     elif p_type == "sgd_hinge":
         c = params.get("C", 1.0)
         alpha = 1.0 / max(c * 1000.0, 1e-6)
-        return SGDClassifier(loss="hinge", alpha=alpha, max_iter=1000, random_state=seed)
+        return SGDClassifier(loss="hinge", alpha=alpha, max_iter=1000, random_state=seed, fit_intercept=use_bias)
 
     elif p_type == "svm_rbf":
         c = params.get("C", 1.0)
@@ -310,6 +323,7 @@ def create_probe_classifier(probe_type: str, seed: int = 42, **params) -> Any:
             weight_decay=weight_decay,
             epochs=epochs,
             seed=seed,
+            use_bias=use_bias,
         )
 
     else:

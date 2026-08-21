@@ -106,7 +106,8 @@ def evaluate_word_swap_linear_probe(
     device: str = "cuda",
     batch_size: int = 64,
     n_splits: int = 5,
-    seed: int = 42
+    seed: int = 42,
+    fit_intercept: bool = True,
 ) -> Dict[str, Any]:
     """
     Encode word-swap text pairs and run 5-Fold CV Linear Probe classification.
@@ -152,9 +153,9 @@ def evaluate_word_swap_linear_probe(
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
     fold_accs = []
 
-    print(f"\nRunning {n_splits}-Fold Stratified CV Linear Probe on Word-Swap Embeddings...")
+    print(f"\nRunning {n_splits}-Fold Stratified CV Linear Probe on Word-Swap Embeddings (Fit Intercept: {fit_intercept})...")
     for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
-        clf = LogisticRegression(max_iter=1000, C=1.0, random_state=seed)
+        clf = LogisticRegression(max_iter=1000, C=1.0, random_state=seed, fit_intercept=fit_intercept)
         clf.fit(X[train_idx], y[train_idx])
         acc = clf.score(X[val_idx], y[val_idx]) * 100.0
         fold_accs.append(acc)
@@ -169,6 +170,7 @@ def evaluate_word_swap_linear_probe(
 
     return {
         "num_pairs": len(pairs),
+        "use_bias": fit_intercept,
         "linear_probe_mean_acc_pct": mean_acc,
         "linear_probe_std_acc_pct": std_acc,
         "pairwise_cosine_sim_mean": mean_cos_sim,
@@ -187,6 +189,8 @@ def main():
     parser.add_argument("--n-splits", type=int, default=5, help="Number of CV folds")
     parser.add_argument("--batch-size", type=int, default=64, help="Batch size")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--no_bias", "--no-bias", action="store_true", default=False,
+                        help="Disable bias/intercept in linear probes (default: bias enabled)")
     args = parser.parse_args()
 
     set_seed(args.seed)
@@ -220,7 +224,7 @@ def main():
     model = model.to(device)
 
     results = evaluate_word_swap_linear_probe(
-        model, tokenizer, pairs, device=device, batch_size=args.batch_size, n_splits=args.n_splits, seed=args.seed
+        model, tokenizer, pairs, device=device, batch_size=args.batch_size, n_splits=args.n_splits, seed=args.seed, fit_intercept=not args.no_bias
     )
 
     out_json = os.path.join(args.output_dir, "word_swap_probe_results.json")

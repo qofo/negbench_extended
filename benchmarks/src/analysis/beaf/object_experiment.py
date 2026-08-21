@@ -388,7 +388,8 @@ def train_eval_vision_linear_probe(
     pos_v_emb: np.ndarray,
     neg_v_emb: np.ndarray,
     C: float = 1.0,
-    cv_folds: int = 5
+    cv_folds: int = 5,
+    fit_intercept: bool = True,
 ) -> Tuple[float, float, Optional[LogisticRegression]]:
     """Train and evaluate LogisticRegression probe on Present (+1) vs Absent (-1) images."""
     if len(pos_v_emb) == 0 or len(neg_v_emb) == 0:
@@ -400,7 +401,7 @@ def train_eval_vision_linear_probe(
     n_samples = len(y_v)
     effective_folds = min(cv_folds, n_samples // 2)
 
-    clf = LogisticRegression(C=C, max_iter=1000, random_state=42)
+    clf = LogisticRegression(C=C, max_iter=1000, random_state=42, fit_intercept=fit_intercept)
     if effective_folds >= 2:
         skf = StratifiedKFold(n_splits=effective_folds, shuffle=True, random_state=42)
         scores = cross_val_score(clf, X_v, y_v, cv=skf, scoring="accuracy")

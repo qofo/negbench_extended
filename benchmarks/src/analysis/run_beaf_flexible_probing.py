@@ -35,6 +35,7 @@ def compute_flexible_per_object_stats(
     df_pairs: pd.DataFrame,
     probe_type: str = "logistic",
     seed: int = 42,
+    use_bias: bool = True,
 ) -> pd.DataFrame:
     """Compute per-object layerwise Train vs Val probing accuracy with inner CV hyperparameter tuning."""
     layer_keys = list(vis_orig["layers"].keys())
@@ -48,7 +49,7 @@ def compute_flexible_per_object_stats(
     raw_records = []
 
     print(f"\n  [Flexible Probing: {probe_type.upper()}] Processing {len(unique_objects)} objects across {len(all_keys)} layers...")
-    print(f"  [Tuning Grid] {len(param_candidates)} hyperparameter combinations per fold.")
+    print(f"  [Tuning Grid] {len(param_candidates)} hyperparameter combinations per fold | Use Bias: {use_bias}")
 
     for obj in unique_objects:
         mask      = (object_names == obj)
@@ -100,7 +101,7 @@ def compute_flexible_per_object_stats(
                         for p_dict in param_candidates:
                             inner_scores = []
                             for in_tr, in_val in inner_cv:
-                                clf_in = create_probe_classifier(probe_type, seed=seed, **p_dict)
+                                clf_in = create_probe_classifier(probe_type, seed=seed, fit_intercept=use_bias, use_bias=use_bias, **p_dict)
                                 clf_in.fit(X_tr[in_tr], y_tr[in_tr])
                                 inner_scores.append(clf_in.score(X_tr[in_val], y_tr[in_val]))
                             mean_in = float(np.mean(inner_scores))
@@ -110,7 +111,7 @@ def compute_flexible_per_object_stats(
                     else:
                         best_p_fold = param_candidates[0]
 
-                    clf = create_probe_classifier(probe_type, seed=seed, **best_p_fold)
+                    clf = create_probe_classifier(probe_type, seed=seed, fit_intercept=use_bias, use_bias=use_bias, **best_p_fold)
                     clf.fit(X_tr, y_tr)
                     train_scores.append(clf.score(X_tr, y_tr))
                     val_scores.append(clf.score(X_all[val_idx], y_all[val_idx]))
@@ -236,6 +237,8 @@ def main():
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--max_samples", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--no_bias", "--no-bias", action="store_true", default=False,
+                        help="Disable bias/intercept in probing classifiers (default: bias enabled)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -248,6 +251,7 @@ def main():
     print(f"  Model      : {args.model} ({args.pretrained})")
     print(f"  CSV        : {args.csv_path}")
     print(f"  Output dir : {args.output_dir}")
+    print(f"  Use Bias   : {not args.no_bias}")
     print("=" * 60)
 
     # 1. Load Data
@@ -282,7 +286,7 @@ def main():
     vis_cf["final_l2norm"]   = vis_cf["final_l2norm"][valid_mask]
 
     # 4. Compute Flexible Probing Statistics
-    raw_df = compute_flexible_per_object_stats(vis_orig, vis_cf, df_pairs, probe_type=args.probe_type, seed=args.seed)
+    raw_df = compute_flexible_per_object_stats(vis_orig, vis_cf, df_pairs, probe_type=args.probe_type, seed=args.seed, use_bias=not args.no_bias)
 
     # Save CSV & Summary JSON
     csv_path = os.path.join(args.output_dir, f"beaf_{args.probe_type}_layerwise.csv")
