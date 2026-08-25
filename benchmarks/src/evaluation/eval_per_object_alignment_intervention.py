@@ -237,15 +237,17 @@ def run_per_object_alignment_intervention(
     min_pairs_per_obj: int = 8,
     batch_size: int = 128,
     seed: int = 42,
+    use_bias: bool = True,
 ):
     os.makedirs(output_dir, exist_ok=True)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda:1" if torch.cuda.is_available() else "cpu"
 
     print("╔═══════════════════════════════════════════════════════════╗")
     print("║  Per-Object Probe Alignment Causal Intervention (R^(o))   ║")
     print("╚═══════════════════════════════════════════════════════════╝")
     print(f"  Model       : {model_name} ({pretrained}) | Device: {device}")
-    print(f"  Output Dir  : {output_dir}\n")
+    print(f"  Output Dir  : {output_dir}")
+    print(f"  Use Bias    : {use_bias}\n")
 
     # 1. Load CLIP Model
     print(f"Loading CLIP model '{model_name}' ({pretrained})...")
@@ -336,7 +338,7 @@ def run_per_object_alignment_intervention(
         # Vision Probe fitting
         X_v_all = np.vstack([X_v_orig, X_v_cf])
         y_v_all = np.array([1] * n_vis + [0] * n_vis)
-        clf_v = LogisticRegression(C=1.0, max_iter=1000, random_state=seed)
+        clf_v = LogisticRegression(C=1.0, max_iter=1000, random_state=seed, fit_intercept=use_bias)
         clf_v.fit(X_v_all, y_v_all)
         w_v = clf_v.coef_[0]
         d_I = w_v / (np.linalg.norm(w_v) + 1e-12)
@@ -354,7 +356,7 @@ def run_per_object_alignment_intervention(
         # Text Probe fitting
         X_t_all = np.vstack([X_t_aff, X_t_neg])
         y_t_all = np.array([1] * n_txt + [0] * n_txt)
-        clf_t = LogisticRegression(C=1.0, max_iter=1000, random_state=seed)
+        clf_t = LogisticRegression(C=1.0, max_iter=1000, random_state=seed, fit_intercept=use_bias)
         clf_t.fit(X_t_all, y_t_all)
         w_t = clf_t.coef_[0]
         d_T = w_t / (np.linalg.norm(w_t) + 1e-12)
@@ -561,6 +563,8 @@ def main():
     parser.add_argument("--min_pairs", type=int, default=8)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--no_bias", "--no-bias", action="store_true", default=False,
+                        help="Disable bias/intercept in linear probes (default: bias enabled)")
     args = parser.parse_args()
 
     run_per_object_alignment_intervention(
@@ -573,6 +577,7 @@ def main():
         min_pairs_per_obj=args.min_pairs,
         batch_size=args.batch_size,
         seed=args.seed,
+        use_bias=not args.no_bias,
     )
 
 
