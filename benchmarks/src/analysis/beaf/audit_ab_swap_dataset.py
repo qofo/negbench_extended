@@ -28,7 +28,7 @@ def audit_ab_swap_dataset(
     df = pd.read_csv(csv_path)
 
     print("=" * 60)
-    print("0순위 — BEAF Swap Dataset Audit Report")
+    print("0-Phase: BEAF Swap Dataset Audit Report")
     print("=" * 60)
     print(f"Total Rows: {len(df)} | Total Counterfactual Pairs: {len(df) // 2}\n")
 
@@ -125,4 +125,8 @@ def audit_ab_swap_dataset(
     return results
 
 if __name__ == "__main__":
-    audit_ab_swap_dataset()
+    import argparse
+    parser = argparse.ArgumentParser(description="Audit BEAF swapped dataset.")
+    parser.add_argument("--csv_path", default="benchmarks/data/images/beaf_clean_ab_swap_diverse.csv" if os.path.exists("benchmarks/data/images/beaf_clean_ab_swap_diverse.csv") else "benchmarks/data/images/beaf_counterfactual_ab_swap.csv")
+    args = parser.parse_args()
+    audit_ab_swap_dataset(csv_path=args.csv_path)

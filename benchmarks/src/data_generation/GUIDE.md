@@ -33,13 +33,21 @@
 - **출력**: `beaf_counterfactual_ab_swap.csv` (6-column 형식)
 
 #### `generate_beaf_ab_swap_diverse_dataset.py` (421줄)
-- **역할**: BEAF A/B Swap 다양화 데이터셋 생성
+- **역할**: BEAF A/B Swap 다양화 데이터셋 생성 (인페인팅 CF 기반)
 - **핵심 개선사항**:
   1. **위치 불변성**: 50:50 Pos-First / Neg-First 교환
   2. **어휘 다양성**: 4개 템플릿 패밀리 (Standard, Lacking, Absent, Free-of)
   3. **명시적 컬럼**: `object_a`, `object_b`, `pos_position`, `template_family` 등
 - **템플릿 소스**: `benchmarks/data/beaf_expanded_templates.json`
 - **출력**: `beaf_counterfactual_ab_swap_diverse.csv`
+
+#### `generate_beaf_ab_swap_clean_diverse_dataset.py` (280줄)
+- **역할**: BEAF Clean A/B Swap 다양화 데이터셋 생성 (순수 원본 이미지 기반)
+- **핵심 특징**:
+  - 인페인팅 편집 이미지 배제: 순수 unedited `.jpg` 원본 이미지만 선별하여 시각적 블러/아티팩트 숏컷 0% 달성
+  - 5,500개 클린 COCO 이미지 풀에서 $A \in \text{Img}_1 \land B \notin \text{Img}_1$ 및 $B \in \text{Img}_2 \land A \notin \text{Img}_2$를 만족하는 이미지 쌍을 탐색하여 12컬럼 스키마로 구성
+  - 50:50 어순 균형 및 4개 템플릿 패밀리 분포 유지
+- **출력**: `beaf_clean_ab_swap_diverse.csv`
 
 ---
 
@@ -64,6 +72,11 @@ generate_beaf_ab_swap_diverse_dataset.py
     ↓
 beaf_counterfactual_ab_swap_diverse.csv  →  eval_negation_existence_probe.py
                                          →  eval_ab_swap_negation_diagnostic.py
+    ↓
+generate_beaf_ab_swap_clean_diverse_dataset.py
+    ↓
+beaf_clean_ab_swap_diverse.csv  →  eval_ab_swap_negation_diagnostic.py
+                                →  audit_ab_swap_dataset.py
 ```
 
 ---

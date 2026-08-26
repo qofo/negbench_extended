@@ -164,6 +164,12 @@
   - `top_failed_objects_breakdown.csv`
   - 객체별/부정 구문별 에러율 시각화 PNG
 
+#### `eval_e1_minimal_pair_auc.py`
+- **역할**: BEAF Minimal Pair 원자적 개념 검출 ROC-AUC 측정 및 Alshehri et al. (ICML 2026, LCSE) AUC=0.88 가정 인과적 재검증
+- **출력**:
+  - `e1_per_pair_scores.csv`, `e1_per_concept_auc.csv`, `e1_summary_report.json`
+  - `fig_e1_concept_auc_distribution.png`, `fig_e1_score_delta_distribution.png`
+
 #### `eval_per_object_polarity_probe.py`
 - **상태**: ⚠️ **빈 파일 (미구현)**
 

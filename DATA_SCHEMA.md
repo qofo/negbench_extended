@@ -73,7 +73,7 @@
 | `template_family` | str | 템플릿 패밀리 (A~D) |
 | `source_template` | str | 템플릿 식별자 |
 
-**사용 파일**: `beaf_counterfactual_ab_swap_diverse.csv`
+**사용 파일**: `beaf_counterfactual_ab_swap_diverse.csv`, `beaf_clean_ab_swap_diverse.csv`
 
 ---
 
@@ -92,7 +92,8 @@
 | `synthetic_retrieval_v1.csv`, `v2.csv` | C | Synthetic Retrieval 평가 |
 | `beaf_counterfactual_6col.csv` | A | `run_beaf_analysis_v2.py`, BEAF 핵심 데이터 |
 | `beaf_counterfactual_ab_swap.csv` | A | `audit_ab_swap_dataset.py`, `run_ab_swap_evaluation.py` |
-| `beaf_counterfactual_ab_swap_diverse.csv` | E | `eval_negation_existence_probe.py`, `eval_ab_swap_negation_diagnostic.py` |
+| `beaf_counterfactual_ab_swap_diverse.csv` | E | `eval_negation_existence_probe.py`, `eval_ab_swap_negation_diagnostic.py` (인페인팅 CF 기반) |
+| `beaf_clean_ab_swap_diverse.csv` | E | `eval_negation_existence_probe.py`, `eval_ab_swap_negation_diagnostic.py` (순수 원본 이미지 기반 클린 벤치마크) |
 | `beaf_paired_v2.csv` | A | BEAF Paired Caption |
 | `beaf_paired_3k.csv` | A | BEAF 빠른 테스트용 3,000건 |
 | `chexpert_binary_mcq.csv` | D | CheXpert Medical MCQ 평가 |

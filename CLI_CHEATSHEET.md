@@ -130,6 +130,7 @@ python -m benchmarks.src.evaluation.eval_per_object_alignment_intervention \
 | `run_unary_mechanistic_pipeline.sh` | E1~E4 Unary 4단계 메커니즘 분석 파이프라인 |
 | `run_per_object_alignment_intervention.sh` | 객체별 프로브 정렬 및 인과적 개입(5가지 조건) 실행 |
 | `run_probe_failure_inspector.sh` | Vision/Text 프로브 OOF 실패 사례 및 에러 패턴 수집 |
+| `run_e1_minimal_pair_auc.sh` | E1 Minimal Pair 원자적 개념 검출 AUC 측정 (Alshehri 0.88 가정 검증) |
 | `run_vision_ablation_shortcut.sh` | 비전 입력 절제(Zero/Shuffle/Gaussian) 숏컷 진단 |
 | `run_beaf_comprehensive_probing_sweep.sh` | BEAF 9종 프로빙 분류기 전 레이어 통합 스윕 |
 | `run_beaf_multi_probing_sweep.sh` | BEAF 다양한 프로빙 모델 스윕 실행 |

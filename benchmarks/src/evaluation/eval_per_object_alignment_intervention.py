@@ -5,17 +5,18 @@ For each object o:
   1. Extracts vision probe normal vector d_I^(o) from 1:1 counterfactual image pairs (I_orig vs I_cf).
   2. Extracts text probe normal vector d_T^(o) from diverse counterfactual caption pairs (T_pos vs T_neg).
   3. Computes closed-form orthogonal rotation matrix R^(o) in SO(d) such that R^(o) d_T^(o) = d_I^(o) (cos = 1.0).
-  4. Evaluates 5 intervention conditions on 2x2 counterfactual matching:
+  4. Evaluates 6 intervention conditions on 2x2 counterfactual matching:
        - Baseline: Standard Cosine (A = I)
        - Intervention 1: Closed-Form 2D Rotation (A = R^(o))
        - Intervention 2: Rank-1 Polar Adapter (A = A_rank1^(o))
-       - Intervention 3: Learned Bilinear (A = W^(o))
+       - Intervention 3: Learned Low-Rank Bilinear (A = U V^T, rank=k)
+       - Intervention 4: Learned Full Bilinear (A = W^(o))
        - Control: Random Orthogonal Rotation (A = R_rand)
-  5. Measures whether aligning d_T to d_I causally fixes CLIP's negation matching failure.
+  5. Measures whether aligning d_T to d_I or learning low-rank/full interaction causally fixes CLIP's negation matching failure.
 
 Outputs:
   - per_object_intervention_results.csv
-  - fig_intervention_5conditions_bar.png
+  - fig_intervention_6conditions_bar.png
   - fig_alignment_vs_gain_scatter.png
   - fig_per_object_gain_waterfall.png
   - per_object_intervention_summary.json
@@ -125,7 +126,7 @@ def build_random_orthogonal_rotation(d: int, seed: int = 42) -> np.ndarray:
 
 
 class BilinearMatcher(nn.Module):
-    """Bilinear scoring head: s(v, t) = v^T W t"""
+    """Full Bilinear scoring head: s(v, t) = v^T W t"""
     def __init__(self, embed_dim: int):
         super().__init__()
         self.W = nn.Parameter(torch.eye(embed_dim))
@@ -145,7 +146,7 @@ def train_bilinear_matcher(
     weight_decay: float = 1e-4,
     margin: float = 0.1,
 ) -> np.ndarray:
-    """Trains a bilinear matrix W on counterfactual quad tuples."""
+    """Trains a full bilinear matrix W on counterfactual quad tuples."""
     embed_dim = v_pos.shape[-1]
     model = BilinearMatcher(embed_dim)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -168,6 +169,70 @@ def train_bilinear_matcher(
 
     with torch.no_grad():
         W_learned = model.W.detach().cpu().numpy()
+    return W_learned
+
+
+class LowRankBilinearMatcher(nn.Module):
+    """
+    Low-Rank Bilinear scoring head: s(v, t) = (v U) . (t V) = v (U V^T) t
+    where U, V in R^(d x k).
+    """
+    def __init__(self, embed_dim: int, rank: int = 32):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.rank = rank
+        self.proj_v = nn.Linear(embed_dim, rank, bias=False)
+        self.proj_t = nn.Linear(embed_dim, rank, bias=False)
+        nn.init.normal_(self.proj_v.weight, std=0.02)
+        nn.init.normal_(self.proj_t.weight, std=0.02)
+
+    def forward(self, v: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        Av = self.proj_v(v)  # (B, k)
+        Bt = self.proj_t(t)  # (B, k)
+        return torch.sum(Av * Bt, dim=-1)
+
+    def get_W(self) -> np.ndarray:
+        # W = U V^T = proj_v.weight.T @ proj_t.weight  (d x d)
+        U = self.proj_v.weight.T  # (d, k)
+        V = self.proj_t.weight.T  # (d, k)
+        W = torch.matmul(U, V.T)  # (d, d)
+        return W.detach().cpu().numpy()
+
+
+def train_lowrank_bilinear_matcher(
+    v_pos: torch.Tensor,
+    v_neg: torch.Tensor,
+    t_pos: torch.Tensor,
+    t_neg: torch.Tensor,
+    rank: int = 32,
+    epochs: int = 150,
+    lr: float = 0.01,
+    weight_decay: float = 1e-4,
+    margin: float = 0.1,
+) -> np.ndarray:
+    """Trains a rank-k bilinear factorization W = U V^T on counterfactual quad tuples."""
+    embed_dim = v_pos.shape[-1]
+    model = LowRankBilinearMatcher(embed_dim, rank=rank)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    criterion = nn.MarginRankingLoss(margin=margin)
+    n = v_pos.shape[0]
+
+    for _ in range(epochs):
+        optimizer.zero_grad()
+        s_pp = model(v_pos, t_pos)
+        s_mm = model(v_neg, t_neg)
+        s_pm = model(v_pos, t_neg)
+        s_mp = model(v_neg, t_pos)
+
+        target = torch.ones(n)
+        loss = (criterion(s_pp, s_pm, target) + criterion(s_mm, s_mp, target) +
+                criterion(s_pp, s_mp, target) + criterion(s_mm, s_pm, target)) / 4.0
+
+        loss.backward()
+        optimizer.step()
+
+    with torch.no_grad():
+        W_learned = model.get_W()
     return W_learned
 
 
@@ -234,6 +299,7 @@ def run_per_object_alignment_intervention(
     output_dir: str = "logs/evaluation/per_object_alignment_intervention",
     model_name: str = "ViT-B-32",
     pretrained: str = "openai",
+    rank: int = 32,
     min_pairs_per_obj: int = 8,
     batch_size: int = 128,
     seed: int = 42,
@@ -247,6 +313,7 @@ def run_per_object_alignment_intervention(
     print("╚═══════════════════════════════════════════════════════════╝")
     print(f"  Model       : {model_name} ({pretrained}) | Device: {device}")
     print(f"  Output Dir  : {output_dir}")
+    print(f"  Rank (k)    : {rank}")
     print(f"  Use Bias    : {use_bias}\n")
 
     # 1. Load CLIP Model
@@ -321,8 +388,9 @@ def run_per_object_alignment_intervention(
         "1_Baseline_Cosine",
         "2_Closed_Form_Rotation",
         "3_Rank1_Polar_Adapter",
-        "4_Learned_Bilinear",
-        "5_Control_Random_Rotation",
+        "4_Learned_LowRank_Bilinear",
+        "5_Learned_Full_Bilinear",
+        "6_Control_Random_Rotation",
     ]
 
     for obj in common_objects:
@@ -369,21 +437,28 @@ def run_per_object_alignment_intervention(
         t_p = X_t_aff[:n_eval]
         t_m = X_t_neg[:n_eval]
 
-        # ── Step 4: Build 5 Transformation Matrices A^(o) ──
+        # ── Step 4: Build 6 Transformation Matrices A^(o) ──
         A_matrices = {
             "1_Baseline_Cosine": np.eye(embed_dim),
             "2_Closed_Form_Rotation": build_closed_form_rotation(d_T, d_I),
             "3_Rank1_Polar_Adapter": build_rank1_adapter(d_T, d_I),
-            "4_Learned_Bilinear": train_bilinear_matcher(
+            "4_Learned_LowRank_Bilinear": train_lowrank_bilinear_matcher(
+                torch.tensor(v_p, dtype=torch.float32),
+                torch.tensor(v_m, dtype=torch.float32),
+                torch.tensor(t_p, dtype=torch.float32),
+                torch.tensor(t_m, dtype=torch.float32),
+                rank=rank,
+            ),
+            "5_Learned_Full_Bilinear": train_bilinear_matcher(
                 torch.tensor(v_p, dtype=torch.float32),
                 torch.tensor(v_m, dtype=torch.float32),
                 torch.tensor(t_p, dtype=torch.float32),
                 torch.tensor(t_m, dtype=torch.float32),
             ),
-            "5_Control_Random_Rotation": build_random_orthogonal_rotation(embed_dim, seed=seed),
+            "6_Control_Random_Rotation": build_random_orthogonal_rotation(embed_dim, seed=seed),
         }
 
-        # ── Step 5: Evaluate All 5 Conditions ──
+        # ── Step 5: Evaluate All 6 Conditions ──
         obj_row = {
             "object_name": obj,
             "n_eval_pairs": n_eval,
@@ -403,7 +478,7 @@ def run_per_object_alignment_intervention(
     print(f"\n  Saved Results CSV: {csv_out}")
 
     # 5. Generate Comparative Figures and Summary JSON
-    generate_intervention_visualizations(df_results, output_dir, condition_names)
+    generate_intervention_visualizations(df_results, output_dir, condition_names, rank=rank)
 
 
 # ============================================================
@@ -413,6 +488,7 @@ def generate_intervention_visualizations(
     df: pd.DataFrame,
     output_dir: str,
     condition_names: List[str],
+    rank: int = 32,
 ):
     print("\nGenerating Intervention Visualizations & Summary Report...")
 
@@ -422,7 +498,8 @@ def generate_intervention_visualizations(
         "Cosine (Baseline)",
         "Closed-Form Rotation R",
         "Rank-1 Adapter",
-        "Learned Bilinear W",
+        f"LowRank Bilinear (k={rank})",
+        "Full Bilinear W",
         "Random Rotation (Control)",
     ]
 
@@ -454,11 +531,11 @@ def generate_intervention_visualizations(
             "acc_neg_mean_pct": n_acc,
         }
 
-    # ── Figure 1: 5-Condition Comparison Bar Chart ──
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    # ── Figure 1: 6-Condition Comparison Bar Chart ──
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 6))
 
     x = np.arange(len(condition_names))
-    colors = ["#7f8c8d", "#2ecc71", "#3498db", "#9b59b6", "#e74c3c"]
+    colors = ["#7f8c8d", "#2ecc71", "#3498db", "#e67e22", "#9b59b6", "#e74c3c"]
 
     # Subplot 1: 2x2 Joint Matching Accuracy
     bars1 = ax1.bar(x, mean_joint_accs, color=colors, edgecolor="black", width=0.55)
@@ -486,7 +563,7 @@ def generate_intervention_visualizations(
         ax2.text(bar.get_x() + bar.get_width()/2.0, yval + 0.03, f"{yval:+.3f}", ha="center", va="bottom", fontweight="bold")
 
     plt.tight_layout()
-    out_fig1 = os.path.join(output_dir, "fig_intervention_5conditions_bar.png")
+    out_fig1 = os.path.join(output_dir, "fig_intervention_6conditions_bar.png")
     plt.savefig(out_fig1, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {out_fig1}")
@@ -560,6 +637,7 @@ def main():
     parser.add_argument("--output_dir", type=str, default="logs/evaluation/per_object_alignment_intervention")
     parser.add_argument("--model", type=str, default="ViT-B-32")
     parser.add_argument("--pretrained", type=str, default="openai")
+    parser.add_argument("--rank", type=int, default=32, help="Rank k for Low-Rank Bilinear Matcher (default: 32)")
     parser.add_argument("--min_pairs", type=int, default=8)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
@@ -574,6 +652,7 @@ def main():
         output_dir=args.output_dir,
         model_name=args.model,
         pretrained=args.pretrained,
+        rank=args.rank,
         min_pairs_per_obj=args.min_pairs,
         batch_size=args.batch_size,
         seed=args.seed,
