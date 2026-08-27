@@ -175,8 +175,7 @@ def extract_vision_features_unified(
                 for j in range(len(batch_paths)):
                     if j in valid_idx:
                         l_arr[j] = pooled_layers[l_idx][vi]
-                        if l_idx == num_layers - 1:
-                            vi += 1
+                        vi += 1
                 layer_batches[l_idx].append(l_arr)
 
             pre_arr = np.zeros((len(batch_paths), pre_dim))
