@@ -27,8 +27,16 @@ import open_clip
 
 try:
     from benchmarks.src.analysis.beaf.vision_mechanisms import extract_vision_features_unified
+    from benchmarks.src.analysis.feature_cache import (
+        cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
+    )
+    from benchmarks.src.analysis.config import set_seed
 except ImportError:
     from analysis.beaf.vision_mechanisms import extract_vision_features_unified
+    from analysis.feature_cache import (
+        cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
+    )
+    from analysis.config import set_seed
 
 
 def resolve_path(p: str, root: str) -> str:
@@ -50,10 +58,19 @@ def main():
     parser.add_argument("--pretrained", type=str, default="openai")
     parser.add_argument("--min_pairs", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--use_cache", action="store_true", default=False,
+                        help="Reuse on-disk encoder features keyed by (model, pretrained, items)")
+    parser.add_argument("--cache_dir", type=str, default=DEFAULT_CACHE_DIR)
+    parser.add_argument("--restrict_objects", type=str, default=None,
+                        help="Comma list, or path to txt/csv/json, limiting evaluation to an exact concept set")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
+    set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    cache_kw = dict(model=args.model, pretrained=args.pretrained,
+                    cache_dir=args.cache_dir, enabled=args.use_cache)
 
     print("╔══════════════════════════════════════════════════════════════════════╗")
     print("║  E2 SANITY CHECK & EMPIRICAL GROUNDING VERIFICATION                  ║")
@@ -106,6 +123,12 @@ def main():
 
     all_objects = sorted(df_raw["object_name"].unique().tolist())
     target_objects = [o for o in all_objects if "," not in str(o)]
+    restrict = load_object_restriction(args.restrict_objects)
+    if restrict is not None:
+        missing = sorted(set(restrict) - set(target_objects))
+        target_objects = [o for o in target_objects if o in set(restrict)]
+        print(f"        Restricted to {len(target_objects)} concepts"
+              + (f" ({len(missing)} requested but absent: {missing[:5]})" if missing else ""))
 
     model, _, preprocess = open_clip.create_model_and_transforms(args.model, pretrained=args.pretrained)
     tokenizer = open_clip.get_tokenizer(args.model)
@@ -134,13 +157,16 @@ def main():
         t_neg_texts = df_true["negative_caption"].tolist()[:n_c]
 
         # Extract features
-        feats_p = extract_vision_features_unified(model, preprocess, img_pres, device, args.batch_size)
-        feats_a = extract_vision_features_unified(model, preprocess, img_abs, device, args.batch_size)
+        def _encode_vision(paths):
+            d = extract_vision_features_unified(model, preprocess, paths, device, args.batch_size)
+            return d["final_l2norm"], np.array(d.get("loaded_flags", [True] * len(paths)))
 
-        v_pres = feats_p["final_l2norm"]
-        v_abs = feats_a["final_l2norm"]
-        flags_p = np.array(feats_p.get("loaded_flags", [True] * len(img_pres)))
-        flags_a = np.array(feats_a.get("loaded_flags", [True] * len(img_abs)))
+        v_pres, flags_p = cached_encode(
+            lambda: _encode_vision(img_pres),
+            kind="image_pres@l2norm+flags", items=img_pres, **cache_kw)
+        v_abs, flags_a = cached_encode(
+            lambda: _encode_vision(img_abs),
+            kind="image_abs@l2norm+flags", items=img_abs, **cache_kw)
         valid_mask = flags_p & flags_a
 
         v_pres = v_pres[valid_mask]
@@ -161,8 +187,10 @@ def main():
                     all_t.append(f.cpu().numpy())
             return np.concatenate(all_t, axis=0)
 
-        t_pos = encode_t(t_pos_texts)
-        t_neg = encode_t(t_neg_texts)
+        (t_pos,) = cached_encode(lambda: (encode_t(t_pos_texts),),
+                                 kind="text_pos@l2norm", items=t_pos_texts, **cache_kw)
+        (t_neg,) = cached_encode(lambda: (encode_t(t_neg_texts),),
+                                 kind="text_neg@l2norm", items=t_neg_texts, **cache_kw)
 
         # 1. Delta vectors
         delta_I = v_pres - v_abs      # 2 * u
@@ -187,6 +215,20 @@ def main():
         # Rotated gamma (cos -> 1.0): 1/4 * s_I * s_T
         gamma_rot_c = 0.25 * s_I_c * s_T_c
 
+        # ── R5: signal component along the CONCEPT-MEAN direction ──
+        # cos_c above is a per-pair (instance) alignment: it asks how well one image
+        # shift lines up with its own caption shift. A linear probe never sees that;
+        # it fits one direction per concept and each pair contributes its projection
+        # onto that shared direction. The two quantities are different by construction,
+        # which is why the probe's alignment can be several times the instance-level
+        # cosine without contradiction. cos_concept_dirs is the probe-comparable one.
+        d_I_c = delta_I.mean(axis=0)
+        d_I_c = d_I_c / (np.linalg.norm(d_I_c) + 1e-9)
+        d_T_c = delta_T.mean(axis=0)
+        d_T_c = d_T_c / (np.linalg.norm(d_T_c) + 1e-9)
+        a_I = delta_I @ d_I_c   # signal component of each image shift
+        a_T = delta_T @ d_T_c   # signal component of each text shift
+
         all_s_I.extend(s_I_c.tolist())
         all_s_T.extend(s_T_c.tolist())
         all_cos_align.extend(cos_c.tolist())
@@ -203,6 +245,12 @@ def main():
             "gamma_predicted_mean": float(np.mean(gamma_pred_c)),
             "gamma_rotated_mean": float(np.mean(gamma_rot_c)),
             "rotation_scaling_ratio": float(np.mean(gamma_rot_c) / (np.mean(gamma_c) + 1e-9)),
+            # R5: concept-mean direction quantities
+            "a_I_mean": float(np.mean(a_I)),
+            "a_T_mean": float(np.mean(a_T)),
+            "signal_ratio_I": float(np.mean(a_I) / (np.mean(s_I_c) + 1e-9)),
+            "signal_ratio_T": float(np.mean(a_T) / (np.mean(s_T_c) + 1e-9)),
+            "cos_concept_dirs": float(d_I_c @ d_T_c),
         })
 
     # Summary Statistics across all 1,357 pairs
@@ -211,6 +259,12 @@ def main():
     mean_cos = float(np.mean(all_cos_align))
     mean_gamma_meas = float(np.mean(all_gamma_direct))
     mean_gamma_rot = float(np.mean(all_gamma_rotated))
+
+    # R5 macro aggregates over concepts (each concept contributes one direction)
+    df_cg = pd.DataFrame(per_concept_grounding)
+    macro_signal_ratio_I = float(df_cg["signal_ratio_I"].mean())
+    macro_signal_ratio_T = float(df_cg["signal_ratio_T"].mean())
+    macro_cos_concept_dirs = float(df_cg["cos_concept_dirs"].mean())
 
     # Theoretical gamma from means
     gamma_theory_from_means = 0.25 * mean_s_I * mean_s_T * mean_cos
@@ -228,7 +282,12 @@ def main():
     print(f"        -> Rotated Interaction (γ_rot)       : {mean_gamma_rot:+.6f} (when cos -> 1.0)")
     print(f"        -> Actual Rotation Scaling Ratio     : {actual_rotation_multiplier:.2f}×")
     print(f"        -> Theoretical Scaling (1 / cos)     : {theoretical_rotation_multiplier:.2f}×")
-    print(f"        -> Rotation Theory Match             : {'✅ CONFIRMED (Prediction Verified)' if abs(actual_rotation_multiplier - theoretical_rotation_multiplier) < 0.5 else 'MISMATCH'}\n")
+    print(f"        -> Rotation Theory Match             : {'✅ CONFIRMED (Prediction Verified)' if abs(actual_rotation_multiplier - theoretical_rotation_multiplier) < 0.5 else 'MISMATCH'}")
+    print(f"        ────────────────────────────────────────────────────────")
+    print(f"        -> [R5] Signal ratio a_I / s_I       : {macro_signal_ratio_I:.4f}")
+    print(f"        -> [R5] Signal ratio a_T / s_T       : {macro_signal_ratio_T:.4f}")
+    print(f"        -> [R5] cos(d_I^concept, d_T^concept): {macro_cos_concept_dirs:.4f}")
+    print(f"           (vs per-pair instance alignment    : {mean_cos:.4f} — different quantities)\n")
 
     # ──────────────────────────────────────────────────────────
     # 3. Export Comprehensive Grounding Report
@@ -256,7 +315,20 @@ def main():
             "mean_gamma_theory_predicted": gamma_theory_from_means,
             "prediction_error": abs(mean_gamma_meas - gamma_theory_from_means),
         },
-        # 3. Rotation Intervention Prediction
+        # 3. Concept-mean direction signal components (R5)
+        "concept_direction_signal": {
+            "macro_signal_ratio_I": macro_signal_ratio_I,
+            "macro_signal_ratio_T": macro_signal_ratio_T,
+            "macro_cos_concept_dirs": macro_cos_concept_dirs,
+            "mean_instance_cos_alignment": mean_cos,
+            "note": (
+                "signal_ratio is the mean projection onto the concept-mean shift direction "
+                "divided by the mean shift length; cos_concept_dirs compares the two concept "
+                "directions and is the probe-comparable alignment. mean_instance_cos_alignment "
+                "is the per-pair cosine and is a different quantity, not a competing estimate."
+            ),
+        },
+        # 4. Rotation Intervention Prediction
         "rotation_intervention_validation": {
             "mean_gamma_rotated_cos_1": mean_gamma_rot,
             "actual_amplification_multiplier": actual_rotation_multiplier,
@@ -265,6 +337,8 @@ def main():
         },
         # Per concept breakdown
         "per_concept_table": per_concept_grounding,
+        "provenance": build_provenance(
+            args, n_concepts=len(per_concept_grounding), n_pairs=n_pairs),
     }
 
     report_path = os.path.join(args.output_dir, "e2_sanity_grounding_report.json")
