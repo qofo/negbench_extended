@@ -265,6 +265,9 @@ def format_params(params: Dict[str, Any]) -> str:
     return ", ".join(items)
 
 
+_NO_BIAS_WARNED = set()
+
+
 def create_probe_classifier(probe_type: str, seed: int = 42, fit_intercept: bool = True, **params) -> Any:
     """
     Instantiate classifier based on probe_type and hyperparameter dictionary.
@@ -280,6 +283,14 @@ def create_probe_classifier(probe_type: str, seed: int = 42, fit_intercept: bool
     """
     p_type = probe_type.lower().strip()
     use_bias = params.get("use_bias", fit_intercept)
+
+    # sklearn's SVC has no fit_intercept, so --no_bias cannot be honored for the two
+    # SVM probes. Say so instead of reporting a "no-bias" number that still has one.
+    if not use_bias and p_type in ("svm_linear", "svm_rbf") and p_type not in _NO_BIAS_WARNED:
+        _NO_BIAS_WARNED.add(p_type)
+        print(f"[WARNING] probe '{p_type}' is backed by sklearn SVC, which always fits an "
+              f"intercept; fit_intercept=False is NOT applied. Use 'logistic' or 'ridge' "
+              f"for a genuinely intercept-free linear probe.")
 
     if p_type == "logistic":
         c = params.get("C", 1.0)

@@ -134,23 +134,63 @@ def to_bool(v: Optional[object], default: bool = False) -> bool:
     return bool(v)
 
 
+def coerce_bool_column(df, column: str = "object_in_image", default: bool = False):
+    """
+    Normalize a truthy CSV column to real booleans, in place.
+
+    Thirteen entrypoints each inlined their own version of this, and they did not
+    agree: most accepted only the literal ``"true"``, one also accepted ``"1"``,
+    ``"t"`` and ``"yes"``. Today's CSVs are written as ``True``/``False`` so pandas
+    types the column as bool and every variant happens to agree, but a CSV written
+    as ``1``/``0`` would split the experiments into two incompatible readings of the
+    same file. Routing all of them through :func:`to_bool` removes that fork.
+
+    Args:
+        df: DataFrame to modify in place.
+        column: Column name; a no-op when the column is absent.
+        default: Value for entries :func:`to_bool` cannot classify.
+
+    Returns:
+        The same DataFrame, for chaining.
+    """
+    if column in df.columns:
+        df[column] = df[column].apply(lambda v: to_bool(v, default=default))
+    return df
+
+
+PRE_PROJECTION_KEY = "Pre-Projection"
+FINAL_L2NORM_KEY = "+Final L2Norm"
+
+_warned_layer_keys = set()
+
+
 def get_layer_features(vis: dict, key: str) -> np.ndarray:
     """
     Extract intermediate representations by layer/step key from unified feature dictionaries.
 
+    ``FINAL_L2NORM_KEY`` is the intended sentinel for the final embedding, and any
+    other unrecognized key falls back to it too. That fallback used to be silent,
+    which turned a typo'd or renamed layer into a "layerwise" curve that was really
+    the same final layer repeated. It is kept so callers do not break, but it now
+    warns once per unknown key so the substitution shows up in the run log.
+
     Args:
         vis (dict): Unified feature dictionary returned by vision/text extractor.
-        key (str): Layer key (e.g. 'layer0', 'Layer12', 'Pre-Projection', '+Final L2Norm').
+        key (str): Layer key (e.g. 'Layer 1', 'Pre-Projection', '+Final L2Norm').
 
     Returns:
         np.ndarray: Feature tensor corresponding to the specified layer/transformation step.
     """
     if "layers" in vis and key in vis["layers"]:
         return vis["layers"][key]
-    elif key == "Pre-Projection" and "pre_proj" in vis:
+    if key == PRE_PROJECTION_KEY and "pre_proj" in vis:
         return vis["pre_proj"]
-    else:
-        return vis["final_l2norm"]
+    if key != FINAL_L2NORM_KEY and key not in _warned_layer_keys:
+        _warned_layer_keys.add(key)
+        available = sorted(vis.get("layers", {}).keys())
+        print(f"[WARNING] get_layer_features: unknown layer key {key!r}; returning 'final_l2norm' "
+              f"instead. Available layer keys: {available}")
+    return vis["final_l2norm"]
 
 
 def set_seed(seed: int = 42) -> None:

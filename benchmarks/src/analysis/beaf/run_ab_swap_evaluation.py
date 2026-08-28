@@ -147,7 +147,7 @@ def run_full_evaluation(
     df = pd.read_csv(csv_path)
 
     print("=" * 60)
-    print(f"BEAF Compositional Swap Evaluation Pipeline")
+    print("BEAF Compositional Swap Evaluation Pipeline")
     print(f"Model: {model_name} ({pretrained}) | Device: {device}")
     print(f"Dataset: {csv_path} ({len(df)} rows, {len(df)//2} pairs)")
     print("=" * 60 + "\n")

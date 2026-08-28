@@ -26,6 +26,12 @@ import open_clip
 from evaluation.scoring_heads import WeightedCosineScorer, BilinearScorer
 
 
+# Repo root, derived from this file's location rather than the cwd: every default
+# path in this script is repo-root-relative (benchmarks/data/..., logs/...), and
+# deriving it here lets the script run from anywhere instead of only from the root.
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+
+
 def find_existing_file(candidates, default_name="file"):
     for c in candidates:
         if os.path.isabs(c) and os.path.exists(c):
@@ -274,7 +280,7 @@ def run_full_analysis(
     diag_ratio = (diag_energy / total_energy) * 100.0
     off_diag_ratio = (off_diag_energy / total_energy) * 100.0
 
-    print(f"Bilinear Matrix W Energy Analysis:")
+    print("Bilinear Matrix W Energy Analysis:")
     print(f"  - Diagonal Matching Energy (Direct Dim Match) : {diag_ratio:.2f}%")
     print(f"  - Off-Diagonal Interaction Energy (Cross Dim)  : {off_diag_ratio:.2f}%")
 
@@ -356,7 +362,7 @@ def run_full_analysis(
 - **비대각 성분 에너지 비중 (교차 차원 상호작용)**: **{off_diag_ratio:.2f}%**
 - **핵심 발견**: Bilinear 모델에서는 이미지의 특정 차원 $i$와 텍스트의 다른 차원 $j$ 사이의 **Cross-dimensional Interaction({off_diag_ratio:.2f}%)**이 부정문-이미지 간 미스매치 교정에 결정적인 역할을 수행합니다.
 
-### 가장 강력하게 결합하는 교차 차원 (Image Dim $i \leftrightarrow$ Text Dim $j$) Top 5
+### 가장 강력하게 결합하는 교차 차원 (Image Dim $i \\leftrightarrow$ Text Dim $j$) Top 5
 | 순위 | 이미지 차원 ($i$) | 텍스트 차원 ($j$) | 상호작용 가중치 ($W_{{i,j}}$) |
 |:---:|:---:|:---:|:---:|
 """

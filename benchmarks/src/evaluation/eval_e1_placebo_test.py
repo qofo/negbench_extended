@@ -68,14 +68,16 @@ try:
     from benchmarks.src.analysis.feature_cache import (
         cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
     )
-    from benchmarks.src.analysis.config import set_seed
+    from benchmarks.src.analysis.config import set_seed, coerce_bool_column
+    from benchmarks.src.analysis.paths import resolve_image_path as resolve_path
 except ImportError:
     from analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
     from analysis.beaf.vision_mechanisms import extract_vision_features_unified
     from analysis.feature_cache import (
         cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
     )
-    from analysis.config import set_seed
+    from analysis.config import set_seed, coerce_bool_column
+    from analysis.paths import resolve_image_path as resolve_path
 
 
 DEFAULT_TEMPLATES = [
@@ -514,12 +516,7 @@ def main():
     # 1. Load raw CSV
     print("  [1/5] Loading CSV...")
     df_full = pd.read_csv(args.csv_path)
-    if df_full["object_in_image"].dtype == object:
-        df_full["object_in_image"] = df_full["object_in_image"].apply(
-            lambda x: str(x).strip().lower() == "true"
-        )
-    else:
-        df_full["object_in_image"] = df_full["object_in_image"].astype(bool)
+    coerce_bool_column(df_full, "object_in_image")
     print(f"  -> {len(df_full)} rows, {df_full['object_name'].nunique()} concepts")
 
     # 2. Build placebo assignments on present rows
@@ -569,14 +566,6 @@ def main():
         items=all_concepts, **cache_kw)
     concept_text_feats = {c: concept_matrix[i] for i, c in enumerate(all_concepts)}
 
-    def resolve_path(p: str, root: str) -> str:
-        if os.path.isabs(p):
-            return p
-        full = os.path.join(root, p)
-        if os.path.exists(full):
-            return full
-        return p
-
     pres_paths = [resolve_path(p, args.image_root) for p in df_pres_assigned["image_path"].tolist()]
     abs_paths = [resolve_path(p, args.image_root) for p in df_pres_assigned["cf_path"].tolist()]
 
@@ -606,7 +595,7 @@ def main():
               + (f" ({len(missing)} requested but absent: {missing[:5]})" if missing else ""))
 
     # 5. Compute placebo AUC
-    print(f"\n  [5/5] Computing AUC_X and AUC_Y (placebo)...")
+    print("\n  [5/5] Computing AUC_X and AUC_Y (placebo)...")
     df_pairs_out, df_concepts_out, summary = compute_placebo_auc(
         df_pres=df_pres_assigned,
         feats_pres_all=feats_pres,

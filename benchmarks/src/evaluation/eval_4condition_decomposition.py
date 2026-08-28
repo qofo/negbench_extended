@@ -49,6 +49,8 @@ import matplotlib.pyplot as plt
 
 import open_clip
 
+from benchmarks.src.analysis.config import coerce_bool_column
+
 from benchmarks.src.evaluation.eval_unary_mechanistic_analysis import (
     encode_images_safely,
     encode_texts_safely,
@@ -303,13 +305,7 @@ def run_4condition_decomposition(
 
     # Load CSV
     df = pd.read_csv(csv_path)
-    if "object_in_image" in df.columns:
-        if df["object_in_image"].dtype == object:
-            df["object_in_image"] = df["object_in_image"].apply(
-                lambda x: str(x).strip().lower() == "true"
-            )
-        else:
-            df["object_in_image"] = df["object_in_image"].astype(bool)
+    coerce_bool_column(df, "object_in_image")
 
     # Single-object targets only
     all_objects = df["object_name"].unique().tolist()
@@ -420,9 +416,9 @@ def run_4condition_decomposition(
     print(f"  ║  C2: P(m(I_abs)  < 0)  = {summary['P_C2_text_abs']:6.2f}%   [neg text wins on I−]  ║")
     print(f"  ║  C3: P(n(t_pos)  > 0)  = {summary['P_C3_img_pos']:6.2f}%   [I+ wins for t_pos]    ║")
     print(f"  ║  C4: P(n(t_neg)  < 0)  = {summary['P_C4_img_neg']:6.2f}%   [I− wins for t_neg]    ║")
-    print(f"  ║                                                      ║")
+    print("  ║                                                      ║")
     print(f"  ║  P(all 4 satisfied)     = {summary['P_all_4']:6.2f}%                      ║")
-    print(f"  ║  Random baseline (1/6)  = 16.67%                     ║")
+    print("  ║  Random baseline (1/6)  = 16.67%                     ║")
     print("  ╠════════════════════════════════════════════════════════╣")
     print("  ║  Mean Score Matrix (macro-averaged):                  ║")
     print(f"  ║    S₁₁ = {summary['S11_mean']:+.4f}   S₁₂ = {summary['S12_mean']:+.4f}               ║")
@@ -441,7 +437,7 @@ def run_4condition_decomposition(
     render_4condition_margins_figure(summary, output_dir)
     render_score_matrix_heatmap(summary, output_dir)
 
-    print(f"\n  4-Condition Decomposition Complete!")
+    print("\n  4-Condition Decomposition Complete!")
     print(f"  Objects analyzed: {len(analyzed_objects)}")
     print(f"  Total samples:    {summary['total_samples']}")
 

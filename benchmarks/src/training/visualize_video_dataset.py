@@ -6,8 +6,8 @@ from torchvision import transforms
 from torch.utils.data import Dataset
 from typing import Optional
 import torch
-from video_utils.video_reader import VideoReader
-from video_utils.frame_sampler import UniformFrameSampler
+from training.video_utils.video_reader import VideoReader
+from training.video_utils.frame_sampler import UniformFrameSampler
 
 class VideoLoader:
     def __init__(self, video_path: str, max_frames: int = 4, start_time: Optional[float] = None, end_time: Optional[float] = None):

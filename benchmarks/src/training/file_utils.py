@@ -14,7 +14,7 @@ def remote_sync_s3(local_dir, remote_dir):
         logging.error(f"Error: Failed to sync with S3 bucket {result.stderr.decode('utf-8')}")
         return False
         
-    logging.info(f"Successfully synced with S3 bucket")
+    logging.info("Successfully synced with S3 bucket")
     return True
 
 def remote_sync_fsspec(local_dir, remote_dir):

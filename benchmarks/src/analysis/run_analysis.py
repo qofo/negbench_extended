@@ -93,7 +93,11 @@ def main():
 
     # Initialize model weights and tokenizers
     print(f"Loading model {cfg.model_name} ({cfg.pretrained})...")
-    model, preprocess, _ = open_clip.create_model_and_transforms(cfg.model_name, pretrained=cfg.pretrained)
+    # create_model_and_transforms returns (model, preprocess_train, preprocess_val).
+    # Feature extraction must take the *val* transform: the train one is
+    # RandomResizedCrop + augmentation, which makes embeddings non-deterministic
+    # and not comparable with the evaluation/ scripts.
+    model, _, preprocess = open_clip.create_model_and_transforms(cfg.model_name, pretrained=cfg.pretrained)
     tokenizer = open_clip.get_tokenizer(cfg.model_name)
     model = model.to(device)
 

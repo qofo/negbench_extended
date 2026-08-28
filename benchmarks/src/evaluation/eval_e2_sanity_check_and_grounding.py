@@ -30,22 +30,16 @@ try:
     from benchmarks.src.analysis.feature_cache import (
         cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
     )
-    from benchmarks.src.analysis.config import set_seed
+    from benchmarks.src.analysis.config import set_seed, coerce_bool_column
+    from benchmarks.src.analysis.paths import resolve_image_path as resolve_path
 except ImportError:
     from analysis.beaf.vision_mechanisms import extract_vision_features_unified
     from analysis.feature_cache import (
         cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
     )
-    from analysis.config import set_seed
+    from analysis.config import set_seed, coerce_bool_column
+    from analysis.paths import resolve_image_path as resolve_path
 
-
-def resolve_path(p: str, root: str) -> str:
-    if os.path.isabs(p):
-        return p
-    full = os.path.join(root, p)
-    if os.path.exists(full):
-        return full
-    return p
 
 
 def main():
@@ -110,16 +104,12 @@ def main():
     # ──────────────────────────────────────────────────────────
     # 2. Extract Embeddings & Measure s_I, s_T, cos(d_I, d_T) Directly
     # ──────────────────────────────────────────────────────────
-    print(f"  [2/4] Direct Empirical Measurement of s_I, s_T, and d_I · d_T...")
+    print("  [2/4] Direct Empirical Measurement of s_I, s_T, and d_I · d_T...")
     print(f"        Source Dataset: {args.csv_path}")
     print(f"        Model         : {args.model} ({args.pretrained}) on {device}")
 
     df_raw = pd.read_csv(args.csv_path)
-    if "object_in_image" in df_raw.columns:
-        if df_raw["object_in_image"].dtype == object:
-            df_raw["object_in_image"] = df_raw["object_in_image"].apply(lambda x: str(x).strip().lower() == "true")
-        else:
-            df_raw["object_in_image"] = df_raw["object_in_image"].astype(bool)
+    coerce_bool_column(df_raw, "object_in_image")
 
     all_objects = sorted(df_raw["object_name"].unique().tolist())
     target_objects = [o for o in all_objects if "," not in str(o)]
@@ -274,16 +264,16 @@ def main():
     print(f"        -> Measured Image Shift (s_I)        : {mean_s_I:.5f} (||v_pres - v_abs||)")
     print(f"        -> Measured Text Shift (s_T)         : {mean_s_T:.5f} (||t_pos - t_neg||)")
     print(f"        -> Measured Alignment cos(d_I, d_T)  : {mean_cos:.5f} (Alignment score A)")
-    print(f"        ────────────────────────────────────────────────────────")
+    print("        ────────────────────────────────────────────────────────")
     print(f"        -> Measured Interaction (γ_meas)     : {mean_gamma_meas:+.6f}")
     print(f"        -> Theoretical Prediction (γ_theory) : {gamma_theory_from_means:+.6f} [1/4 * s_I * s_T * cos]")
     print(f"        -> Theoretical Discrepancy           : {abs(mean_gamma_meas - gamma_theory_from_means):.2e} (Near-zero exact match)")
-    print(f"        ────────────────────────────────────────────────────────")
+    print("        ────────────────────────────────────────────────────────")
     print(f"        -> Rotated Interaction (γ_rot)       : {mean_gamma_rot:+.6f} (when cos -> 1.0)")
     print(f"        -> Actual Rotation Scaling Ratio     : {actual_rotation_multiplier:.2f}×")
     print(f"        -> Theoretical Scaling (1 / cos)     : {theoretical_rotation_multiplier:.2f}×")
     print(f"        -> Rotation Theory Match             : {'✅ CONFIRMED (Prediction Verified)' if abs(actual_rotation_multiplier - theoretical_rotation_multiplier) < 0.5 else 'MISMATCH'}")
-    print(f"        ────────────────────────────────────────────────────────")
+    print("        ────────────────────────────────────────────────────────")
     print(f"        -> [R5] Signal ratio a_I / s_I       : {macro_signal_ratio_I:.4f}")
     print(f"        -> [R5] Signal ratio a_T / s_T       : {macro_signal_ratio_T:.4f}")
     print(f"        -> [R5] cos(d_I^concept, d_T^concept): {macro_cos_concept_dirs:.4f}")

@@ -37,6 +37,8 @@ import matplotlib.pyplot as plt
 
 import open_clip
 
+from benchmarks.src.analysis.config import coerce_bool_column
+
 from benchmarks.src.evaluation.eval_layerwise_linear_probe import (
     extract_layerwise_feature_dict,
     evaluate_layerwise_linear_probe,
@@ -256,7 +258,7 @@ def run_unary_vs_compound(
         "cos_compound_pos_vs_neg_std": float(cos_compound.std()),
     }
 
-    print(f"\n  Text-side cosine similarities (query separability):")
+    print("\n  Text-side cosine similarities (query separability):")
     print(f"    cos('a A', 'a B'):              {text_stats['cos_atomic_a_vs_b_mean']:.4f} ± {text_stats['cos_atomic_a_vs_b_std']:.4f}")
     print(f"    cos('no A', 'no B'):            {text_stats['cos_negated_a_vs_b_mean']:.4f} ± {text_stats['cos_negated_a_vs_b_std']:.4f}")
     print(f"    cos(compound_pos, compound_neg):{text_stats['cos_compound_pos_vs_neg_mean']:.4f} ± {text_stats['cos_compound_pos_vs_neg_std']:.4f}")
@@ -384,14 +386,14 @@ def _compute_image_scores(
     margin_yx = s_yx["s_cn"] - s_yx["s_cp"]
     margins = torch.cat([margin_xy, margin_yx])
 
-    print(f"\n    ┌─────────────────────────────────────────────┐")
+    print("\n    ┌─────────────────────────────────────────────┐")
     print(f"    │ Accuracy Results ({len(valid_idx)} valid pairs)       │")
-    print(f"    ├─────────────────────────────────────────────┤")
+    print("    ├─────────────────────────────────────────────┤")
     print(f"    │ Atomic Object Presence     : {atomic_acc:6.2f}%        │")
     print(f"    │ Unary Negation (present)   : {unary_present_acc:6.2f}%        │")
     print(f"    │ Unary Negation (absent)    : {unary_absent_acc:6.2f}%        │")
     print(f"    │ Compound Negation (A∧¬B)   : {compound_acc:6.2f}%        │")
-    print(f"    └─────────────────────────────────────────────┘")
+    print("    └─────────────────────────────────────────────┘")
     print(f"    Mean ΔS margin (compound): {float(margins.mean()):.4f} ± {float(margins.std()):.4f}")
 
     # ── Save 6-score CSV ──
@@ -626,12 +628,7 @@ def main():
     # Load data
     df = pd.read_csv(args.csv_path)
     # Normalize object_in_image to bool
-    if df["object_in_image"].dtype == object:
-        df["object_in_image"] = df["object_in_image"].apply(
-            lambda x: str(x).strip().lower() == "true"
-        )
-    else:
-        df["object_in_image"] = df["object_in_image"].astype(bool)
+    coerce_bool_column(df, "object_in_image")
 
     n_pairs = len(df) // 2
     print(f"  Loaded {len(df)} rows ({n_pairs} counterfactual pairs)\n")

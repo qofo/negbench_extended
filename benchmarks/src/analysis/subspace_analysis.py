@@ -78,6 +78,7 @@ def evaluate_cross_category_transfer(
     pair_metadata: List[dict],
     split_by: str = "object_name",
     seed: int = 42,
+    fit_intercept: bool = True,
 ) -> Dict[str, Any]:
     """
     Train Linear Probe on 80% of categories/templates, evaluate accuracy on 20% unseen categories/templates.
@@ -87,7 +88,9 @@ def evaluate_cross_category_transfer(
         neg_features (np.ndarray): Negative caption embeddings.
         pair_metadata (List[dict]): Metadata dictionary list.
         split_by (str): Split criterion ('object_name' for category generalization, 'source_template' for template transfer).
-    Train Linear Probe on 80% categories / templates and evaluate generalization on 20% unseen categories.
+        seed (int): Random seed for the group shuffle.
+        fit_intercept (bool): Whether the probe may absorb class priors into an intercept.
+            Wired to --no_bias so the result can be checked without one.
     """
     df_meta = pd.DataFrame(pair_metadata)
     obj_key = MetadataKey.OBJECT_NAME.value

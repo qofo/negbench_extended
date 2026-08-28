@@ -444,7 +444,7 @@ def generate_clean_diverse_ab_swap_dataset(
 
     # Inpainting artifact check
     inpainting_count = df_out['image_path'].str.contains(r'_\d{2}\.|\.png$').sum()
-    print(f"\n  [Inpainting Artifact Audit]")
+    print("\n  [Inpainting Artifact Audit]")
     print(f"    - Inpainted/PNG images detected: {inpainting_count} (Should be 0)")
 
     print(f"\n  Successfully saved to: {output_csv_path}\n")

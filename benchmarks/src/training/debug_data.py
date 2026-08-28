@@ -5,8 +5,8 @@ from torch.utils.data import Dataset
 
 from typing import List, Tuple, Callable
 import torch
-from video_utils.video_reader import DecordVideoReader, VideoReader
-from video_utils.frame_sampler import FrameSampler, UniformFrameSampler
+from training.video_utils.video_reader import DecordVideoReader, VideoReader
+from training.video_utils.frame_sampler import FrameSampler, UniformFrameSampler
 
 from training.video_utils.model import VideoCLIP
 

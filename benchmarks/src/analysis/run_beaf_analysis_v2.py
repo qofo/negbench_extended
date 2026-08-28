@@ -308,7 +308,11 @@ def main():
 
     # 2. Load Model
     print("\n[Step 2] Loading OpenCLIP Model ...")
-    model, preprocess, _ = open_clip.create_model_and_transforms(args.model, pretrained=args.pretrained)
+    # create_model_and_transforms returns (model, preprocess_train, preprocess_val).
+    # Feature extraction must take the *val* transform: the train one is
+    # RandomResizedCrop + augmentation, which makes embeddings non-deterministic
+    # and not comparable with the evaluation/ scripts.
+    model, _, preprocess = open_clip.create_model_and_transforms(args.model, pretrained=args.pretrained)
     tokenizer = open_clip.get_tokenizer(args.model)
     model = model.to(device)
     model.eval()
@@ -436,7 +440,7 @@ def main():
         json.dump(comprehensive_summary, f, indent=2, ensure_ascii=False)
 
     print(f"\n{'='*60}")
-    print(f"  BEAF 2x2 Factorial ANOVA Fast Run Complete!")
+    print("  BEAF 2x2 Factorial ANOVA Fast Run Complete!")
     print(f"  Results saved to: {args.output_dir}")
     print(f"{'='*60}")
 

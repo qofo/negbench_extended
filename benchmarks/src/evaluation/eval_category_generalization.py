@@ -78,6 +78,11 @@ def extract_mcq_embeddings_with_objects(
     text_embed_list = []
     target_list = []
     q_type_list = []
+    # Rows dropped here silently shrink N; count them so the reported sample size
+    # can be reconciled against the CSV instead of quietly disagreeing with it.
+    n_missing = 0
+    n_decode_failed = 0
+    first_decode_error = None
     object_name_list = []
 
     print(f"\nExtracting CLIP embeddings & category attributes for {len(df)} samples from {csv_file}...")
@@ -100,12 +105,16 @@ def extract_mcq_embeddings_with_objects(
                     break
 
         if not os.path.exists(full_img_path):
+            n_missing += 1
             continue
 
         try:
             img = Image.open(full_img_path).convert("RGB")
             img_tensor = preprocess(img).unsqueeze(0).to(device)
-        except Exception as e:
+        except Exception as exc:
+            n_decode_failed += 1
+            if first_decode_error is None:
+                first_decode_error = f"{full_img_path}: {exc!r}"
             continue
 
         captions = [str(row[f"caption_{i}"]) for i in range(num_answers)]
@@ -134,6 +143,13 @@ def extract_mcq_embeddings_with_objects(
         target_list.append(correct_answer)
         q_type_list.append(q_type)
         object_name_list.append(obj_name)
+
+    n_dropped = n_missing + n_decode_failed
+    if n_dropped:
+        print(f"⚠️  Dropped {n_dropped}/{len(df)} rows while extracting features "
+              f"({n_missing} missing on disk, {n_decode_failed} failed to decode).")
+        if first_decode_error:
+            print(f"    First decode failure: {first_decode_error}")
 
     all_img_embeds = torch.cat(img_embed_list, dim=0)
     all_text_embeds = torch.cat(text_embed_list, dim=0)
@@ -190,9 +206,9 @@ def evaluate_category_generalization(
     all_results = {}
 
     for model_name, expr_level, hypothesis in scoring_models:
-        print(f"\n" + "="*75)
+        print("\n" + "="*75)
         print(f"Evaluating Model : {model_name:20s} | Expressiveness: {expr_level:10s}")
-        print(f"Evaluation Mode : Category Cross-Generalization (100% Unseen Categories)")
+        print("Evaluation Mode : Category Cross-Generalization (100% Unseen Categories)")
         print("="*75)
 
         oof_predictions = np.zeros(N, dtype=int)

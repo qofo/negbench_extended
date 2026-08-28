@@ -241,7 +241,7 @@ def create_full_paired_v2(
     print(f"  Total caption pairs   : {len(pairs_df)}")
     print(f"  Present objects (True) : {n_present}")
     print(f"  Absent objects (False) : {n_absent}")
-    print(f"  ─────────────────────────────────────")
+    print("  ─────────────────────────────────────")
     print(f"  MCQ LLaMA originals   : {n_mcq}")
     print(f"  Generated templates   : {n_gen}")
     print(f"  Unique objects        : {pairs_df['object_name'].nunique()}")

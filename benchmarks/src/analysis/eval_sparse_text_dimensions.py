@@ -188,7 +188,7 @@ def extract_or_generate_vision_features(
         y_vision = np.array(labels)
     else:
         # Generate synthetic counterfactual PIL images representing Present (+1) vs Absent (0) objects
-        print(f"Generating synthetic PIL images for Present (+1) vs Absent (0) Vision Probe...")
+        print("Generating synthetic PIL images for Present (+1) vs Absent (0) Vision Probe...")
         synth_images = []
         synth_labels = []
         rng = np.random.default_rng(42)
@@ -381,8 +381,8 @@ def main():
 
     # (0, 0): Top-k L2 Norm Ratio
     ax0 = axes[0, 0]
-    ax0.plot(df_t["k"], df_t["norm_ratio_pct"], "o-", color="#1f77b4", lw=2.5, label="Text Probe $\|w_{\mathrm{top-}k}\|_2 / \|w\|_2$")
-    ax0.plot(df_v["k"], df_v["norm_ratio_pct"], "s--", color="#ff7f0e", lw=2.5, label="Vision Probe $\|w_{\mathrm{top-}k}\|_2 / \|w\|_2$")
+    ax0.plot(df_t["k"], df_t["norm_ratio_pct"], "o-", color="#1f77b4", lw=2.5, label=r"Text Probe $\|w_{\mathrm{top-}k}\|_2 / \|w\|_2$")
+    ax0.plot(df_v["k"], df_v["norm_ratio_pct"], "s--", color="#ff7f0e", lw=2.5, label=r"Vision Probe $\|w_{\mathrm{top-}k}\|_2 / \|w\|_2$")
     ax0.axhline(100, color="gray", ls=":", alpha=0.6)
     ax0.set_xlabel("Top $k$ Dimensions Retained", fontsize=11)
     ax0.set_ylabel("L2 Norm Ratio (%)", fontsize=11)

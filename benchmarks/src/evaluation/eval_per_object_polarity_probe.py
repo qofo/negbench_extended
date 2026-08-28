@@ -48,7 +48,7 @@ import matplotlib.pyplot as plt
 import open_clip
 
 # Reuse existing verified infrastructure
-from benchmarks.src.analysis.config import get_layer_features as _get_feats
+from benchmarks.src.analysis.config import get_layer_features as _get_feats, coerce_bool_column
 from benchmarks.src.analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
 from benchmarks.src.analysis.beaf.vision_mechanisms import extract_vision_features_unified
 from benchmarks.src.evaluation.eval_layerwise_linear_probe import extract_layerwise_feature_dict
@@ -413,10 +413,7 @@ def run_per_object_alignment_intervention(
     # 3. Load Text Diverse Counterfactual Captions
     print("\nLoading Text Diverse Counterfactual Captions...")
     df_txt = pd.read_csv(text_csv)
-    if df_txt["object_in_image"].dtype == object:
-        df_txt["object_in_image"] = df_txt["object_in_image"].apply(lambda x: str(x).strip().lower() == "true")
-    else:
-        df_txt["object_in_image"] = df_txt["object_in_image"].astype(bool)
+    coerce_bool_column(df_txt, "object_in_image")
 
     df_txt_unique = df_txt[df_txt["object_in_image"] == True].drop_duplicates(
         subset=["positive_caption", "negative_caption"]

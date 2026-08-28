@@ -105,6 +105,11 @@ def extract_mcq_embeddings(
 
     q_type_list = []
     cap_type_list = []
+    # Rows dropped here silently shrink N; count them so the reported sample size
+    # can be reconciled against the CSV instead of quietly disagreeing with it.
+    n_missing = 0
+    n_decode_failed = 0
+    first_decode_error = None
 
     print(f"\nExtracting CLIP embeddings for {len(df)} samples from {csv_file}...")
 
@@ -130,13 +135,16 @@ def extract_mcq_embeddings(
                     break
 
         if not os.path.exists(full_img_path):
-            # Skip missing images gracefully
+            n_missing += 1
             continue
 
         try:
             img = Image.open(full_img_path).convert("RGB")
             img_tensor = preprocess(img).unsqueeze(0).to(device)
-        except Exception as e:
+        except Exception as exc:
+            n_decode_failed += 1
+            if first_decode_error is None:
+                first_decode_error = f"{full_img_path}: {exc!r}"
             continue
 
         # Auto-detect caption column format (MCQ caption_0..N vs Paired positive_caption/negative_caption)
@@ -168,6 +176,13 @@ def extract_mcq_embeddings(
         target_list.append(correct_answer)
         q_type_list.append(q_type)
         cap_type_list.append(default_caption_types)
+
+    n_dropped = n_missing + n_decode_failed
+    if n_dropped:
+        print(f"⚠️  Dropped {n_dropped}/{len(df)} rows while extracting features "
+              f"({n_missing} missing on disk, {n_decode_failed} failed to decode).")
+        if first_decode_error:
+            print(f"    First decode failure: {first_decode_error}")
 
     all_img_embeds = torch.cat(img_embed_list, dim=0)  # (N, D)
     all_text_embeds = torch.cat(text_embed_list, dim=0)  # (N, K, D)
@@ -305,7 +320,7 @@ def evaluate_all_scoring_heads(
     all_results = {}
 
     for model_name, expr_level, hypothesis in scoring_models:
-        print(f"\n" + "="*70)
+        print("\n" + "="*70)
         print(f"Evaluating Model: {model_name:20s} | Expressiveness: {expr_level:10s} | Use Bias: {use_bias}")
         print(f"Hypothesis       : {hypothesis}")
         print("="*70)

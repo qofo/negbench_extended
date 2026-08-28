@@ -163,7 +163,7 @@ def evaluate_word_swap_linear_probe(
     mean_acc = float(np.mean(fold_accs))
     std_acc = float(np.std(fold_accs))
 
-    print(f"\n📊 Word-Swap Linear Probe Results:")
+    print("\n📊 Word-Swap Linear Probe Results:")
     print(f"   - Linear Probe Accuracy:    {mean_acc:.2f}% ± {std_acc:.2f}%")
     print(f"   - Pairwise Cosine Similarity: {mean_cos_sim:.4f} ± {std_cos_sim:.4f}")
     print(f"   - Pairwise Cosine Distance:   {1.0 - mean_cos_sim:.4f}")

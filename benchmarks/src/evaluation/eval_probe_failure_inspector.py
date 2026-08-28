@@ -38,7 +38,7 @@ import matplotlib.pyplot as plt
 import open_clip
 
 # Reuse existing verified infrastructure
-from benchmarks.src.analysis.config import get_layer_features as _get_feats, set_seed
+from benchmarks.src.analysis.config import get_layer_features as _get_feats, set_seed, coerce_bool_column
 from benchmarks.src.analysis.feature_cache import build_provenance, load_object_restriction
 from benchmarks.src.analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
 from benchmarks.src.analysis.beaf.vision_mechanisms import extract_vision_features_unified
@@ -320,10 +320,7 @@ def run_text_probing_and_inspect_failures(
     print("=" * 65)
 
     df = pd.read_csv(csv_path)
-    if df["object_in_image"].dtype == object:
-        df["object_in_image"] = df["object_in_image"].apply(lambda x: str(x).strip().lower() == "true")
-    else:
-        df["object_in_image"] = df["object_in_image"].astype(bool)
+    coerce_bool_column(df, "object_in_image")
 
     df_unique = df[df["object_in_image"] == True].drop_duplicates(
         subset=["positive_caption", "negative_caption"]

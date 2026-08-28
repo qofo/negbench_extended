@@ -39,6 +39,7 @@ from typing import Dict, Any, List, Tuple
 
 import numpy as np
 import pandas as pd
+import torch
 from scipy import stats
 import matplotlib
 matplotlib.use("Agg")
@@ -51,13 +52,15 @@ try:
     from benchmarks.src.analysis.feature_cache import (
         cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
     )
-    from benchmarks.src.analysis.config import set_seed
+    from benchmarks.src.analysis.config import set_seed, coerce_bool_column
+    from benchmarks.src.analysis.paths import resolve_image_path as resolve_path
 except ImportError:
     from analysis.beaf.vision_mechanisms import extract_vision_features_unified
     from analysis.feature_cache import (
         cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
     )
-    from analysis.config import set_seed
+    from analysis.config import set_seed, coerce_bool_column
+    from analysis.paths import resolve_image_path as resolve_path
 
 
 # Physical interaction / coupled categories identified in E1 Placebo
@@ -257,7 +260,7 @@ def render_final_visualizations(
         color="#8e44ad",
         linestyle="-.",
         linewidth=1.8,
-        label=f"All 33 Mean γ = {summary['macro_gamma_mean_all']:+.5f}",
+        label=f"All {summary['n_concepts_evaluated']} Mean γ = {summary['macro_gamma_mean_all']:+.5f}",
     )
     ax.axvline(
         summary["macro_gamma_mean_clean"],
@@ -293,9 +296,9 @@ def render_final_visualizations(
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
     subsets = [
-        ("All 33 Concepts", summary["macro_gamma_mean_all"], summary["t_ci_lower_all"], summary["t_ci_upper_all"], summary["wilcoxon_p_all"]),
-        ("Excl. 'person' (32)", summary["macro_gamma_mean_excl_person"], summary["t_ci_lower_excl_person"], summary["t_ci_upper_excl_person"], summary["wilcoxon_p_excl_person"]),
-        ("Clean Subset (26)", summary["macro_gamma_mean_clean"], summary["t_ci_lower_clean"], summary["t_ci_upper_clean"], summary["wilcoxon_p_clean"]),
+        (f"All {summary['n_concepts_evaluated']} Concepts", summary["macro_gamma_mean_all"], summary["t_ci_lower_all"], summary["t_ci_upper_all"], summary["wilcoxon_p_all"]),
+        (f"Excl. 'person' ({summary['n_concepts_excl_person']})", summary["macro_gamma_mean_excl_person"], summary["t_ci_lower_excl_person"], summary["t_ci_upper_excl_person"], summary["wilcoxon_p_excl_person"]),
+        (f"Clean Subset ({summary['n_concepts_clean']})", summary["macro_gamma_mean_clean"], summary["t_ci_lower_clean"], summary["t_ci_upper_clean"], summary["wilcoxon_p_clean"]),
     ]
 
     labels = [s[0] for s in subsets]
@@ -395,11 +398,7 @@ def main():
 
     # 1. Load CSV
     df = pd.read_csv(args.csv_path)
-    if "object_in_image" in df.columns:
-        if df["object_in_image"].dtype == object:
-            df["object_in_image"] = df["object_in_image"].apply(lambda x: str(x).strip().lower() == "true")
-        else:
-            df["object_in_image"] = df["object_in_image"].astype(bool)
+    coerce_bool_column(df, "object_in_image")
 
     all_objects = sorted(df["object_name"].unique().tolist())
     target_objects = [o for o in all_objects if "," not in str(o)]
@@ -416,14 +415,6 @@ def main():
     model, _, preprocess = open_clip.create_model_and_transforms(args.model, pretrained=args.pretrained)
     tokenizer = open_clip.get_tokenizer(args.model)
     model = model.to(device).eval()
-
-    def resolve_path(p: str, root: str) -> str:
-        if os.path.isabs(p):
-            return p
-        full = os.path.join(root, p)
-        if os.path.exists(full):
-            return full
-        return p
 
     # 3. Extract and cache features per concept
     print("\n  Extracting features and computing vectors u_X and v_X per concept...")
@@ -605,6 +596,7 @@ def main():
         "pair_gamma_gt_zero_rate_all": pair_rate_all,
         "concept_gamma_gt_zero_rate_all": c_rate_all,
         # Excluding person
+        "n_concepts_excl_person": len(df_c_no_person),
         "macro_gamma_mean_excl_person": m_no_p,
         "concept_level_se_excl_person": se_no_p,
         "t_ci_lower_excl_person": t_l_no_p,
@@ -648,7 +640,7 @@ def main():
     print("\n" + "═" * 72)
     print("  E2-FINAL: RESOLUTION REPORT & FINAL SANITY CHECK")
     print("═" * 72)
-    print(f"  [0] Final Insurance Check: Δ > 0 ⟺ γ > max(|α|, |β|)")
+    print("  [0] Final Insurance Check: Δ > 0 ⟺ γ > max(|α|, |β|)")
     print(f"      - Bitwise Identity Match Rate               : {summary['algebraic_identity_match_rate_pct']:.2f}% ({'✅ 100% PERFECT' if identity_verified else '❌ MISMATCH'})")
     print(f"      - Max Numerical Discrepancy                 : {summary['max_delta_formula_discrepancy']:.2e}")
     print(f"      - Exact 2x2 Joint Accuracy (Δ > 0)          : {summary['exact_joint_acc_empirical_pct']:.4f}%")
@@ -656,13 +648,20 @@ def main():
     print(f"      Matched Signal vs Mismatch (p < 0.05)       : {summary['n_concepts_mismatch_sig_lt_05']}/{len(df_concepts_out)} ({summary['pct_concepts_mismatch_sig_lt_05']:.1f}%)")
     print(f"  [2] Corrected Concept-Level 95% CI (Student's t): [{summary['t_ci_lower_all']:+.5f}, {summary['t_ci_upper_all']:+.5f}]")
     print(f"      Hierarchical Concept Bootstrap 95% CI       : [{summary['hierarchical_bootstrap_95ci_lower_all']:+.5f}, {summary['hierarchical_bootstrap_95ci_upper_all']:+.5f}]")
-    print(f"  [3] Rank-1 Bilinear Upper Bounds                :")
+    print("  [3] Rank-1 Bilinear Upper Bounds                :")
     print(f"      - Exact Pair-Level Ceiling (γ_i > 0)        : {summary['pair_gamma_gt_zero_rate_all']:.1f}% (All) | {summary['pair_gamma_gt_zero_rate_clean']:.1f}% (Clean)")
-    print(f"      - Concept-Level Mean Ceiling (γ_c > 0)      : {summary['concept_gamma_gt_zero_rate_all']:.1f}% (30/33)")
-    print(f"  [4] Person & Confounded Sensitivity             :")
-    print(f"      - All 33 Concepts                           : γ = {summary['macro_gamma_mean_all']:+.5f} (p = {summary['wilcoxon_p_all']:.2e})")
-    print(f"      - Excl. 'person' (32 Concepts)              : γ = {summary['macro_gamma_mean_excl_person']:+.5f} (p = {summary['wilcoxon_p_excl_person']:.2e})")
-    print(f"      - Clean Isolated Subset (26 Concepts)       : γ = {summary['macro_gamma_mean_clean']:+.5f} (p = {summary['wilcoxon_p_clean']:.2e})")
+    n_all = summary["n_concepts_evaluated"]
+    n_no_p = summary["n_concepts_excl_person"]
+    n_clean = summary["n_concepts_clean"]
+    n_pos = int(round(summary["concept_gamma_gt_zero_rate_all"] / 100.0 * n_all))
+    print(f"      - Concept-Level Mean Ceiling (γ_c > 0)      : {summary['concept_gamma_gt_zero_rate_all']:.1f}% ({n_pos}/{n_all})")
+    print("  [4] Person & Confounded Sensitivity             :")
+    for label, mean_key, p_key in [
+        (f"All {n_all} Concepts", "macro_gamma_mean_all", "wilcoxon_p_all"),
+        (f"Excl. 'person' ({n_no_p} Concepts)", "macro_gamma_mean_excl_person", "wilcoxon_p_excl_person"),
+        (f"Clean Isolated Subset ({n_clean} Concepts)", "macro_gamma_mean_clean", "wilcoxon_p_clean"),
+    ]:
+        print(f"      - {label:<41s}: γ = {summary[mean_key]:+.5f} (p = {summary[p_key]:.2e})")
     print("═" * 72)
     print(f"  Results saved in: {args.output_dir}\n")
 

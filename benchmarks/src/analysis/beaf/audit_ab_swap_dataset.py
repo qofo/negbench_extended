@@ -41,7 +41,7 @@ def audit_ab_swap_dataset(
 
     df['base_id'] = df['image_path'].apply(get_base_id)
     unique_base_scenes = df['base_id'].nunique()
-    print(f"[Audit 1: Scene Diversity]")
+    print("[Audit 1: Scene Diversity]")
     print(f"  - Unique Base Scenes: {unique_base_scenes}")
     print(f"  - Avg Pairs per Scene: {len(df) // 2 / unique_base_scenes:.1f}")
 
@@ -73,7 +73,7 @@ def audit_ab_swap_dataset(
             true_png_false_jpg += 1
 
     total_pairs = len(df) // 2
-    print(f"\n[Audit 2: File Format & Extension Skew]")
+    print("\n[Audit 2: File Format & Extension Skew]")
     print(f"  - TRUE rows extensions  : {true_exts}")
     print(f"  - FALSE rows extensions : {false_exts}")
     print(f"  - Same-Extension Pairs  : {same_ext_count}/{total_pairs} ({same_ext_count/total_pairs*100:.1f}%)")
@@ -91,7 +91,7 @@ def audit_ab_swap_dataset(
     max_true_freq = true_imgs.value_counts().max()
     max_false_freq = false_imgs.value_counts().max()
 
-    print(f"\n[Audit 3: Image Reuse & Hub Image Symmetry]")
+    print("\n[Audit 3: Image Reuse & Hub Image Symmetry]")
     print(f"  - Unique Images in TRUE rows  : {unique_true_imgs}")
     print(f"  - Unique Images in FALSE rows : {unique_false_imgs}")
     print(f"  - Max Reuse Freq (TRUE)       : {max_true_freq} times")
@@ -102,7 +102,7 @@ def audit_ab_swap_dataset(
     df['B'] = df['object_name'].apply(lambda x: str(x).split(',')[1].strip())
     a_less_b = np.mean(df['A'] < df['B']) * 100
 
-    print(f"\n[Audit 4: Text Ordering & Caption Bias]")
+    print("\n[Audit 4: Text Ordering & Caption Bias]")
     print(f"  - Alphabetical Order (A < B) ratio: {a_less_b:.1f}%")
 
     results = {

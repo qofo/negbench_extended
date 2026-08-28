@@ -168,7 +168,7 @@ def plot_and_export_results(df_res: pd.DataFrame, output_dir: str) -> Tuple[str,
     plt.savefig(png_path, dpi=300)
     plt.close()
 
-    print(f"\n[Saved Outputs]")
+    print("\n[Saved Outputs]")
     print(f"  CSV : {csv_path}")
     print(f"  JSON: {json_path}")
     print(f"  PNG : {png_path}\n")

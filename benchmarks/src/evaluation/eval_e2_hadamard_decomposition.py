@@ -51,13 +51,15 @@ try:
     from benchmarks.src.analysis.feature_cache import (
         cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
     )
-    from benchmarks.src.analysis.config import set_seed
+    from benchmarks.src.analysis.config import set_seed, coerce_bool_column
+    from benchmarks.src.analysis.paths import resolve_image_path as resolve_path
 except ImportError:
     from analysis.beaf.vision_mechanisms import extract_vision_features_unified
     from analysis.feature_cache import (
         cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
     )
-    from analysis.config import set_seed
+    from analysis.config import set_seed, coerce_bool_column
+    from analysis.paths import resolve_image_path as resolve_path
 
 
 def encode_images_unified(
@@ -369,7 +371,7 @@ def render_e2_visualizations(
     valid_lambdas = lambda_stars[df_concepts["gamma_gt_beta"]]
     if len(valid_lambdas) > 0:
         ax2.hist(valid_lambdas, bins=20, color="#16a085", edgecolor="black", alpha=0.75)
-        ax2.axvline(np.median(valid_lambdas), color="#e74c3c", linestyle="-", linewidth=2.0, label=f"Median $\lambda^* = {np.median(valid_lambdas):.1f}\\times$")
+        ax2.axvline(np.median(valid_lambdas), color="#e74c3c", linestyle="-", linewidth=2.0, label=rf"Median $\lambda^* = {np.median(valid_lambdas):.1f}\times$")
         ax2.set_xlabel(r"Required Vision Amplification $\lambda^* = |\alpha| / \gamma$", fontsize=11, fontweight="bold")
         ax2.set_ylabel("Number of Concepts", fontsize=11, fontweight="bold")
         ax2.set_title(f"Vision Amplification Required (Feasible Concepts: {len(valid_lambdas)}/{len(df_concepts)})", fontsize=12, fontweight="bold")
@@ -447,11 +449,7 @@ def main():
     # 1. Load CSV
     print("  [1/5] Loading paired counterfactual dataset...")
     df = pd.read_csv(args.csv_path)
-    if "object_in_image" in df.columns:
-        if df["object_in_image"].dtype == object:
-            df["object_in_image"] = df["object_in_image"].apply(lambda x: str(x).strip().lower() == "true")
-        else:
-            df["object_in_image"] = df["object_in_image"].astype(bool)
+    coerce_bool_column(df, "object_in_image")
 
     all_objects = sorted(df["object_name"].unique().tolist())
     target_objects = [o for o in all_objects if "," not in str(o)]
@@ -468,14 +466,6 @@ def main():
     model, _, preprocess = open_clip.create_model_and_transforms(args.model, pretrained=args.pretrained)
     tokenizer = open_clip.get_tokenizer(args.model)
     model = model.to(device).eval()
-
-    def resolve_path(p: str, root: str) -> str:
-        if os.path.isabs(p):
-            return p
-        full = os.path.join(root, p)
-        if os.path.exists(full):
-            return full
-        return p
 
     # 3. Extract Global Image Mean for Zero-Alpha Intervention
     print("\n  [3/5] Extracting global image embeddings and computing global image mean...")
@@ -660,6 +650,13 @@ def main():
 
         print(f"  [{obj:20s}] N={n_concept_pairs:4d} | |α|={mean_abs_alpha:.4f} | |β|={mean_abs_beta:.4f} | γ={mean_gamma:.4f} | "
               f"γ/max={gamma_over_max:.3f} | Acc={np.mean(hadamard['joint_correct'])*100:4.1f}% -> Proj={np.mean(hadamard_proj['joint_correct'])*100:4.1f}%")
+
+    if not per_concept_records:
+        raise SystemExit(
+            f"No concept met the evaluation criteria: 0 of {len(target_objects)} concepts had "
+            f"at least --min_pairs={args.min_pairs} counterfactual pairs whose images both loaded. "
+            f"Check --image_root ({args.image_root!r}), --csv_path, and --restrict_objects."
+        )
 
     df_concepts = pd.DataFrame(per_concept_records).sort_values(by="abs_alpha_mean", ascending=False).reset_index(drop=True)
     df_pairs_out = pd.DataFrame(per_pair_records)

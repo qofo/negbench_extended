@@ -44,6 +44,8 @@ from PIL import Image
 
 import open_clip
 
+from benchmarks.src.analysis.config import coerce_bool_column
+
 from benchmarks.src.evaluation.eval_layerwise_linear_probe import (
     extract_layerwise_feature_dict,
 )
@@ -455,13 +457,7 @@ def run_unary_mechanistic_analysis(
 
     # Load dataset
     df = pd.read_csv(csv_path)
-    if "object_in_image" in df.columns:
-        if df["object_in_image"].dtype == object:
-            df["object_in_image"] = df["object_in_image"].apply(
-                lambda x: str(x).strip().lower() == "true"
-            )
-        else:
-            df["object_in_image"] = df["object_in_image"].astype(bool)
+    coerce_bool_column(df, "object_in_image")
 
     # Filter single-object unary pairs
     # Group by object_name and pair consecutive True/False rows
@@ -505,9 +501,9 @@ def run_unary_mechanistic_analysis(
         if n_pairs < min_pairs_per_obj:
             continue
 
-        print(f"\n──────────────────────────────────────────────────────────")
+        print("\n──────────────────────────────────────────────────────────")
         print(f"  Analyzing Object: [{obj}] (N = {n_pairs} counterfactual pairs)")
-        print(f"──────────────────────────────────────────────────────────")
+        print("──────────────────────────────────────────────────────────")
 
         img_paths_pos = df_true["image_path"].tolist()[:n_pairs]
         img_paths_neg = df_false["image_path"].tolist()[:n_pairs]

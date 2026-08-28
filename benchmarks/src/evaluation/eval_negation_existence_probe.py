@@ -48,6 +48,8 @@ import matplotlib.pyplot as plt
 
 import open_clip
 
+from benchmarks.src.analysis.config import coerce_bool_column
+
 from benchmarks.src.evaluation.eval_layerwise_linear_probe import (
     extract_layerwise_feature_dict,
 )
@@ -534,12 +536,7 @@ def main():
 
     # ── Load Data ──
     df = pd.read_csv(args.csv_path)
-    if df["object_in_image"].dtype == object:
-        df["object_in_image"] = df["object_in_image"].apply(
-            lambda x: str(x).strip().lower() == "true"
-        )
-    else:
-        df["object_in_image"] = df["object_in_image"].astype(bool)
+    coerce_bool_column(df, "object_in_image")
 
     # Unique caption pairs (deduplicated)
     df_unique = (

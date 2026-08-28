@@ -40,6 +40,25 @@ from analysis.beaf.probe_factory import (
 )
 
 
+def _group_kfold(groups: np.ndarray, max_splits: int = 5) -> GroupKFold:
+    """
+    Build a GroupKFold sized to the number of distinct groups.
+
+    GroupKFold needs at least two groups; `min(5, n_groups)` silently becomes
+    n_splits=1 for a single-group slice (one object, or --restrict_objects narrowed
+    to one concept) and sklearn then raises an error that says nothing about groups.
+    """
+    n_groups = int(len(np.unique(groups)))
+    if n_groups < 2:
+        raise ValueError(
+            f"GroupKFold needs at least 2 distinct groups, got {n_groups}. "
+            f"The slice being probed covers a single group, so there is no held-out "
+            f"group to generalize to; widen the concept/pair selection or use a "
+            f"stratified split if within-group accuracy is what is wanted."
+        )
+    return GroupKFold(n_splits=min(max_splits, n_groups))
+
+
 def extract_vision_features_unified(
     model: nn.Module,
     preprocess: Any,
@@ -71,17 +90,27 @@ def extract_vision_features_unified(
     resblocks = transformer.resblocks if transformer is not None else []
     num_layers = 1 + len(resblocks)
 
+    # Residual-stream width vs. projected embedding width. For ViT-B/32 these are
+    # 768 and 512; they are only equal when the tower has no projection.
+    if isinstance(proj, torch.Tensor):
+        transformer_width, embed_width = int(proj.shape[0]), int(proj.shape[1])
+    elif proj is not None and hasattr(proj, "weight"):
+        embed_width, transformer_width = (int(d) for d in proj.weight.shape[:2])
+    else:
+        transformer_width = embed_width = 512
+
     layer_batches = [[] for _ in range(num_layers)]
     pre_proj_batches = []
     final_l2_batches = []
     loaded_flags = []
+    decode_failures = []
 
     # Check how many images exist on disk before processing
     missing_paths = [p for p in image_paths if not os.path.exists(p)]
     if len(missing_paths) > 0:
         print(f"[CRITICAL ERROR] {len(missing_paths)}/{len(image_paths)} image files DO NOT EXIST on disk!")
         print(f"Example missing path: '{missing_paths[0]}'")
-        print(f"Please check --image_root path or CSV image_path values!")
+        print("Please check --image_root path or CSV image_path values!")
     else:
         print(f"All {len(image_paths)} image files found successfully on disk.")
 
@@ -101,13 +130,18 @@ def extract_vision_features_unified(
                 loaded_flags.append(True)
             except Exception as ex:
                 loaded_flags.append(False)
+                decode_failures.append((p, repr(ex)))
 
         if len(tensors) == 0:
-            dummy_dim = proj.shape[1] if proj is not None else 512
+            # Whole batch unreadable: emit zero rows so the arrays stay aligned with
+            # image_paths (callers filter on loaded_flags). The residual-stream layers
+            # and pre_proj carry the transformer width, only final_l2norm carries the
+            # projected embed dim -- filling all of them at embed_dim made the later
+            # np.concatenate fail on a width mismatch as soon as one batch was missing.
             for l_idx in range(num_layers):
-                layer_batches[l_idx].append(np.zeros((len(batch_paths), dummy_dim)))
-            pre_proj_batches.append(np.zeros((len(batch_paths), dummy_dim)))
-            final_l2_batches.append(np.zeros((len(batch_paths), dummy_dim)))
+                layer_batches[l_idx].append(np.zeros((len(batch_paths), transformer_width)))
+            pre_proj_batches.append(np.zeros((len(batch_paths), transformer_width)))
+            final_l2_batches.append(np.zeros((len(batch_paths), embed_width)))
             continue
 
         stacked = torch.stack(tensors, dim=0).to(device)
@@ -189,6 +223,10 @@ def extract_vision_features_unified(
 
             pre_proj_batches.append(pre_arr)
             final_l2_batches.append(post_arr)
+
+    if decode_failures:
+        print(f"[WARNING] {len(decode_failures)}/{len(image_paths)} images existed but failed to decode "
+              f"and are flagged unloaded. First: {decode_failures[0][0]} ({decode_failures[0][1]})")
 
     layer_dict = {}
     for l_idx, feats in enumerate(layer_batches):
@@ -416,7 +454,7 @@ def compute_vision_linear_probe(
     if pair_ids is not None and len(pair_ids) == n_orig:
         # ✅ Correct: same pair_id guarantees orig and cf are in the same fold
         groups = np.concatenate([pair_ids, pair_ids])
-        gkf = GroupKFold(n_splits=min(5, len(np.unique(groups))))
+        gkf = _group_kfold(groups)
         cv_splits = list(gkf.split(X=np.zeros(len(y)), y=y, groups=groups))
         print(f"\n  ✅ [Linear Probe - GroupKFold by pair_id] {len(np.unique(groups))} unique pairs, "
               f"no within-pair data leakage.")
@@ -424,7 +462,7 @@ def compute_vision_linear_probe(
         # ⚠️ Unseen-object generalization split (object_name level)
         # Warning: orig/cf may end up in different folds if object has many pairs
         groups = np.concatenate([object_names, object_names])
-        gkf = GroupKFold(n_splits=min(5, len(np.unique(groups))))
+        gkf = _group_kfold(groups)
         cv_splits = list(gkf.split(X=np.zeros(len(y)), y=y, groups=groups))
         print(f"\n  ⚠️  [Linear Probe - GroupKFold by object_name] {len(np.unique(groups))} unique objects. "
               f"Use pair_ids for stricter leakage control.")
@@ -621,8 +659,6 @@ def compute_vision_non_linear_probe(
     Otherwise, probes on Visual Edit Difference Vectors (Real Shift vs Norm-Matched Random Noise).
     """
     n_orig = len(vis_orig["pre_proj"])
-    rng = np.random.default_rng(seed=seed)
-    rand_idx = (np.arange(n_orig) + rng.integers(1, n_orig, size=n_orig)) % n_orig
 
     stages = ["Pre-Projection", "+Final L2Norm"]
 
@@ -652,7 +688,7 @@ def compute_vision_non_linear_probe(
             y_data = np.array([1] * n_orig + [0] * n_orig)
             if object_names is not None and len(object_names) == n_orig:
                 groups = np.concatenate([object_names, object_names])
-                gkf = GroupKFold(n_splits=min(5, len(np.unique(groups))))
+                gkf = _group_kfold(groups)
                 cv_splits = list(gkf.split(X_data, y_data, groups=groups))
                 print(f"     🔍 [GroupKFold Enabled] Probing raw single images grouped by {len(np.unique(groups))} unique object_names.")
             else:
@@ -675,8 +711,13 @@ def compute_vision_non_linear_probe(
             y_data = np.array([1] * n_orig + [0] * n_orig)
 
             if object_names is not None and len(object_names) == n_orig:
-                groups = np.concatenate([object_names, object_names[rand_idx]])
-                gkf = GroupKFold(n_splits=min(5, len(np.unique(groups))))
+                # The control half is built from norm-matched random directions
+                # (diff_ctrl above), not from permuted pairs, so its group label is
+                # the object the row was derived from. Permuting the labels here
+                # (a leftover from a shuffled-pair control) made the groups
+                # disagree with the rows they label.
+                groups = np.concatenate([object_names, object_names])
+                gkf = _group_kfold(groups)
                 cv_splits = list(gkf.split(X_data, y_data, groups=groups))
                 print(f"     🔍 [GroupKFold Enabled] Non-linear Probe grouped by {len(np.unique(groups))} unique object_names.")
             else:

@@ -236,7 +236,7 @@ def run_weight_transfer_verification(
     pred_matches = torch.sum(lr_preds == full_preds).item()
     match_pct = (pred_matches / len(targets)) * 100.0
 
-    print(f"\n📊 Weight Transfer Verification Summary:")
+    print("\n📊 Weight Transfer Verification Summary:")
     print(f"   - Max Absolute Score Difference:  {max_diff:.8e}")
     print(f"   - Mean Absolute Score Difference: {mean_diff:.8e}")
     print(f"   - Prediction Match Percentage:    {match_pct:.2f}% ({pred_matches}/{len(targets)})")

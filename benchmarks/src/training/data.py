@@ -954,7 +954,10 @@ def get_eval_dataset(args, input_filename, preprocess_fn, mode, img_key='positiv
         raise ValueError(f"Unsupported mode: {mode} for evaluation dataset.")
 
     num_samples = len(dataset)
-    sampler = DistributedSampler(dataset) if args.distributed and is_train else None
+    # Eval loaders are never training data, so there is no `is_train` here and no
+    # DistributedSampler: sharding an eval set pads the last shard with duplicates
+    # and skews the metric. Every rank evaluates the full set.
+    sampler = None
 
     collate_fn = image_captions_collate_fn if mode == 'retrieval' else None
     dataloader = DataLoader(

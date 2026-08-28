@@ -35,7 +35,14 @@ class VideoReader(ABC):
 
     @staticmethod
     def from_path(path: TYPE_PATH) -> "VideoReader":
-        return (AccImageVideoReader if torchvision.datasets.folder.is_image_file(path) else DecordVideoReader)(path)
+        # Upstream dispatched image paths to an AccImageVideoReader that was never
+        # vendored here. Fail loudly rather than raising NameError, and never fall
+        # through to the decord reader, which would decode a still as a 1-frame clip.
+        if torchvision.datasets.folder.is_image_file(path):
+            raise NotImplementedError(
+                f"No image-backed VideoReader is available in this fork; got a still image: {path!r}"
+            )
+        return DecordVideoReader(path)
 
 
 decord.bridge.set_bridge("torch")

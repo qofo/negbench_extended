@@ -18,7 +18,7 @@ import os
 import sys
 import json
 import argparse
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 import numpy as np
 import pandas as pd

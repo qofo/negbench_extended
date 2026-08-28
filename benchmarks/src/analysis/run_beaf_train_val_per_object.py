@@ -252,7 +252,11 @@ def main():
     print(f"  Loaded {n_pairs} verified pairs ({len(df_raw)} raw rows)")
 
     # 2. Load Model
-    model, preprocess, _ = open_clip.create_model_and_transforms(args.model, pretrained=args.pretrained)
+    # create_model_and_transforms returns (model, preprocess_train, preprocess_val).
+    # Feature extraction must take the *val* transform: the train one is
+    # RandomResizedCrop + augmentation, which makes embeddings non-deterministic
+    # and not comparable with the evaluation/ scripts.
+    model, _, preprocess = open_clip.create_model_and_transforms(args.model, pretrained=args.pretrained)
     model = model.to(device).eval()
 
     # 3. Extract Vision Features

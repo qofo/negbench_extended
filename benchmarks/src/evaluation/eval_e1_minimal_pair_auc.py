@@ -213,6 +213,12 @@ def compute_e1_minimal_pair_auc(
             "pct_delta_le_zero": float(np.mean(delta_s <= 0) * 100.0),
         })
 
+    if not concept_records:
+        raise SystemExit(
+            "No concept met the evaluation criteria: every concept fell below --min_pairs or had "
+            "no counterfactual pair whose images both loaded. Check --image_root and --csv_path."
+        )
+
     df_pairs_out = pd.DataFrame(pair_records)
     df_concepts_out = pd.DataFrame(concept_records).sort_values(by="cf_pairwise_auc", ascending=False).reset_index(drop=True)
 

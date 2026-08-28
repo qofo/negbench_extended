@@ -34,7 +34,10 @@ from training.distributed import is_master, init_distributed_device, broadcast_o
 from training.logger import setup_logging
 from training.params import parse_args
 from training.scheduler import cosine_lr, const_lr, const_lr_cooldown
-from training.train import train_one_epoch, train_one_epoch_mixed, evaluate
+from training.train import train_one_epoch, train_one_epoch_mixed
+# `evaluate` lives in evaluation/utils.py, not training/train.py; importing it from
+# the latter made this module -- the fine-tuning entrypoint -- fail at import time.
+from evaluation.utils import evaluate
 from training.file_utils import pt_load, check_exists, start_sync_process, remote_sync
 
 import torch.multiprocessing
