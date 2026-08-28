@@ -97,6 +97,7 @@ def extract_normalized_features(
 
 def compute_mismatch_null_test(
     u_dict: Dict[str, np.ndarray],
+    v_dict: Dict[str, np.ndarray],
     v_mean_dict: Dict[str, np.ndarray],
     target_concept: str,
     all_concepts: List[str],
@@ -110,10 +111,10 @@ def compute_mismatch_null_test(
     """
     rng = np.random.RandomState(seed)
     u_X = u_dict[target_concept]  # [N_X, D]
-    v_X_mean = v_mean_dict[target_concept]  # [D]
+    v_X = v_dict[target_concept]  # [N_X, D]
 
-    # Matched interaction gamma_match
-    gamma_match = float(np.mean(np.dot(u_X, v_X_mean)))
+    # Exact pair-level matched interaction gamma_match
+    gamma_match = float(np.mean(np.sum(u_X * v_X, axis=-1)))
 
     # Pool of distractor concepts Y != X
     distractors = [c for c in all_concepts if c != target_concept]
@@ -460,6 +461,7 @@ def main():
         # Mismatch Permutation
         g_match, p_mismatch_one, p_mismatch_two, z_sc, null_gammas = compute_mismatch_null_test(
             u_dict=u_dict,
+            v_dict=v_dict,
             v_mean_dict=v_mean_dict,
             target_concept=obj,
             all_concepts=valid_concepts,
@@ -497,10 +499,16 @@ def main():
 
     df_concepts_out = pd.DataFrame(concept_records).sort_values(by="gamma_mean", ascending=False).reset_index(drop=True)
 
+    # ── FINAL INSURANCE ALGEBRAIC IDENTITY CHECK ──
+    cond_empirical = (df_pairs_all["delta"] > 0)
+    cond_algebraic = (df_pairs_all["gamma"] > np.maximum(df_pairs_all["alpha"].abs(), df_pairs_all["beta"].abs()))
+    identity_match_rate = float((cond_empirical == cond_algebraic).mean() * 100.0)
+    max_delta_diff = float(np.max(np.abs(
+        df_pairs_all["delta"] - (2.0 * df_pairs_all["gamma"] - 2.0 * np.maximum(df_pairs_all["alpha"].abs(), df_pairs_all["beta"].abs()))
+    )))
+    identity_verified = bool(identity_match_rate == 100.0 and max_delta_diff < 1e-6)
+
     # 5. Sensitivity Analysis Subsets
-    # Set A: All concepts
-    # Set B: Excluding 'person'
-    # Set C: Clean subset (excluding all confounded)
     def compute_subset_stats(df_c: pd.DataFrame, df_p: pd.DataFrame):
         gammas = df_c["gamma_mean"].values
         n = len(gammas)
@@ -542,6 +550,13 @@ def main():
         "n_concepts_total_beaf": len(target_objects),
         "n_concepts_evaluated": len(df_concepts_out),
         "total_pairs_evaluated": len(df_pairs_all),
+        # Insurance algebraic check
+        "algebraic_identity_verified": identity_verified,
+        "algebraic_identity_match_rate_pct": identity_match_rate,
+        "max_delta_formula_discrepancy": max_delta_diff,
+        "exact_joint_acc_empirical_pct": float(cond_empirical.mean() * 100.0),
+        "exact_joint_acc_algebraic_pct": float(cond_algebraic.mean() * 100.0),
+        # All 33
         "macro_gamma_mean_all": m_all,
         "concept_level_se_all": se_all,
         "t_ci_lower_all": t_l_all,
@@ -590,15 +605,19 @@ def main():
         json.dump(summary, f, indent=2)
 
     print("\n" + "═" * 72)
-    print("  E2-FINAL: RESOLUTION REPORT SUMMARY")
+    print("  E2-FINAL: RESOLUTION REPORT & FINAL SANITY CHECK")
     print("═" * 72)
+    print(f"  [0] Final Insurance Check: Δ > 0 ⟺ γ > max(|α|, |β|)")
+    print(f"      - Bitwise Identity Match Rate               : {summary['algebraic_identity_match_rate_pct']:.2f}% ({'✅ 100% PERFECT' if identity_verified else '❌ MISMATCH'})")
+    print(f"      - Max Numerical Discrepancy                 : {summary['max_delta_formula_discrepancy']:.2e}")
+    print(f"      - Exact 2x2 Joint Accuracy (Δ > 0)          : {summary['exact_joint_acc_empirical_pct']:.4f}%")
     print(f"  [1] Object-Mismatch Permutation Null (u_X · v_Y) : Mean = {summary['mean_mismatch_null_gamma']:+.6f} (≈ 0.0)")
     print(f"      Matched Signal vs Mismatch (p < 0.05)       : {summary['n_concepts_mismatch_sig_lt_05']}/{len(df_concepts_out)} ({summary['pct_concepts_mismatch_sig_lt_05']:.1f}%)")
     print(f"  [2] Corrected Concept-Level 95% CI (Student's t): [{summary['t_ci_lower_all']:+.5f}, {summary['t_ci_upper_all']:+.5f}]")
     print(f"      Hierarchical Concept Bootstrap 95% CI       : [{summary['hierarchical_bootstrap_95ci_lower_all']:+.5f}, {summary['hierarchical_bootstrap_95ci_upper_all']:+.5f}]")
     print(f"  [3] Rank-1 Bilinear Upper Bounds                :")
     print(f"      - Exact Pair-Level Ceiling (γ_i > 0)        : {summary['pair_gamma_gt_zero_rate_all']:.1f}% (All) | {summary['pair_gamma_gt_zero_rate_clean']:.1f}% (Clean)")
-    print(f"      - Concept-Level Mean Ceiling (γ_c > 0)      : {summary['concept_gamma_gt_zero_rate_all']:.1f}% (31/33)")
+    print(f"      - Concept-Level Mean Ceiling (γ_c > 0)      : {summary['concept_gamma_gt_zero_rate_all']:.1f}% (30/33)")
     print(f"  [4] Person & Confounded Sensitivity             :")
     print(f"      - All 33 Concepts                           : γ = {summary['macro_gamma_mean_all']:+.5f} (p = {summary['wilcoxon_p_all']:.2e})")
     print(f"      - Excl. 'person' (32 Concepts)              : γ = {summary['macro_gamma_mean_excl_person']:+.5f} (p = {summary['wilcoxon_p_excl_person']:.2e})")
