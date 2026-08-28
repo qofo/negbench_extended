@@ -48,8 +48,16 @@ import open_clip
 
 try:
     from benchmarks.src.analysis.beaf.vision_mechanisms import extract_vision_features_unified
+    from benchmarks.src.analysis.feature_cache import (
+        cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
+    )
+    from benchmarks.src.analysis.config import set_seed
 except ImportError:
     from analysis.beaf.vision_mechanisms import extract_vision_features_unified
+    from analysis.feature_cache import (
+        cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
+    )
+    from analysis.config import set_seed
 
 
 def encode_images_unified(
@@ -131,43 +139,87 @@ def compute_hadamard_coordinates(
     }
 
 
-def compute_zero_alpha_intervention(
+def _unit(x: np.ndarray) -> np.ndarray:
+    return x / (np.linalg.norm(x, axis=-1, keepdims=True) + 1e-9)
+
+
+def compute_main_effect_ablation(
     v_pres: np.ndarray,
     v_abs: np.ndarray,
     t_pos: np.ndarray,
     t_neg: np.ndarray,
     mu_I_global: np.ndarray,
-) -> Dict[str, Any]:
+    mode: str = "both",
+    renormalize: bool = False,
+) -> Dict[str, np.ndarray]:
     """
-    Intervention: Orthogonal projection of text polarity vector against global image mean.
-        v = 1/2 * (t_pos - t_neg)
-        v_perp = v - (v . hat{mu}_I) * hat{mu}_I
-        t_pos_proj = mu_T + v_perp
-        t_neg_proj = mu_T - v_perp
+    Ablate the main effects of the 2x2 decomposition by orthogonal projection.
+
+    In the additive coordinates the three effects are exactly
+
+        mu_I = (v_pres + v_abs)/2      u = (v_pres - v_abs)/2
+        mu_T = (t_pos  + t_neg )/2     v = (t_pos  - t_neg )/2
+        alpha = mu_I . v      beta = u . mu_T      gamma = u . v
+
+    so alpha is removed by making the text polarity vector orthogonal to the
+    image mean, and beta by making the image difference vector orthogonal to the
+    text mean. Rebuilding the four embeddings around the *unchanged* means keeps
+    mu_I and mu_T fixed, so the two projections do not interfere and both main
+    effects vanish exactly.
+
+    Modes:
+        ``global_alpha``  Original behavior: project v against one global image
+                          mean shared by all pairs. Retained to reproduce the
+                          earlier run; it leaves a large alpha residual because
+                          the per-pair mu_I differs from the global mean.
+        ``perobj_alpha``  Project v against the pair's own mu_I. Removes alpha exactly.
+        ``both``          Also project u against the pair's own mu_T. Removes alpha
+                          and beta exactly, which is the intervention the success
+                          condition gamma > max(|alpha|,|beta|) reduces to gamma > 0.
+
+    Args:
+        v_pres, v_abs: L2-normalized image embeddings, shape (N, D).
+        t_pos, t_neg: L2-normalized text embeddings, shape (N, D).
+        mu_I_global: Global image mean, used only by ``global_alpha``.
+        mode: One of the three modes above.
+        renormalize: Re-normalize the rebuilt embeddings to unit length. Keeps the
+            score a true cosine, but reintroduces main effects, so the exact
+            ablation is only achieved with renormalize=False.
+
+    Returns:
+        dict: Hadamard coordinates of the ablated similarities.
     """
+    mu_I = 0.5 * (v_pres + v_abs)
+    u_img = 0.5 * (v_pres - v_abs)
     mu_T = 0.5 * (t_pos + t_neg)
-    v_text = 0.5 * (t_pos - t_neg)
+    v_txt = 0.5 * (t_pos - t_neg)
 
-    hat_mu_I = mu_I_global / (np.linalg.norm(mu_I_global) + 1e-9)
+    if mode == "global_alpha":
+        hat_mu_I = mu_I_global / (np.linalg.norm(mu_I_global) + 1e-9)
+    else:
+        hat_mu_I = _unit(mu_I)
 
-    # Project out mu_I component from v_text
-    proj_coeff = np.sum(v_text * hat_mu_I, axis=-1, keepdims=True)
-    v_perp = v_text - proj_coeff * hat_mu_I
+    v_perp = v_txt - np.sum(v_txt * hat_mu_I, axis=-1, keepdims=True) * hat_mu_I
 
-    t_pos_proj = mu_T + v_perp
-    t_neg_proj = mu_T - v_perp
+    if mode == "both":
+        hat_mu_T = _unit(mu_T)
+        u_perp = u_img - np.sum(u_img * hat_mu_T, axis=-1, keepdims=True) * hat_mu_T
+    else:
+        u_perp = u_img
 
-    # L2 normalize
-    t_pos_proj = t_pos_proj / np.linalg.norm(t_pos_proj, axis=-1, keepdims=True)
-    t_neg_proj = t_neg_proj / np.linalg.norm(t_neg_proj, axis=-1, keepdims=True)
+    v_pres_a, v_abs_a = mu_I + u_perp, mu_I - u_perp
+    t_pos_a, t_neg_a = mu_T + v_perp, mu_T - v_perp
 
-    S11_proj = np.sum(v_pres * t_pos_proj, axis=-1)
-    S12_proj = np.sum(v_abs * t_pos_proj, axis=-1)
-    S21_proj = np.sum(v_pres * t_neg_proj, axis=-1)
-    S22_proj = np.sum(v_abs * t_neg_proj, axis=-1)
+    if renormalize:
+        v_pres_a, v_abs_a = _unit(v_pres_a), _unit(v_abs_a)
+        t_pos_a, t_neg_a = _unit(t_pos_a), _unit(t_neg_a)
 
-    res_proj = compute_hadamard_coordinates(S11_proj, S12_proj, S21_proj, S22_proj)
-    return res_proj
+    S11 = np.sum(v_pres_a * t_pos_a, axis=-1)
+    S12 = np.sum(v_abs_a * t_pos_a, axis=-1)
+    S21 = np.sum(v_pres_a * t_neg_a, axis=-1)
+    S22 = np.sum(v_abs_a * t_neg_a, axis=-1)
+
+    return compute_hadamard_coordinates(S11, S12, S21, S22)
 
 
 def render_e2_visualizations(
@@ -369,10 +421,19 @@ def main():
     parser.add_argument("--pretrained", type=str, default="openai")
     parser.add_argument("--min_pairs", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--use_cache", action="store_true", default=False,
+                        help="Reuse on-disk encoder features keyed by (model, pretrained, items)")
+    parser.add_argument("--cache_dir", type=str, default=DEFAULT_CACHE_DIR)
+    parser.add_argument("--restrict_objects", type=str, default=None,
+                        help="Comma list, or path to txt/csv/json, limiting evaluation to an exact concept set")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
+    set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    cache_kw = dict(model=args.model, pretrained=args.pretrained,
+                    cache_dir=args.cache_dir, enabled=args.use_cache)
 
     print("╔══════════════════════════════════════════════════════════════════════╗")
     print("║  E2: Exact 2x2 Hadamard Coordinate Decomposition                     ║")
@@ -394,6 +455,12 @@ def main():
 
     all_objects = sorted(df["object_name"].unique().tolist())
     target_objects = [o for o in all_objects if "," not in str(o)]
+    restrict = load_object_restriction(args.restrict_objects)
+    if restrict is not None:
+        missing = sorted(set(restrict) - set(target_objects))
+        target_objects = [o for o in target_objects if o in set(restrict)]
+        print(f"  -> Restricted to {len(target_objects)} concepts"
+              + (f" ({len(missing)} requested but absent: {missing[:5]})" if missing else ""))
     print(f"  -> Total single-object concepts: {len(target_objects)}")
 
     # 2. Load Model & Tokenizer
@@ -414,7 +481,9 @@ def main():
     print("\n  [3/5] Extracting global image embeddings and computing global image mean...")
     all_pres_imgs = df[df["object_in_image"] == True]["image_path"].unique().tolist()
     all_pres_paths = [resolve_path(p, args.image_root) for p in all_pres_imgs[:500]]
-    v_sample_norm, v_sample_raw, flags_sample = encode_images_unified(model, preprocess, all_pres_paths, device, args.batch_size)
+    v_sample_norm, v_sample_raw, flags_sample = cached_encode(
+        lambda: encode_images_unified(model, preprocess, all_pres_paths, device, args.batch_size),
+        kind="image_global_mean@norm+raw+flags", items=all_pres_paths, **cache_kw)
     mu_I_global = v_sample_norm[flags_sample].mean(axis=0)
     mu_I_global = mu_I_global / np.linalg.norm(mu_I_global)
 
@@ -441,8 +510,12 @@ def main():
         t_neg_texts = df_true["negative_caption"].tolist()[:n_pairs]
 
         # Extract normalized & unnormalized embeddings
-        v_pres, v_pres_raw, mask_vp = encode_images_unified(model, preprocess, img_paths_pres, device, args.batch_size)
-        v_abs, v_abs_raw, mask_va = encode_images_unified(model, preprocess, img_paths_abs, device, args.batch_size)
+        v_pres, v_pres_raw, mask_vp = cached_encode(
+            lambda: encode_images_unified(model, preprocess, img_paths_pres, device, args.batch_size),
+            kind="image_pres@norm+raw+flags", items=img_paths_pres, **cache_kw)
+        v_abs, v_abs_raw, mask_va = cached_encode(
+            lambda: encode_images_unified(model, preprocess, img_paths_abs, device, args.batch_size),
+            kind="image_abs@norm+raw+flags", items=img_paths_abs, **cache_kw)
 
         valid_idx = np.where(mask_vp & mask_va)[0]
         if len(valid_idx) < args.min_pairs:
@@ -456,8 +529,12 @@ def main():
         t_pos_texts = [t_pos_texts[i] for i in valid_idx]
         t_neg_texts = [t_neg_texts[i] for i in valid_idx]
 
-        t_pos, t_pos_raw = encode_texts_unified(model, tokenizer, t_pos_texts, device, args.batch_size)
-        t_neg, t_neg_raw = encode_texts_unified(model, tokenizer, t_neg_texts, device, args.batch_size)
+        t_pos, t_pos_raw = cached_encode(
+            lambda: encode_texts_unified(model, tokenizer, t_pos_texts, device, args.batch_size),
+            kind="text_pos@norm+raw", items=t_pos_texts, **cache_kw)
+        t_neg, t_neg_raw = cached_encode(
+            lambda: encode_texts_unified(model, tokenizer, t_neg_texts, device, args.batch_size),
+            kind="text_neg@norm+raw", items=t_neg_texts, **cache_kw)
 
         # Compute 4 cosine similarities
         S11 = np.sum(v_pres * t_pos, axis=-1)  # pres, pos
@@ -476,7 +553,30 @@ def main():
         hadamard_raw = compute_hadamard_coordinates(S11_raw, S12_raw, S21_raw, S22_raw)
 
         # Zero-Alpha Intervention
-        hadamard_proj = compute_zero_alpha_intervention(v_pres, v_abs, t_pos, t_neg, mu_I_global)
+        # Main-effect ablation, three variants:
+        #   proj  = the original global-mean alpha projection (reproduces the earlier run)
+        #   ablA  = exact alpha ablation using each pair's own mu_I
+        #   ablAB = exact alpha AND beta ablation -> success condition collapses to gamma > 0
+        abl_kw = dict(mu_I_global=mu_I_global)
+        hadamard_proj = compute_main_effect_ablation(
+            v_pres, v_abs, t_pos, t_neg, mode="global_alpha", renormalize=True, **abl_kw)
+        hadamard_abl_a = compute_main_effect_ablation(
+            v_pres, v_abs, t_pos, t_neg, mode="perobj_alpha", **abl_kw)
+        hadamard_abl_ab = compute_main_effect_ablation(
+            v_pres, v_abs, t_pos, t_neg, mode="both", **abl_kw)
+
+        # The ablation is only meaningful if the effect it claims to remove is gone.
+        # Report nothing until that holds (this check is what the earlier run lacked).
+        # Tolerance is 1e-6: the embeddings are float32, so an exactly-orthogonal
+        # projection still leaves ~1e-9 of rounding. That is ~5 orders of magnitude
+        # below the gamma being measured (~5.5e-4), hence negligible; anything at
+        # 1e-6 or above would be a real residual main effect.
+        ABL_TOL = 1e-6
+        resid_a = float(np.max(hadamard_abl_a["abs_alpha"]))
+        resid_ab = float(max(np.max(hadamard_abl_ab["abs_alpha"]),
+                             np.max(hadamard_abl_ab["abs_beta"])))
+        assert resid_a < ABL_TOL, f"[{obj}] alpha ablation left residual |alpha|={resid_a:.3e}"
+        assert resid_ab < ABL_TOL, f"[{obj}] alpha+beta ablation left residual {resid_ab:.3e}"
 
         n_concept_pairs = len(S11)
         total_pairs_evaluated += n_concept_pairs
@@ -498,6 +598,11 @@ def main():
                 "delta_empirical": float(hadamard["delta_empirical"][i]),
                 "delta_analytical": float(hadamard["delta_analytical"][i]),
                 "joint_correct": int(hadamard["joint_correct"][i]),
+                # R6: same pair after exact alpha+beta ablation, so pooled (not just
+                # macro) post-ablation rates can be read straight off this file.
+                "gamma_abl_ab": float(hadamard_abl_ab["gamma"][i]),
+                "delta_abl_ab": float(hadamard_abl_ab["delta_empirical"][i]),
+                "joint_correct_abl_ab": int(hadamard_abl_ab["joint_correct"][i]),
             })
 
         # Concept Aggregate
@@ -527,6 +632,22 @@ def main():
             "joint_acc_proj": float(np.mean(hadamard_proj["joint_correct"]) * 100.0),
             "alpha_proj_mean": float(np.mean(hadamard_proj["abs_alpha"])),
             "gamma_proj_mean": float(np.mean(hadamard_proj["gamma"])),
+            # R6 5-1: exact alpha ablation (per-pair mu_I)
+            "joint_acc_abl_a": float(np.mean(hadamard_abl_a["joint_correct"]) * 100.0),
+            "alpha_abl_a_mean": float(np.mean(hadamard_abl_a["abs_alpha"])),
+            "beta_abl_a_mean": float(np.mean(hadamard_abl_a["abs_beta"])),
+            "gamma_abl_a_mean": float(np.mean(hadamard_abl_a["gamma"])),
+            # R6 5-2: exact alpha + beta ablation
+            "joint_acc_abl_ab": float(np.mean(hadamard_abl_ab["joint_correct"]) * 100.0),
+            "alpha_abl_ab_mean": float(np.mean(hadamard_abl_ab["abs_alpha"])),
+            "beta_abl_ab_mean": float(np.mean(hadamard_abl_ab["abs_beta"])),
+            "gamma_abl_ab_mean": float(np.mean(hadamard_abl_ab["gamma"])),
+            # R6 5-3: after exact ablation the success condition IS gamma > 0, so
+            # joint_acc_abl_ab must equal this rate by algebra. The substantive
+            # comparison is against the baseline rate below: it says whether removing
+            # the main effects preserved the interaction it was supposed to expose.
+            "pct_gamma_abl_ab_positive": float(np.mean(hadamard_abl_ab["gamma"] > 0) * 100.0),
+            "pct_gamma_baseline_positive": float(np.mean(hadamard["gamma"] > 0) * 100.0),
             "alpha_gt_gamma": bool(mean_abs_alpha > mean_gamma),
             "alpha_gt_beta": bool(mean_abs_alpha > mean_abs_beta),
             "gamma_gt_beta": bool(mean_gamma > mean_abs_beta),
@@ -566,6 +687,10 @@ def main():
 
     macro_joint_acc = float(df_concepts["joint_acc"].mean())
     macro_proj_acc = float(df_concepts["joint_acc_proj"].mean())
+    macro_abl_a_acc = float(df_concepts["joint_acc_abl_a"].mean())
+    macro_abl_ab_acc = float(df_concepts["joint_acc_abl_ab"].mean())
+    macro_pred_ab = float(df_concepts["pct_gamma_abl_ab_positive"].mean())
+    macro_gamma_pos_base = float(df_concepts["pct_gamma_baseline_positive"].mean())
 
     # Verdict
     if pct_alpha_gt_gamma >= 90.0 and pct_alpha_gt_beta >= 80.0 and identity_verified:
@@ -590,6 +715,30 @@ def main():
         "median_required_vision_amplification_lambda_star": median_required_lambda,
         "macro_baseline_2x2_joint_acc": macro_joint_acc,
         "macro_zero_alpha_proj_2x2_joint_acc": macro_proj_acc,
+        "macro_ablate_alpha_2x2_joint_acc": macro_abl_a_acc,
+        "macro_ablate_alpha_beta_2x2_joint_acc": macro_abl_ab_acc,
+        "macro_pct_gamma_positive_after_ablation": macro_pred_ab,
+        "macro_pct_gamma_positive_baseline": macro_gamma_pos_base,
+        "ablation_gamma_positivity_shift_pp": macro_pred_ab - macro_gamma_pos_base,
+        "ablation_prediction_error_pp": macro_abl_ab_acc - macro_pred_ab,
+        "ablation_prediction_error_note": (
+            "Zero by construction, not by luck: once |alpha| = |beta| = 0 the success "
+            "condition gamma > max(|alpha|,|beta|) IS gamma > 0, so this field only "
+            "confirms the ablation was exact. The predictive claim to check is "
+            "ablation_gamma_positivity_shift_pp, i.e. whether projecting out the main "
+            "effects left the interaction term itself intact."
+        ),
+        "ablation_residual_max_abs_alpha": float(df_concepts["alpha_abl_ab_mean"].abs().max()),
+        "ablation_residual_max_abs_beta": float(df_concepts["beta_abl_ab_mean"].abs().max()),
+        "pooled_pct_gamma_positive_baseline": float(np.mean(df_pairs_out["gamma"] > 0) * 100.0),
+        "pooled_ablate_alpha_beta_2x2_joint_acc": float(np.mean(df_pairs_out["joint_correct_abl_ab"]) * 100.0),
+        "ablation_note": (
+            "Ablation is per-pair, i.e. equivalent to a different W per pair; a deployed "
+            "retriever uses one shared W. Read these as the reachable point of removing "
+            "main effects near W=I, not as a physical ceiling."
+        ),
+        "provenance": build_provenance(args, n_concepts=len(df_concepts),
+                                       n_pairs=total_pairs_evaluated),
         "verdict": verdict,
         "top5_highest_affirmation_bias": df_concepts.head(5)[["object_name", "abs_alpha_mean", "abs_beta_mean", "gamma_mean"]].to_dict(orient="records"),
         "top5_highest_interaction_gamma": df_concepts.sort_values(by="gamma_mean", ascending=False).head(5)[["object_name", "gamma_mean", "abs_alpha_mean", "abs_beta_mean"]].to_dict(orient="records"),
@@ -617,7 +766,17 @@ def main():
     print(f"  Median γ / max(|α|, |β|)                           : {summary['median_gamma_over_max_alpha_beta']:.4f}")
     print(f"  Median Required Amplification λ*                   : {summary['median_required_vision_amplification_lambda_star']:.2f}×")
     print(f"  Baseline 2x2 Joint Accuracy                        : {summary['macro_baseline_2x2_joint_acc']:.2f}%")
-    print(f"  Zero-α Modality Gap Orthogonal Projection Accuracy : {summary['macro_zero_alpha_proj_2x2_joint_acc']:.2f}%  <-- [SOLUTION PREVIEW]")
+    print(f"  Global-mean α projection (prior run, partial)       : {summary['macro_zero_alpha_proj_2x2_joint_acc']:.2f}%")
+    print("─" * 70)
+    print(f"  [R6] Exact α ablation (per-pair μ_I)                : {summary['macro_ablate_alpha_2x2_joint_acc']:.2f}%")
+    print(f"  [R6] Exact α + β ablation                           : {summary['macro_ablate_alpha_beta_2x2_joint_acc']:.2f}%")
+    print(f"  [R6] P(γ > 0) baseline  → after ablation             : "
+          f"{summary['macro_pct_gamma_positive_baseline']:.2f}% → {summary['macro_pct_gamma_positive_after_ablation']:.2f}% "
+          f"({summary['ablation_gamma_positivity_shift_pp']:+.2f} pp)")
+    print(f"       pooled over pairs (concept-size weighted)      : "
+          f"{summary['pooled_pct_gamma_positive_baseline']:.2f}% → {summary['pooled_ablate_alpha_beta_2x2_joint_acc']:.2f}%")
+    print(f"       identity check (0.000 pp by construction)      : {summary['ablation_prediction_error_pp']:+.3f} pp")
+    print(f"       residual max|α| {summary['ablation_residual_max_abs_alpha']:.2e} | max|β| {summary['ablation_residual_max_abs_beta']:.2e}")
     print("═" * 70)
     print(f"  Verdict: {summary['verdict']}")
     print("═" * 70)
