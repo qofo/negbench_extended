@@ -38,7 +38,8 @@ import matplotlib.pyplot as plt
 import open_clip
 
 # Reuse existing verified infrastructure
-from benchmarks.src.analysis.config import get_layer_features as _get_feats
+from benchmarks.src.analysis.config import get_layer_features as _get_feats, set_seed
+from benchmarks.src.analysis.feature_cache import build_provenance, load_object_restriction
 from benchmarks.src.analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
 from benchmarks.src.analysis.beaf.vision_mechanisms import extract_vision_features_unified
 from benchmarks.src.evaluation.eval_layerwise_linear_probe import extract_layerwise_feature_dict
@@ -57,11 +58,18 @@ def run_vision_probing_and_inspect_failures(
     min_pairs: int = 20,
     batch_size: int = 64,
     seed: int = 42,
+    restrict_objects: List[str] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Executes exact GroupKFold linear probing on 1:1 counterfactual image pairs
     and extracts Out-of-Fold (OOF) misclassified images.
     Filters objects with fewer than min_pairs counterfactual pairs.
+
+    ``restrict_objects`` additionally pins the evaluated concepts to an explicit
+    list. A threshold alone cannot reproduce another experiment's concept set here,
+    because the vision and text sides read different CSVs and apply different
+    criteria (``min_pairs`` on image pairs vs ``min_samples`` per caption class),
+    so the two sides land on different objects for the same threshold.
     """
     print("\n" + "=" * 65)
     print("  [Vision Probing & Failure Inspection]")
@@ -71,6 +79,12 @@ def run_vision_probing_and_inspect_failures(
     print("=" * 65)
 
     df_raw, df_pairs, pair_metadata = load_and_verify_counterfactual_pairs(csv_path, image_root)
+    if restrict_objects is not None:
+        keep = set(restrict_objects)
+        missing = sorted(keep - set(df_pairs["object_name"].unique().tolist()))
+        df_pairs = df_pairs[df_pairs["object_name"].isin(keep)].reset_index(drop=True)
+        print(f"  Restricted to {df_pairs['object_name'].nunique()} concepts"
+              + (f" ({len(missing)} requested but absent: {missing[:5]})" if missing else ""))
     n_pairs = len(df_pairs)
     print(f"  Loaded and verified {n_pairs} counterfactual image pairs.")
 
@@ -294,6 +308,7 @@ def run_text_probing_and_inspect_failures(
     n_splits: int = 5,
     batch_size: int = 256,
     seed: int = 42,
+    restrict_objects: List[str] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Executes StratifiedKFold linear probing on diverse counterfactual caption pairs
@@ -335,6 +350,12 @@ def run_text_probing_and_inspect_failures(
         if len(obj_affirmed[obj]) >= min_samples_per_class and len(obj_negated[obj]) >= min_samples_per_class
     ])
     print(f"  Valid objects (>={min_samples_per_class}): {len(valid_objects)}")
+    if restrict_objects is not None:
+        keep = set(restrict_objects)
+        missing = sorted(keep - set(valid_objects))
+        valid_objects = [o for o in valid_objects if o in keep]
+        print(f"  Restricted to {len(valid_objects)} concepts"
+              + (f" ({len(missing)} requested but absent or below threshold: {missing[:5]})" if missing else ""))
 
     all_sents = []
     seen = set()
@@ -538,6 +559,7 @@ def generate_failure_analytics(
     df_vis_fail: pd.DataFrame,
     df_txt_fail: pd.DataFrame,
     output_dir: str,
+    provenance: Dict[str, Any] = None,
 ):
     """Generate joint breakdown tables and failure distribution plots."""
     print("\n" + "=" * 65)
@@ -612,7 +634,26 @@ def generate_failure_analytics(
         print(f"  Saved: {out_fig2}")
 
     # ── Full Summary JSON Report ──
+    # Each modality's own mean is taken over its own object set (they differ in size),
+    # so a table that puts the two side by side needs the common-set mean as well.
+    v_common = v_final.loc[common_objects] if common_objects else v_final.iloc[:0]
+    t_common = t_final.loc[common_objects] if common_objects else t_final.iloc[:0]
+    vis_n = df_vis_stats[df_vis_stats["layer_name"] == "+Final L2Norm"]["n_pairs"]
+    txt_n = df_txt_stats[df_txt_stats["layer_name"] == "Final (L2 Normed)"]["n_pairs"]
+
     summary_report = {
+        "concept_sets": {
+            "n_vision_objects": int(v_final.shape[0]),
+            "n_text_objects": int(t_final.shape[0]),
+            "n_common_objects": len(common_objects),
+            "median_pairs_per_vision_object": float(vis_n.median()) if len(vis_n) else None,
+            "median_samples_per_text_object": float(txt_n.median()) if len(txt_n) else None,
+            "common_objects": common_objects,
+        },
+        "harmonized_common_set": {
+            "vision_mean_val_accuracy_pct": float(v_common.mean()) if len(v_common) else None,
+            "text_mean_val_accuracy_pct": float(t_common.mean()) if len(t_common) else None,
+        },
         "vision_summary": {
             "total_failures": len(df_vis_fail),
             "mean_val_accuracy_pct": float(df_vis_stats[df_vis_stats["layer_name"] == "+Final L2Norm"]["val_acc_pct"].mean()),
@@ -626,7 +667,8 @@ def generate_failure_analytics(
             "false_affirmed_count": int(len(df_txt_fail[df_txt_fail["error_type"] == "False_Affirmed"])) if not df_txt_fail.empty else 0,
             "false_negated_count": int(len(df_txt_fail[df_txt_fail["error_type"] == "False_Negated"])) if not df_txt_fail.empty else 0,
             "worst_failed_objects": df_comp.sort_values(by="text_error_rate_pct", ascending=False).head(5)[["object_name", "text_val_acc_pct"]].to_dict(orient="records"),
-        }
+        },
+        "provenance": provenance,
     }
     report_json = os.path.join(output_dir, "probe_failure_comprehensive_report.json")
     with open(report_json, "w", encoding="utf-8") as f:
@@ -649,10 +691,16 @@ def main():
     parser.add_argument("--min_samples", type=int, default=20, help="Minimum samples per class for text probing (default: 20)")
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--restrict_objects", type=str, default=None,
+                        help="Comma list, or path to txt/csv/json, pinning both probes to an exact "
+                             "concept set (e.g. E2's 33-concept table, so probe accuracies and "
+                             "decomposition coefficients describe the same population)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
+    set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    restrict = load_object_restriction(args.restrict_objects)
 
     print("╔═══════════════════════════════════════════════════════════╗")
     print("║  Vision & Text Linear Probe Failure Inspector             ║")
@@ -671,17 +719,22 @@ def main():
     # 1. Vision Probing & Failures
     df_vis_stats, df_vis_fail = run_vision_probing_and_inspect_failures(
         model, preprocess, args.vision_csv, args.image_root, device, args.output_dir,
-        min_pairs=args.min_pairs, batch_size=args.batch_size, seed=args.seed
+        min_pairs=args.min_pairs, batch_size=args.batch_size, seed=args.seed,
+        restrict_objects=restrict,
     )
 
     # 2. Text Probing & Failures
     df_txt_stats, df_txt_fail = run_text_probing_and_inspect_failures(
         model, tokenizer, args.text_csv, device, args.output_dir,
-        min_samples_per_class=args.min_samples, batch_size=args.batch_size, seed=args.seed
+        min_samples_per_class=args.min_samples, batch_size=args.batch_size, seed=args.seed,
+        restrict_objects=restrict,
     )
 
     # 3. Failure Analytics & Plots
-    generate_failure_analytics(df_vis_stats, df_txt_stats, df_vis_fail, df_txt_fail, args.output_dir)
+    generate_failure_analytics(
+        df_vis_stats, df_txt_stats, df_vis_fail, df_txt_fail, args.output_dir,
+        provenance=build_provenance(args),
+    )
 
     print("\n" + "=" * 65)
     print("  Failure Inspection Complete!")
