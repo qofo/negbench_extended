@@ -35,9 +35,17 @@ import open_clip
 try:
     from benchmarks.src.analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
     from benchmarks.src.analysis.beaf.vision_mechanisms import extract_vision_features_unified
+    from benchmarks.src.analysis.feature_cache import (
+        cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
+    )
+    from benchmarks.src.analysis.config import set_seed
 except ImportError:
     from analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
     from analysis.beaf.vision_mechanisms import extract_vision_features_unified
+    from analysis.feature_cache import (
+        cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
+    )
+    from analysis.config import set_seed
 
 
 DEFAULT_TEMPLATES = [
@@ -341,10 +349,19 @@ def main():
     parser.add_argument("--min_pairs", type=int, default=20, help="Minimum counterfactual pairs per concept (default: 20)")
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--use_cache", action="store_true", default=False,
+                        help="Reuse on-disk encoder features keyed by (model, pretrained, items)")
+    parser.add_argument("--cache_dir", type=str, default=DEFAULT_CACHE_DIR)
+    parser.add_argument("--restrict_objects", type=str, default=None,
+                        help="Comma list, or path to txt/csv/json, limiting evaluation to an exact concept set "
+                             "(use to share E2's concept set verbatim)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
+    set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    cache_kw = dict(model=args.model, pretrained=args.pretrained,
+                    cache_dir=args.cache_dir, enabled=args.use_cache)
 
     print("╔══════════════════════════════════════════════════════════════════════╗")
     print("║  E1: Atomic Concept Detection AUC on BEAF Minimal Pairs              ║")
@@ -360,6 +377,13 @@ def main():
     # 1. Load Counterfactual Minimal Pairs
     print("  [1/4] Loading and verifying 1:1 counterfactual image pairs...")
     df_raw, df_pairs, _ = load_and_verify_counterfactual_pairs(args.csv_path, args.image_root)
+    restrict = load_object_restriction(args.restrict_objects)
+    if restrict is not None:
+        keep = set(restrict)
+        missing = sorted(keep - set(df_pairs["object_name"].unique().tolist()))
+        df_pairs = df_pairs[df_pairs["object_name"].isin(keep)].reset_index(drop=True)
+        print(f"  -> Restricted to {df_pairs['object_name'].nunique()} concepts"
+              + (f" ({len(missing)} requested but absent: {missing[:5]})" if missing else ""))
     n_pairs = len(df_pairs)
     unique_concepts = sorted(df_pairs["object_name"].unique().tolist())
     print(f"  -> Verified {n_pairs} pairs across {len(unique_concepts)} distinct object concepts.")
@@ -372,8 +396,14 @@ def main():
 
     # 3. Extract Features
     print("\n  [3/4] Extracting vision embeddings for present and absent images...")
-    feats_pres, flags_pres = extract_normalized_image_features(model, preprocess, df_pairs["orig_path"].tolist(), device, args.batch_size)
-    feats_abs, flags_abs = extract_normalized_image_features(model, preprocess, df_pairs["cf_path"].tolist(), device, args.batch_size)
+    paths_pres = df_pairs["orig_path"].tolist()
+    paths_abs = df_pairs["cf_path"].tolist()
+    feats_pres, flags_pres = cached_encode(
+        lambda: extract_normalized_image_features(model, preprocess, paths_pres, device, args.batch_size),
+        kind="image_pres@l2norm+flags", items=paths_pres, **cache_kw)
+    feats_abs, flags_abs = cached_encode(
+        lambda: extract_normalized_image_features(model, preprocess, paths_abs, device, args.batch_size),
+        kind="image_abs@l2norm+flags", items=paths_abs, **cache_kw)
 
     # Filter any missing image entries
     valid_mask = flags_pres & flags_abs
@@ -384,14 +414,24 @@ def main():
         print(f"  -> Filtered {np.sum(~valid_mask)} unreadable pairs. Active pairs: {len(df_pairs)}")
 
     print(f"  Extracting atomic text embeddings for {len(unique_concepts)} concepts...")
-    concept_text_feats = extract_normalized_text_features(
-        model=model,
-        tokenizer=tokenizer,
-        concepts=unique_concepts,
-        device=device,
-        prompt_template=args.prompt_template,
-        ensemble_prompts=args.ensemble_prompts,
-    )
+
+    def _encode_concept_prompts():
+        d = extract_normalized_text_features(
+            model=model,
+            tokenizer=tokenizer,
+            concepts=unique_concepts,
+            device=device,
+            prompt_template=args.prompt_template,
+            ensemble_prompts=args.ensemble_prompts,
+        )
+        return (np.stack([d[c] for c in unique_concepts]),)
+
+    # The prompt wording changes the embedding, so it belongs in the cache key.
+    (concept_matrix,) = cached_encode(
+        _encode_concept_prompts,
+        kind=f"text_concept@l2norm|{args.prompt_template}|ens={int(args.ensemble_prompts)}",
+        items=unique_concepts, **cache_kw)
+    concept_text_feats = {c: concept_matrix[i] for i, c in enumerate(unique_concepts)}
 
     # 4. Compute E1 Metrics
     print("\n  [4/4] Computing Pairwise Similarity, Margins (Δs), and Concept ROC-AUC...")
@@ -410,6 +450,10 @@ def main():
     pairs_csv = os.path.join(args.output_dir, "e1_per_pair_scores.csv")
     concepts_csv = os.path.join(args.output_dir, "e1_per_concept_auc.csv")
     report_json = os.path.join(args.output_dir, "e1_summary_report.json")
+
+    summary["provenance"] = build_provenance(
+        args, n_concepts=len(df_concepts_out), n_pairs=len(df_pairs_out),
+        prompt_template=args.prompt_template, ensemble_prompts=bool(args.ensemble_prompts))
 
     df_pairs_out.to_csv(pairs_csv, index=False)
     df_concepts_out.to_csv(concepts_csv, index=False)

@@ -65,9 +65,17 @@ import open_clip
 try:
     from benchmarks.src.analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
     from benchmarks.src.analysis.beaf.vision_mechanisms import extract_vision_features_unified
+    from benchmarks.src.analysis.feature_cache import (
+        cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
+    )
+    from benchmarks.src.analysis.config import set_seed
 except ImportError:
     from analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
     from analysis.beaf.vision_mechanisms import extract_vision_features_unified
+    from analysis.feature_cache import (
+        cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
+    )
+    from analysis.config import set_seed
 
 
 DEFAULT_TEMPLATES = [
@@ -479,10 +487,20 @@ def main():
                         help="Min pairs (with valid distractor) per concept (default: 10)")
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--use_cache", action="store_true", default=False,
+                        help="Reuse on-disk encoder features keyed by (model, pretrained, items)")
+    parser.add_argument("--cache_dir", type=str, default=DEFAULT_CACHE_DIR)
+    parser.add_argument("--restrict_objects", type=str, default=None,
+                        help="Comma list, or path to txt/csv/json, limiting the evaluated target concepts X. "
+                             "Distractors Y are still drawn from the full concept pool, so the placebo "
+                             "assignment is unchanged by this flag.")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
+    set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    cache_kw = dict(model=args.model, pretrained=args.pretrained,
+                    cache_dir=args.cache_dir, enabled=args.use_cache)
 
     print("=" * 68)
     print("  E1 Placebo Test: Unrelated-Object AUC")
@@ -533,13 +551,23 @@ def main():
     tokenizer = open_clip.get_tokenizer(args.model)
     model = model.to(device).eval()
 
+    # Text features cover every concept, including distractors outside any restriction.
     all_concepts = sorted(df_full["object_name"].unique().tolist())
     print(f"  Extracting text embeddings for {len(all_concepts)} concepts...")
-    concept_text_feats = extract_normalized_text_features(
-        model, tokenizer, all_concepts, device,
-        prompt_template=args.prompt_template,
-        ensemble_prompts=args.ensemble_prompts,
-    )
+
+    def _encode_concept_prompts():
+        d = extract_normalized_text_features(
+            model, tokenizer, all_concepts, device,
+            prompt_template=args.prompt_template,
+            ensemble_prompts=args.ensemble_prompts,
+        )
+        return (np.stack([d[c] for c in all_concepts]),)
+
+    (concept_matrix,) = cached_encode(
+        _encode_concept_prompts,
+        kind=f"text_concept@l2norm|{args.prompt_template}|ens={int(args.ensemble_prompts)}",
+        items=all_concepts, **cache_kw)
+    concept_text_feats = {c: concept_matrix[i] for i, c in enumerate(all_concepts)}
 
     def resolve_path(p: str, root: str) -> str:
         if os.path.isabs(p):
@@ -552,14 +580,30 @@ def main():
     pres_paths = [resolve_path(p, args.image_root) for p in df_pres_assigned["image_path"].tolist()]
     abs_paths = [resolve_path(p, args.image_root) for p in df_pres_assigned["cf_path"].tolist()]
 
-    feats_pres, flags_pres = extract_normalized_image_features(model, preprocess, pres_paths, device, args.batch_size)
-    feats_abs, flags_abs = extract_normalized_image_features(model, preprocess, abs_paths, device, args.batch_size)
+    feats_pres, flags_pres = cached_encode(
+        lambda: extract_normalized_image_features(model, preprocess, pres_paths, device, args.batch_size),
+        kind="image_pres@l2norm+flags", items=pres_paths, **cache_kw)
+    feats_abs, flags_abs = cached_encode(
+        lambda: extract_normalized_image_features(model, preprocess, abs_paths, device, args.batch_size),
+        kind="image_abs@l2norm+flags", items=abs_paths, **cache_kw)
 
     valid_mask = flags_pres & flags_abs
     df_pres_assigned = df_pres_assigned[valid_mask].reset_index(drop=True)
     feats_pres = feats_pres[valid_mask]
     feats_abs = feats_abs[valid_mask]
     print(f"  -> {int(np.sum(valid_mask))}/{len(valid_mask)} pairs successfully loaded")
+
+    # Restriction is applied here, after the distractors were drawn, so limiting the
+    # reported concepts never changes which Y each remaining pair was assigned.
+    restrict = load_object_restriction(args.restrict_objects)
+    if restrict is not None:
+        keep_mask = df_pres_assigned["object_name"].isin(set(restrict)).to_numpy()
+        missing = sorted(set(restrict) - set(df_pres_assigned["object_name"].unique().tolist()))
+        df_pres_assigned = df_pres_assigned[keep_mask].reset_index(drop=True)
+        feats_pres = feats_pres[keep_mask]
+        feats_abs = feats_abs[keep_mask]
+        print(f"  -> Restricted to {df_pres_assigned['object_name'].nunique()} target concepts"
+              + (f" ({len(missing)} requested but absent: {missing[:5]})" if missing else ""))
 
     # 5. Compute placebo AUC
     print(f"\n  [5/5] Computing AUC_X and AUC_Y (placebo)...")
@@ -574,6 +618,10 @@ def main():
 
     # Render and save
     render_placebo_visualizations(df_concepts_out, df_pairs_out, summary, args.output_dir)
+
+    summary["provenance"] = build_provenance(
+        args, n_concepts=len(df_concepts_out), n_pairs=len(df_pairs_out),
+        prompt_template=args.prompt_template, ensemble_prompts=bool(args.ensemble_prompts))
 
     df_pairs_out.to_csv(os.path.join(args.output_dir, "placebo_per_pair_scores.csv"), index=False)
     df_concepts_out.to_csv(os.path.join(args.output_dir, "placebo_per_concept_auc.csv"), index=False)
