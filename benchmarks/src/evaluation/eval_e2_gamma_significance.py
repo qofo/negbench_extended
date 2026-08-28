@@ -147,23 +147,22 @@ def render_significance_visualizations(
         else:
             point_colors.append("#7f8c8d")  # Indistinguishable from zero (Noise)
 
-    ax.errorbar(
-        means,
-        y_pos,
-        xerr=[xerr_left, xerr_right],
-        fmt="o",
-        color="#2c3e50",
-        ecolor=point_colors,
-        elinewidth=2.0,
-        capsize=3.5,
-        capthick=1.5,
-        markersize=5,
-        zorder=3,
-    )
-
-    # Scatter points with individual colors
-    for y, m, col in zip(y_pos, means, point_colors):
-        ax.scatter(m, y, color=col, s=40, zorder=4, edgecolor="black", linewidth=0.8)
+    for y, m, xl, xr, col in zip(y_pos, means, xerr_left, xerr_right, point_colors):
+        ax.errorbar(
+            m,
+            y,
+            xerr=[[xl], [xr]],
+            fmt="o",
+            color=col,
+            ecolor=col,
+            elinewidth=2.0,
+            capsize=3.5,
+            capthick=1.5,
+            markersize=5,
+            markeredgecolor="black",
+            markeredgewidth=0.8,
+            zorder=3,
+        )
 
     ax.axvline(0.0, color="black", linestyle="--", linewidth=1.8, label="Zero Interaction (γ = 0, Pure Noise)")
     ax.axvline(
