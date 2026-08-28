@@ -5,18 +5,19 @@ For each object o:
   1. Extracts vision probe normal vector d_I^(o) from 1:1 counterfactual image pairs (I_orig vs I_cf).
   2. Extracts text probe normal vector d_T^(o) from diverse counterfactual caption pairs (T_pos vs T_neg).
   3. Computes closed-form orthogonal rotation matrix R^(o) in SO(d) such that R^(o) d_T^(o) = d_I^(o) (cos = 1.0).
-  4. Evaluates 6 intervention conditions on 2x2 counterfactual matching:
+  4. Evaluates 7 intervention conditions on 2x2 counterfactual matching:
        - Baseline: Standard Cosine (A = I)
        - Intervention 1: Closed-Form 2D Rotation (A = R^(o))
        - Intervention 2: Rank-1 Polar Adapter (A = A_rank1^(o))
-       - Intervention 3: Learned Low-Rank Bilinear (A = U V^T, rank=k)
-       - Intervention 4: Learned Full Bilinear (A = W^(o))
+       - Intervention 3: LABCLIP Linear Alignment (t -> normalize(W_lab t))
+       - Intervention 4: Learned Low-Rank Bilinear (A = U V^T, rank=k)
+       - Intervention 5: Learned Full Bilinear (A = W^(o))
        - Control: Random Orthogonal Rotation (A = R_rand)
-  5. Measures whether aligning d_T to d_I or learning low-rank/full interaction causally fixes CLIP's negation matching failure.
+  5. Measures whether aligning d_T to d_I, linear alignment (LABCLIP), or learning bilinear interaction causally fixes CLIP's negation matching failure.
 
 Outputs:
   - per_object_intervention_results.csv
-  - fig_intervention_6conditions_bar.png
+  - fig_intervention_7conditions_bar.png
   - fig_alignment_vs_gain_scatter.png
   - fig_per_object_gain_waterfall.png
   - per_object_intervention_summary.json
@@ -37,6 +38,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold
 import matplotlib
@@ -83,7 +85,7 @@ def build_closed_form_rotation(d_T: np.ndarray, d_I: np.ndarray) -> np.ndarray:
     v = v_raw / (np.linalg.norm(v_raw) + 1e-12)
     sin_theta = float(np.dot(v, target))
 
-    # Construct R = I + sin_theta * (v u^T - u v^T) + (cos_theta - 1) * (u u^T + v v^T)
+    # Construct R = I + sin_theta * (v u^T - u v^T) + (cos_theta - 1.0) * (uuT + vvT)
     u_col = u[:, np.newaxis]
     v_col = v[:, np.newaxis]
 
@@ -125,6 +127,9 @@ def build_random_orthogonal_rotation(d: int, seed: int = 42) -> np.ndarray:
     return Q
 
 
+# ============================================================
+# 2. Learnable Matchers (Full Bilinear, Low-Rank, LABCLIP)
+# ============================================================
 class BilinearMatcher(nn.Module):
     """Full Bilinear scoring head: s(v, t) = v^T W t"""
     def __init__(self, embed_dim: int):
@@ -192,7 +197,6 @@ class LowRankBilinearMatcher(nn.Module):
         return torch.sum(Av * Bt, dim=-1)
 
     def get_W(self) -> np.ndarray:
-        # W = U V^T = proj_v.weight.T @ proj_t.weight  (d x d)
         U = self.proj_v.weight.T  # (d, k)
         V = self.proj_t.weight.T  # (d, k)
         W = torch.matmul(U, V.T)  # (d, d)
@@ -236,8 +240,60 @@ def train_lowrank_bilinear_matcher(
     return W_learned
 
 
+class LABCLIPMatcher(nn.Module):
+    """
+    LABCLIP Linear Alignment Head: s(v, t) = normalize(v)^T normalize(W t)
+    Matches the architecture from Koishigarina et al. (2025).
+    """
+    def __init__(self, embed_dim: int):
+        super().__init__()
+        self.W = nn.Parameter(torch.eye(embed_dim))
+
+    def forward(self, v: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        t_aligned = torch.matmul(t, self.W.T)
+        t_norm = F.normalize(t_aligned, dim=-1)
+        v_norm = F.normalize(v, dim=-1)
+        return torch.sum(v_norm * t_norm, dim=-1)
+
+
+def train_labclip_matcher(
+    v_pos: torch.Tensor,
+    v_neg: torch.Tensor,
+    t_pos: torch.Tensor,
+    t_neg: torch.Tensor,
+    epochs: int = 150,
+    lr: float = 0.01,
+    weight_decay: float = 1e-4,
+    margin: float = 0.1,
+) -> np.ndarray:
+    """Trains a LABCLIP linear alignment matrix W using Margin Ranking Loss on 2x2 pairs."""
+    embed_dim = v_pos.shape[-1]
+    model = LABCLIPMatcher(embed_dim)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    criterion = nn.MarginRankingLoss(margin=margin)
+    n = v_pos.shape[0]
+
+    for _ in range(epochs):
+        optimizer.zero_grad()
+        s_pp = model(v_pos, t_pos)
+        s_mm = model(v_neg, t_neg)
+        s_pm = model(v_pos, t_neg)
+        s_mp = model(v_neg, t_pos)
+
+        target = torch.ones(n)
+        loss = (criterion(s_pp, s_pm, target) + criterion(s_mm, s_mp, target) +
+                criterion(s_pp, s_mp, target) + criterion(s_mm, s_pm, target)) / 4.0
+
+        loss.backward()
+        optimizer.step()
+
+    with torch.no_grad():
+        W_learned = model.W.detach().cpu().numpy()
+    return W_learned
+
+
 # ============================================================
-# 2. Evaluation Engine for 5 Intervention Conditions
+# 3. Evaluation Engine for Intervention Conditions
 # ============================================================
 def evaluate_condition_scoring(
     v_p: np.ndarray,
@@ -247,26 +303,43 @@ def evaluate_condition_scoring(
     A: np.ndarray,
     d_I: np.ndarray,
     d_T: np.ndarray,
+    is_labclip: bool = False,
 ) -> Dict[str, float]:
     """
-    Evaluates scoring s(v, t) = v^T A t for a given transformation matrix A:
-      - Direction alignment: cos(d_I, A d_T)
-      - Pairwise Pos: mean(S_++ > S_+-)
-      - Pairwise Neg: mean(S_-- > S_-+)
-      - 2x2 Joint Exact Matching: mean(min(S_++, S_--) > max(S_+-, S_-+))
-      - 2x2 Margin statistics
+    Evaluates scoring for a given transformation matrix A:
+      - Standard linear/bilinear: s(v, t) = (v @ A) . t
+      - LABCLIP linear alignment: s(v, t) = normalize(v) . normalize(t @ A.T)
     """
-    # 1. Compute Direction Alignment
-    At_d = np.dot(A, d_T)
-    norm_At = np.linalg.norm(At_d) + 1e-12
-    norm_dI = np.linalg.norm(d_I) + 1e-12
-    dir_alignment = float(np.dot(d_I, At_d) / (norm_dI * norm_At))
+    if is_labclip:
+        # LABCLIP direction alignment
+        At_d = np.dot(d_T, A.T)
+        norm_At = np.linalg.norm(At_d) + 1e-12
+        norm_dI = np.linalg.norm(d_I) + 1e-12
+        dir_alignment = float(np.dot(d_I, At_d) / (norm_dI * norm_At))
 
-    # 2. Compute 2x2 Scores
-    s_pp = np.sum((v_p @ A) * t_p, axis=-1)
-    s_pm = np.sum((v_p @ A) * t_m, axis=-1)
-    s_mp = np.sum((v_m @ A) * t_p, axis=-1)
-    s_mm = np.sum((v_m @ A) * t_m, axis=-1)
+        # LABCLIP scoring
+        def score_fn(v, t):
+            t_proj = t @ A.T
+            t_norm = t_proj / (np.linalg.norm(t_proj, axis=-1, keepdims=True) + 1e-12)
+            v_norm = v / (np.linalg.norm(v, axis=-1, keepdims=True) + 1e-12)
+            return np.sum(v_norm * t_norm, axis=-1)
+
+        s_pp = score_fn(v_p, t_p)
+        s_pm = score_fn(v_p, t_m)
+        s_mp = score_fn(v_m, t_p)
+        s_mm = score_fn(v_m, t_m)
+    else:
+        # 1. Compute Direction Alignment
+        At_d = np.dot(A, d_T)
+        norm_At = np.linalg.norm(At_d) + 1e-12
+        norm_dI = np.linalg.norm(d_I) + 1e-12
+        dir_alignment = float(np.dot(d_I, At_d) / (norm_dI * norm_At))
+
+        # 2. Compute 2x2 Scores
+        s_pp = np.sum((v_p @ A) * t_p, axis=-1)
+        s_pm = np.sum((v_p @ A) * t_m, axis=-1)
+        s_mp = np.sum((v_m @ A) * t_p, axis=-1)
+        s_mm = np.sum((v_m @ A) * t_m, axis=-1)
 
     correct_min = np.minimum(s_pp, s_mm)
     wrong_max = np.maximum(s_pm, s_mp)
@@ -290,7 +363,7 @@ def evaluate_condition_scoring(
 
 
 # ============================================================
-# 3. Main Per-Object Orchestrator
+# 4. Main Per-Object Orchestrator
 # ============================================================
 def run_per_object_alignment_intervention(
     vision_csv: str = "benchmarks/data/images/beaf_counterfactual_6col.csv",
@@ -379,7 +452,6 @@ def run_per_object_alignment_intervention(
     vis_objects = set(df_vis_pairs["object_name"].unique())
     txt_objects = set([o for o in obj_txt_aff if len(obj_txt_aff[o]) >= min_pairs_per_obj and len(obj_txt_neg[o]) >= min_pairs_per_obj])
     common_objects = sorted(list(vis_objects.intersection(txt_objects)))
-    # Exclude multi-objects with comma
     common_objects = [o for o in common_objects if "," not in str(o)]
 
     print(f"\nTotal common valid objects for Per-Object Intervention: {len(common_objects)}")
@@ -389,9 +461,10 @@ def run_per_object_alignment_intervention(
         "1_Baseline_Cosine",
         "2_Closed_Form_Rotation",
         "3_Rank1_Polar_Adapter",
-        "4_Learned_LowRank_Bilinear",
-        "5_Learned_Full_Bilinear",
-        "6_Control_Random_Rotation",
+        "4_LABCLIP_Linear_Alignment",
+        "5_Learned_LowRank_Bilinear",
+        "6_Learned_Full_Bilinear",
+        "7_Control_Random_Rotation",
     ]
 
     for obj in common_objects:
@@ -431,43 +504,48 @@ def run_per_object_alignment_intervention(
         d_T = w_t / (np.linalg.norm(w_t) + 1e-12)
 
         # ── Step 3: Align 2x2 Evaluation Pairs ──
-        # Use n_pairs = min(n_vis, n_txt)
         n_eval = min(n_vis, n_txt)
         v_p = X_v_orig[:n_eval]
         v_m = X_v_cf[:n_eval]
         t_p = X_t_aff[:n_eval]
         t_m = X_t_neg[:n_eval]
 
-        # ── Step 4: Build 6 Transformation Matrices A^(o) ──
+        # ── Step 4: Build 7 Transformation Matrices A^(o) ──
         A_matrices = {
-            "1_Baseline_Cosine": np.eye(embed_dim),
-            "2_Closed_Form_Rotation": build_closed_form_rotation(d_T, d_I),
-            "3_Rank1_Polar_Adapter": build_rank1_adapter(d_T, d_I),
-            "4_Learned_LowRank_Bilinear": train_lowrank_bilinear_matcher(
+            "1_Baseline_Cosine": (np.eye(embed_dim), False),
+            "2_Closed_Form_Rotation": (build_closed_form_rotation(d_T, d_I), False),
+            "3_Rank1_Polar_Adapter": (build_rank1_adapter(d_T, d_I), False),
+            "4_LABCLIP_Linear_Alignment": (train_labclip_matcher(
+                torch.tensor(v_p, dtype=torch.float32),
+                torch.tensor(v_m, dtype=torch.float32),
+                torch.tensor(t_p, dtype=torch.float32),
+                torch.tensor(t_m, dtype=torch.float32),
+            ), True),
+            "5_Learned_LowRank_Bilinear": (train_lowrank_bilinear_matcher(
                 torch.tensor(v_p, dtype=torch.float32),
                 torch.tensor(v_m, dtype=torch.float32),
                 torch.tensor(t_p, dtype=torch.float32),
                 torch.tensor(t_m, dtype=torch.float32),
                 rank=rank,
-            ),
-            "5_Learned_Full_Bilinear": train_bilinear_matcher(
+            ), False),
+            "6_Learned_Full_Bilinear": (train_bilinear_matcher(
                 torch.tensor(v_p, dtype=torch.float32),
                 torch.tensor(v_m, dtype=torch.float32),
                 torch.tensor(t_p, dtype=torch.float32),
                 torch.tensor(t_m, dtype=torch.float32),
-            ),
-            "6_Control_Random_Rotation": build_random_orthogonal_rotation(embed_dim, seed=seed),
+            ), False),
+            "7_Control_Random_Rotation": (build_random_orthogonal_rotation(embed_dim, seed=seed), False),
         }
 
-        # ── Step 5: Evaluate All 6 Conditions ──
+        # ── Step 5: Evaluate All 7 Conditions ──
         obj_row = {
             "object_name": obj,
             "n_eval_pairs": n_eval,
             "raw_cos_dI_dT": float(np.dot(d_I, d_T)),
         }
 
-        for cond_name, A in A_matrices.items():
-            metrics = evaluate_condition_scoring(v_p, v_m, t_p, t_m, A, d_I, d_T)
+        for cond_name, (A, is_labclip) in A_matrices.items():
+            metrics = evaluate_condition_scoring(v_p, v_m, t_p, t_m, A, d_I, d_T, is_labclip=is_labclip)
             for k, val in metrics.items():
                 obj_row[f"{cond_name}_{k}"] = val
 
@@ -483,7 +561,7 @@ def run_per_object_alignment_intervention(
 
 
 # ============================================================
-# 4. Visualization & Reporting Engine
+# 5. Visualization & Reporting Engine
 # ============================================================
 def generate_intervention_visualizations(
     df: pd.DataFrame,
@@ -493,12 +571,12 @@ def generate_intervention_visualizations(
 ):
     print("\nGenerating Intervention Visualizations & Summary Report...")
 
-    # Compute Macro Means across all objects
     summary_dict = {}
     cond_labels = [
         "Cosine (Baseline)",
         "Closed-Form Rotation R",
         "Rank-1 Adapter",
+        "LABCLIP (Linear Align)",
         f"LowRank Bilinear (k={rank})",
         "Full Bilinear W",
         "Random Rotation (Control)",
@@ -532,39 +610,39 @@ def generate_intervention_visualizations(
             "acc_neg_mean_pct": n_acc,
         }
 
-    # ── Figure 1: 6-Condition Comparison Bar Chart ──
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 6))
+    # ── Figure 1: 7-Condition Comparison Bar Chart ──
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 6))
 
     x = np.arange(len(condition_names))
-    colors = ["#7f8c8d", "#2ecc71", "#3498db", "#e67e22", "#9b59b6", "#e74c3c"]
+    colors = ["#7f8c8d", "#2ecc71", "#3498db", "#9b59b6", "#e67e22", "#1abc9c", "#e74c3c"]
 
     # Subplot 1: 2x2 Joint Matching Accuracy
-    bars1 = ax1.bar(x, mean_joint_accs, color=colors, edgecolor="black", width=0.55)
+    bars1 = ax1.bar(x, mean_joint_accs, color=colors[:len(condition_names)], edgecolor="black", width=0.55)
     ax1.set_ylabel("2×2 Joint Exact Matching Accuracy (%)", fontsize=12)
     ax1.set_title("2×2 Matching Accuracy across Intervention Conditions", fontsize=13, fontweight="bold")
     ax1.set_xticks(x)
-    ax1.set_xticklabels(cond_labels, rotation=25, ha="right", fontsize=10)
+    ax1.set_xticklabels(cond_labels, rotation=25, ha="right", fontsize=9.5)
     ax1.set_ylim(0, 105)
     ax1.grid(axis="y", ls="--", alpha=0.4)
     for bar in bars1:
         yval = bar.get_height()
-        ax1.text(bar.get_x() + bar.get_width()/2.0, yval + 1.5, f"{yval:.1f}%", ha="center", va="bottom", fontweight="bold")
+        ax1.text(bar.get_x() + bar.get_width()/2.0, yval + 1.5, f"{yval:.1f}%", ha="center", va="bottom", fontweight="bold", fontsize=9)
 
-    # Subplot 2: Direction Alignment cos(d_I, A d_T) vs Margin Mean
-    bars2 = ax2.bar(x, mean_aligns, color=colors, edgecolor="black", width=0.55)
+    # Subplot 2: Direction Alignment cos(d_I, A d_T)
+    bars2 = ax2.bar(x, mean_aligns, color=colors[:len(condition_names)], edgecolor="black", width=0.55)
     ax2.set_ylabel("Direction Alignment cos(d_I, A d_T)", fontsize=12)
     ax2.set_title("Polarity Direction Alignment cos(d_I, A d_T)", fontsize=13, fontweight="bold")
     ax2.set_xticks(x)
-    ax2.set_xticklabels(cond_labels, rotation=25, ha="right", fontsize=10)
+    ax2.set_xticklabels(cond_labels, rotation=25, ha="right", fontsize=9.5)
     ax2.set_ylim(-0.2, 1.15)
     ax2.axhline(0, color="gray", lw=1)
     ax2.grid(axis="y", ls="--", alpha=0.4)
     for bar in bars2:
         yval = bar.get_height()
-        ax2.text(bar.get_x() + bar.get_width()/2.0, yval + 0.03, f"{yval:+.3f}", ha="center", va="bottom", fontweight="bold")
+        ax2.text(bar.get_x() + bar.get_width()/2.0, yval + 0.03, f"{yval:+.3f}", ha="center", va="bottom", fontweight="bold", fontsize=9)
 
     plt.tight_layout()
-    out_fig1 = os.path.join(output_dir, "fig_intervention_6conditions_bar.png")
+    out_fig1 = os.path.join(output_dir, "fig_intervention_7conditions_bar.png")
     plt.savefig(out_fig1, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {out_fig1}")
@@ -582,7 +660,6 @@ def generate_intervention_visualizations(
     ax.set_title("Per-Object Causal Effect: Direction Alignment vs Margin Gain", fontsize=13, fontweight="bold")
     ax.grid(True, ls="--", alpha=0.4)
 
-    # Add trend line
     if len(align_gains) > 2:
         m_poly, b_poly = np.polyfit(align_gains, margin_gains, 1)
         x_trend = np.linspace(align_gains.min(), align_gains.max(), 50)
