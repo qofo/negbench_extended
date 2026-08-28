@@ -41,6 +41,13 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+try:
+    from benchmarks.src.analysis.feature_cache import build_provenance, inherit_upstream_provenance
+    from benchmarks.src.analysis.config import set_seed
+except ImportError:
+    from analysis.feature_cache import build_provenance, inherit_upstream_provenance
+    from analysis.config import set_seed
+
 
 def compute_concept_bootstrap_ci(
     gamma_vals: np.ndarray,
@@ -339,7 +346,7 @@ def main():
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
-    np.random.seed(args.seed)
+    set_seed(args.seed)
 
     print("╔══════════════════════════════════════════════════════════════════════╗")
     print("║  E2-Risk Analysis: Statistical Significance of Interaction Term (γ)  ║")
@@ -515,6 +522,18 @@ def main():
 
     concepts_csv = os.path.join(args.output_dir, "e2_gamma_concept_significance.csv")
     summary_json = os.path.join(args.output_dir, "e2_gamma_significance_summary.json")
+
+    # This script never loads a model, so the only way its numbers can be traced to
+    # a backbone is by carrying the upstream E2 run's provenance forward.
+    upstream = inherit_upstream_provenance(args.per_pair_csv)
+    summary["provenance"] = build_provenance(
+        args, n_concepts=len(df_concepts), n_pairs=len(df_pairs),
+        n_bootstraps=args.n_bootstraps, n_permutations=args.n_permutations,
+        upstream_provenance=upstream,
+        upstream_traceable=upstream is not None)
+    if upstream is None:
+        print("  [warn] upstream summary carries no provenance block; "
+              "the backbone behind these numbers is unrecorded.")
 
     df_concepts.to_csv(concepts_csv, index=False)
     with open(summary_json, "w", encoding="utf-8") as f:

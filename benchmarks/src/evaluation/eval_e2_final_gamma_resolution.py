@@ -48,8 +48,16 @@ import open_clip
 
 try:
     from benchmarks.src.analysis.beaf.vision_mechanisms import extract_vision_features_unified
+    from benchmarks.src.analysis.feature_cache import (
+        cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
+    )
+    from benchmarks.src.analysis.config import set_seed
 except ImportError:
     from analysis.beaf.vision_mechanisms import extract_vision_features_unified
+    from analysis.feature_cache import (
+        cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
+    )
+    from analysis.config import set_seed
 
 
 # Physical interaction / coupled categories identified in E1 Placebo
@@ -57,16 +65,30 @@ CONFOUNDED_OBJECTS = {"person", "dining table", "chair", "cup", "bottle", "handb
 
 
 def extract_normalized_features(
-    model, preprocess, tokenizer, img_paths_pres, img_paths_abs, t_pos_texts, t_neg_texts, device, batch_size=128
+    model, preprocess, tokenizer, img_paths_pres, img_paths_abs, t_pos_texts, t_neg_texts, device, batch_size=128,
+    cache_kw=None,
 ):
-    """Extract normalized image and text embeddings and construct u and v vectors."""
-    feats_dict_pres = extract_vision_features_unified(model, preprocess, img_paths_pres, device, batch_size)
-    feats_dict_abs = extract_vision_features_unified(model, preprocess, img_paths_abs, device, batch_size)
+    """
+    Extract normalized image and text embeddings and construct u and v vectors.
 
-    v_pres = feats_dict_pres["final_l2norm"]
-    v_abs = feats_dict_abs["final_l2norm"]
-    flags_pres = np.array(feats_dict_pres.get("loaded_flags", [True] * len(img_paths_pres)))
-    flags_abs = np.array(feats_dict_abs.get("loaded_flags", [True] * len(img_paths_abs)))
+    ``cache_kw`` is the keyword bundle built in ``main`` (model / pretrained /
+    cache_dir / enabled); pass None to encode unconditionally. The cache ``kind``
+    labels state what each closure returns so they interoperate with the identical
+    call sites in the E1 scripts rather than colliding with the differently-shaped
+    ones in ``eval_e2_hadamard_decomposition.py``.
+    """
+    cache_kw = cache_kw or dict(model="", pretrained="", enabled=False)
+
+    def _encode_vision(paths):
+        d = extract_vision_features_unified(model, preprocess, paths, device, batch_size)
+        return d["final_l2norm"], np.array(d.get("loaded_flags", [True] * len(paths)))
+
+    v_pres, flags_pres = cached_encode(
+        lambda: _encode_vision(img_paths_pres),
+        kind="image_pres@l2norm+flags", items=img_paths_pres, **cache_kw)
+    v_abs, flags_abs = cached_encode(
+        lambda: _encode_vision(img_paths_abs),
+        kind="image_abs@l2norm+flags", items=img_paths_abs, **cache_kw)
 
     valid_mask = flags_pres & flags_abs
     v_pres = v_pres[valid_mask]
@@ -85,8 +107,10 @@ def extract_normalized_features(
                 all_t.append(f.cpu().numpy())
         return np.concatenate(all_t, axis=0)
 
-    t_pos = encode_t(t_pos_texts)
-    t_neg = encode_t(t_neg_texts)
+    (t_pos,) = cached_encode(lambda: (encode_t(t_pos_texts),),
+                             kind="text_pos@l2norm", items=t_pos_texts, **cache_kw)
+    (t_neg,) = cached_encode(lambda: (encode_t(t_neg_texts),),
+                             kind="text_neg@l2norm", items=t_neg_texts, **cache_kw)
 
     # u = 1/2 (v_pres - v_abs), v = 1/2 (t_pos - t_neg)
     u_img = 0.5 * (v_pres - v_abs)
@@ -345,11 +369,18 @@ def main():
     parser.add_argument("--n_permutations", type=int, default=1000)
     parser.add_argument("--n_bootstraps", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--use_cache", action="store_true", default=False,
+                        help="Reuse on-disk encoder features keyed by (model, pretrained, items)")
+    parser.add_argument("--cache_dir", type=str, default=DEFAULT_CACHE_DIR)
+    parser.add_argument("--restrict_objects", type=str, default=None,
+                        help="Comma list, or path to txt/csv/json, limiting evaluation to an exact concept set")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    np.random.seed(args.seed)
+    set_seed(args.seed)
+    cache_kw = dict(model=args.model, pretrained=args.pretrained,
+                    cache_dir=args.cache_dir, enabled=args.use_cache)
 
     print("╔══════════════════════════════════════════════════════════════════════╗")
     print("║  E2-Final: Complete 4-Point Resolution for Interaction Term (γ)      ║")
@@ -372,6 +403,12 @@ def main():
 
     all_objects = sorted(df["object_name"].unique().tolist())
     target_objects = [o for o in all_objects if "," not in str(o)]
+    restrict = load_object_restriction(args.restrict_objects)
+    if restrict is not None:
+        missing = sorted(set(restrict) - set(target_objects))
+        target_objects = [o for o in target_objects if o in set(restrict)]
+        print(f"  -> Restricted to {len(target_objects)} concepts"
+              + (f" ({len(missing)} requested but absent: {missing[:5]})" if missing else ""))
     print(f"  Total candidate categories in BEAF: {len(target_objects)}")
 
     # 2. Load Model
@@ -411,7 +448,8 @@ def main():
         t_neg = df_true["negative_caption"].tolist()[:n_pairs]
 
         v_p, v_a, tp, tn, u_img, v_txt, valid_mask = extract_normalized_features(
-            model, preprocess, tokenizer, img_pres, img_abs, t_pos, t_neg, device
+            model, preprocess, tokenizer, img_pres, img_abs, t_pos, t_neg, device,
+            cache_kw=cache_kw,
         )
 
         if len(u_img) < args.min_pairs:
@@ -598,6 +636,9 @@ def main():
         summary=summary,
         output_dir=args.output_dir,
     )
+
+    summary["provenance"] = build_provenance(
+        args, n_concepts=len(df_concepts_out), n_pairs=len(df_pairs_all))
 
     df_concepts_out.to_csv(os.path.join(args.output_dir, "e2_final_resolution_table.csv"), index=False)
     df_pairs_all.to_csv(os.path.join(args.output_dir, "e2_final_per_pair.csv"), index=False)
