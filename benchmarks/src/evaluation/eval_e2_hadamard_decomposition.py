@@ -200,7 +200,6 @@ def render_e2_visualizations(
     bplot = ax1.boxplot(
         box_data,
         patch_artist=True,
-        labels=labels,
         widths=0.55,
         medianprops=dict(color="black", linewidth=2.0),
         boxprops=dict(linewidth=1.5),
@@ -208,6 +207,8 @@ def render_e2_visualizations(
         capprops=dict(linewidth=1.5),
         flierprops=dict(marker="o", color="gray", alpha=0.6),
     )
+    ax1.set_xticks(np.arange(1, len(labels) + 1))
+    ax1.set_xticklabels(labels, fontsize=10, fontweight="bold")
 
     for patch, color in zip(bplot["boxes"], colors):
         patch.set_facecolor(color)
@@ -304,7 +305,7 @@ def render_e2_visualizations(
     lambda_stars = df_concepts["required_lambda_star"].values
 
     ax1.hist(ratios, bins=25, color="#8e44ad", edgecolor="black", alpha=0.75)
-    ax1.axvline(1.0, color="red", linestyle="--", linewidth=2.0, label=r"Threshold ($\Delta > 0 \iff$ Ratio > 1)")
+    ax1.axvline(1.0, color="red", linestyle="--", linewidth=2.0, label=r"Threshold ($\Delta > 0 \Leftrightarrow$ Ratio > 1)")
     ax1.axvline(np.median(ratios), color="#f39c12", linestyle="-", linewidth=2.0, label=f"Median = {np.median(ratios):.3f}")
     ax1.set_xlabel(r"Ratio $\gamma / \max(|\alpha|, |\beta|)$", fontsize=11, fontweight="bold")
     ax1.set_ylabel("Number of Concepts", fontsize=11, fontweight="bold")
