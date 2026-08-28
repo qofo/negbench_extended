@@ -2,12 +2,15 @@
 CLIP Negation Representation & Mechanism Analysis Package (Modular Flat Architecture).
 """
 
-from analysis.config import (
+from .config import (
     PipelineStep,
     MetadataKey,
     AnalysisConfig,
     RetrievalConfig,
+    PRE_PROJECTION_KEY,
+    FINAL_L2NORM_KEY,
     to_bool,
+    coerce_bool_column,
     get_layer_features,
     l2_normalize,
     batch_cosine_similarity,
@@ -17,6 +20,7 @@ from analysis.config import (
     DEFAULT_TUNING_GRIDS,
     filter_vision_dict,
 )
+from .paths import resolve_image_path
 from .feature_cache import (
     cached_encode,
     make_cache_key,
@@ -32,8 +36,12 @@ __all__ = [
     "MetadataKey",
     "AnalysisConfig",
     "RetrievalConfig",
+    "PRE_PROJECTION_KEY",
+    "FINAL_L2NORM_KEY",
     "to_bool",
+    "coerce_bool_column",
     "get_layer_features",
+    "resolve_image_path",
     "l2_normalize",
     "batch_cosine_similarity",
     "batch_dot_product",

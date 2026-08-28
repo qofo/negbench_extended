@@ -20,7 +20,6 @@ from .pretrained import is_pretrained_cfg, get_pretrained_cfg, download_pretrain
 from .transform import image_transform_v2, AugmentationCfg, PreprocessCfg, merge_preprocess_dict, merge_preprocess_kwargs
 from .tokenizer import HFTokenizer, SimpleTokenizer, DEFAULT_CONTEXT_LENGTH
 
-from training.video_utils.model import VideoCLIP
 
 HF_HUB_PREFIX = 'hf-hub:'
 _MODEL_CONFIG_PATHS = [Path(__file__).parent / f"model_configs/"]
@@ -464,6 +463,12 @@ def create_model_and_transforms(
 
     if video:
         # Wrap the model with VideoCLIP if video flag is True
+        # Imported here rather than at module scope: this is the only use of
+        # VideoCLIP, and a top-level import makes open_clip -- the layer every
+        # entrypoint imports -- depend on the training package, which imports
+        # open_clip back. Deferring it removes the cycle and ~1.9s of timm and
+        # torchvision loading from every non-video script.
+        from training.video_utils.model import VideoCLIP
         model = VideoCLIP(model)
         preprocess_train = adjust_preprocessing_for_video() # TODO update to support video training
         preprocess_val = adjust_preprocessing_for_video()

@@ -554,7 +554,9 @@ def run_per_object_alignment_intervention(
     print(f"\n  Saved Results CSV: {csv_out}")
 
     # 5. Generate Comparative Figures and Summary JSON
-    generate_intervention_visualizations(df_results, output_dir, condition_names, rank=rank)
+    generate_intervention_visualizations(
+        df_results, output_dir, condition_names, rank=rank, min_pairs_per_obj=min_pairs_per_obj
+    )
 
 
 # ============================================================
@@ -565,6 +567,7 @@ def generate_intervention_visualizations(
     output_dir: str,
     condition_names: List[str],
     rank: int = 32,
+    min_pairs_per_obj: int = 20,
 ):
     print("\nGenerating Intervention Visualizations & Summary Report...")
 
@@ -682,7 +685,7 @@ def generate_intervention_visualizations(
     ax.bar(x_top + w/2, top_objs["2_Closed_Form_Rotation_acc_joint_pct"], w, label="Closed-Form Rotation R", color="#2ecc71")
 
     ax.set_ylabel("2×2 Joint Matching Accuracy (%)", fontsize=12)
-    ax.set_title(f"Top-{top_n} Objects (N >= {rank}): Impact of Closed-Form Rotation R^(o) on 2×2 Matching", fontsize=13, fontweight="bold")
+    ax.set_title(f"Top-{top_n} Objects (N >= {min_pairs_per_obj}): Impact of Closed-Form Rotation R^(o) on 2×2 Matching", fontsize=13, fontweight="bold")
     ax.set_xticks(x_top)
     ax.set_xticklabels(top_objs["object_name"], rotation=45, ha="right", fontsize=9)
     ax.set_ylim(0, 105)
