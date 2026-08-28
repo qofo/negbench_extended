@@ -300,19 +300,20 @@ def run_per_object_alignment_intervention(
     model_name: str = "ViT-B-32",
     pretrained: str = "openai",
     rank: int = 32,
-    min_pairs_per_obj: int = 8,
+    min_pairs_per_obj: int = 20,
     batch_size: int = 128,
     seed: int = 42,
     use_bias: bool = True,
 ):
     os.makedirs(output_dir, exist_ok=True)
-    device = "cuda:1" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     print("╔═══════════════════════════════════════════════════════════╗")
     print("║  Per-Object Probe Alignment Causal Intervention (R^(o))   ║")
     print("╚═══════════════════════════════════════════════════════════╝")
     print(f"  Model       : {model_name} ({pretrained}) | Device: {device}")
     print(f"  Output Dir  : {output_dir}")
+    print(f"  Min Pairs   : {min_pairs_per_obj}")
     print(f"  Rank (k)    : {rank}")
     print(f"  Use Bias    : {use_bias}\n")
 
@@ -596,19 +597,20 @@ def generate_intervention_visualizations(
 
     # ── Figure 3: Per-Object Accuracy Waterfall Chart ──
     df_sorted = df.sort_values(by="2_Closed_Form_Rotation_acc_joint_pct", ascending=False).reset_index(drop=True)
-    top25 = df_sorted.head(25)
+    top_n = min(25, len(df_sorted))
+    top_objs = df_sorted.head(top_n)
 
     fig, ax = plt.subplots(figsize=(14, 6))
-    x_top = np.arange(len(top25))
+    x_top = np.arange(len(top_objs))
     w = 0.35
 
-    ax.bar(x_top - w/2, top25["1_Baseline_Cosine_acc_joint_pct"], w, label="Baseline Cosine", color="#7f8c8d")
-    ax.bar(x_top + w/2, top25["2_Closed_Form_Rotation_acc_joint_pct"], w, label="Closed-Form Rotation R", color="#2ecc71")
+    ax.bar(x_top - w/2, top_objs["1_Baseline_Cosine_acc_joint_pct"], w, label="Baseline Cosine", color="#7f8c8d")
+    ax.bar(x_top + w/2, top_objs["2_Closed_Form_Rotation_acc_joint_pct"], w, label="Closed-Form Rotation R", color="#2ecc71")
 
     ax.set_ylabel("2×2 Joint Matching Accuracy (%)", fontsize=12)
-    ax.set_title("Top-25 Objects: Impact of Closed-Form Rotation R^(o) on 2×2 Matching", fontsize=13, fontweight="bold")
+    ax.set_title(f"Top-{top_n} Objects (N >= {min_pairs_per_obj}): Impact of Closed-Form Rotation R^(o) on 2×2 Matching", fontsize=13, fontweight="bold")
     ax.set_xticks(x_top)
-    ax.set_xticklabels(top25["object_name"], rotation=45, ha="right", fontsize=9)
+    ax.set_xticklabels(top_objs["object_name"], rotation=45, ha="right", fontsize=9)
     ax.set_ylim(0, 105)
     ax.grid(axis="y", ls="--", alpha=0.4)
     ax.legend(fontsize=11)
@@ -638,7 +640,7 @@ def main():
     parser.add_argument("--model", type=str, default="ViT-B-32")
     parser.add_argument("--pretrained", type=str, default="openai")
     parser.add_argument("--rank", type=int, default=32, help="Rank k for Low-Rank Bilinear Matcher (default: 32)")
-    parser.add_argument("--min_pairs", type=int, default=8)
+    parser.add_argument("--min_pairs", type=int, default=20, help="Minimum counterfactual pairs per object (default: 20)")
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no_bias", "--no-bias", action="store_true", default=False,

@@ -238,7 +238,7 @@ def compute_2x2_margin(
 
 
 # ============================================================
-# Stage E4: Bilinear Scorer & Diagonal vs Off-Diagonal Ablation
+# Stage E4: Bilinear Scorer, LABCLIP & Diagonal vs Off-Diagonal Ablation
 # ============================================================
 class BilinearMatcher(nn.Module):
     """Bilinear Interaction Head: s(v, t) = v^T W t + b."""
@@ -252,6 +252,28 @@ class BilinearMatcher(nn.Module):
         # s(v, t) = sum_i sum_j v_i W_ij t_j
         vW = torch.matmul(v, self.W)
         scores = torch.sum(vW * t, dim=-1)
+        if self.bias is not None:
+            scores = scores + self.bias
+        return scores
+
+
+class LABCLIPMatcher(nn.Module):
+    """
+    LABCLIP Linear Alignment Head: s(v, t) = v^T normalize(W t) + b.
+    Applies a linear alignment transformation to the text embedding followed by L2 normalization,
+    matching the architecture from Koishigarina et al. (2025).
+    """
+    def __init__(self, dim: int, use_bias: bool = True):
+        super().__init__()
+        self.W = nn.Parameter(torch.eye(dim) + 0.01 * torch.randn(dim, dim))
+        self.bias = nn.Parameter(torch.zeros(1)) if use_bias else None
+
+    def forward(self, v: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        # v: (B, D), t: (B, D)
+        t_aligned = torch.matmul(t, self.W.T)
+        t_norm = F.normalize(t_aligned, dim=-1)
+        v_norm = F.normalize(v, dim=-1)
+        scores = torch.sum(v_norm * t_norm, dim=-1)
         if self.bias is not None:
             scores = scores + self.bias
         return scores
@@ -302,19 +324,66 @@ def train_bilinear_matcher(
     return W_learned
 
 
+def train_labclip_matcher(
+    v_pos: torch.Tensor,
+    v_neg: torch.Tensor,
+    t_pos: torch.Tensor,
+    t_neg: torch.Tensor,
+    epochs: int = 60,
+    lr: float = 1e-2,
+    weight_decay: float = 1e-3,
+    seed: int = 42,
+    use_bias: bool = True,
+) -> np.ndarray:
+    """
+    Train LABCLIP Alignment Scorer using the exact same Margin Ranking Loss on 2x2 pairs.
+    Returns learned W matrix as numpy array of shape (D, D).
+    """
+    torch.manual_seed(seed)
+    dim = v_pos.shape[-1]
+    model = LABCLIPMatcher(dim, use_bias=use_bias)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    criterion = nn.MarginRankingLoss(margin=0.1)
+
+    n = len(v_pos)
+    for epoch in range(epochs):
+        optimizer.zero_grad()
+
+        # Positive pairs: (v+, t+), (v-, t-)
+        s_pp = model(v_pos, t_pos)
+        s_mm = model(v_neg, t_neg)
+
+        # Negative pairs: (v+, t-), (v-, t+)
+        s_pm = model(v_pos, t_neg)
+        s_mp = model(v_neg, t_pos)
+
+        target = torch.ones(n)
+        loss = (criterion(s_pp, s_pm, target) + criterion(s_mm, s_mp, target) +
+                criterion(s_pp, s_mp, target) + criterion(s_mm, s_pm, target)) / 4.0
+
+        loss.backward()
+        optimizer.step()
+
+    with torch.no_grad():
+        W_learned = model.W.detach().cpu().numpy()
+    return W_learned
+
+
 def evaluate_bilinear_ablation(
     v_pos: torch.Tensor,
     v_neg: torch.Tensor,
     t_pos: torch.Tensor,
     t_neg: torch.Tensor,
     W_full: np.ndarray,
+    W_labclip: Optional[np.ndarray] = None,
 ) -> Dict[str, Dict[str, float]]:
     """
-    Evaluate 4 scoring heads:
-        1. Cosine:        s = v^T t
-        2. Diagonal:      s = v^T D t   (D = diag(W))
-        3. Off-diagonal:  s = v^T O t   (O = W - D)
-        4. Full Bilinear: s = v^T W t
+    Evaluate scoring heads:
+        1. Cosine:                   s = v^T t
+        2. LABCLIP (Linear Align):   s = v^T normalize(W_lab t)
+        3. Diagonal (Reweighting):   s = v^T D t   (D = diag(W))
+        4. Off-diagonal (Cross-Int): s = v^T O t   (O = W - D)
+        5. Full Bilinear (Joint):    s = v^T W t
     """
     D = np.diag(np.diag(W_full))
     O = W_full - D
@@ -324,10 +393,19 @@ def evaluate_bilinear_ablation(
 
     scorers = {
         "Cosine": lambda v, t: np.sum(v * t, axis=-1),
-        "Diagonal (Reweighting)": lambda v, t: np.sum((v @ D) * t, axis=-1),
-        "Off-Diagonal (Cross-Inter)": lambda v, t: np.sum((v @ O) * t, axis=-1),
-        "Full Bilinear (Joint)": lambda v, t: np.sum((v @ W_full) * t, axis=-1),
     }
+
+    if W_labclip is not None:
+        def labclip_score(v, t):
+            t_proj = t @ W_labclip.T
+            t_norm = t_proj / (np.linalg.norm(t_proj, axis=-1, keepdims=True) + 1e-12)
+            v_norm = v / (np.linalg.norm(v, axis=-1, keepdims=True) + 1e-12)
+            return np.sum(v_norm * t_norm, axis=-1)
+        scorers["LABCLIP (Linear Alignment)"] = labclip_score
+
+    scorers["Diagonal (Reweighting)"] = lambda v, t: np.sum((v @ D) * t, axis=-1)
+    scorers["Off-Diagonal (Cross-Inter)"] = lambda v, t: np.sum((v @ O) * t, axis=-1)
+    scorers["Full Bilinear (Joint)"] = lambda v, t: np.sum((v @ W_full) * t, axis=-1)
 
     results = {}
     for name, score_fn in scorers.items():
@@ -410,6 +488,7 @@ def run_unary_mechanistic_analysis(
 
     ablation_accs_summary = {
         "Cosine": [],
+        "LABCLIP (Linear Alignment)": [],
         "Diagonal (Reweighting)": [],
         "Off-Diagonal (Cross-Inter)": [],
         "Full Bilinear (Joint)": [],
@@ -478,9 +557,10 @@ def run_unary_mechanistic_analysis(
         scatter_margins.append(margin_res["margin_mean"])
         scatter_objects.append(obj)
 
-        # ── Stage E4: Bilinear Ablation (W = D + O) ──
+        # ── Stage E4: Bilinear Ablation & LABCLIP (W = D + O) ──
         W_learned = train_bilinear_matcher(v_pos, v_neg, t_pos, t_neg, use_bias=use_bias)
-        ablation_res = evaluate_bilinear_ablation(v_pos, v_neg, t_pos, t_neg, W_learned)
+        W_labclip = train_labclip_matcher(v_pos, v_neg, t_pos, t_neg, use_bias=use_bias)
+        ablation_res = evaluate_bilinear_ablation(v_pos, v_neg, t_pos, t_neg, W_learned, W_labclip=W_labclip)
 
         print("  [E4 Ablation]")
         for sc_name, sc_data in ablation_res.items():
@@ -499,6 +579,7 @@ def run_unary_mechanistic_analysis(
             "e3_cosine_margin_mean": margin_res["margin_mean"],
             "e3_cosine_2x2_acc": margin_res["accuracy_pct"],
             "e4_cosine_acc": ablation_res["Cosine"]["accuracy_pct"],
+            "e4_labclip_acc": ablation_res.get("LABCLIP (Linear Alignment)", {}).get("accuracy_pct", 0.0),
             "e4_diagonal_acc": ablation_res["Diagonal (Reweighting)"]["accuracy_pct"],
             "e4_off_diagonal_acc": ablation_res["Off-Diagonal (Cross-Inter)"]["accuracy_pct"],
             "e4_full_bilinear_acc": ablation_res["Full Bilinear (Joint)"]["accuracy_pct"],
@@ -674,23 +755,24 @@ def _render_fig3_scatter(
 
 
 def _render_fig4_bilinear_ablation(ablation_accs: Dict[str, List[float]], output_dir: str):
-    """Figure 4: Cosine vs Diagonal vs Off-Diagonal vs Full Bilinear."""
+    """Figure 4: Cosine vs LABCLIP vs Diagonal vs Off-Diagonal vs Full Bilinear."""
     names = list(ablation_accs.keys())
     means = [float(np.mean(ablation_accs[k])) for k in names]
     stds = [float(np.std(ablation_accs[k])) for k in names]
 
-    fig, ax = plt.subplots(figsize=(9, 5.5))
-    colors = ["#e74c3c", "#f39c12", "#2980b9", "#27ae60"]
+    fig, ax = plt.subplots(figsize=(11, 5.5))
+    colors = ["#e74c3c", "#9b59b6", "#f39c12", "#2980b9", "#27ae60"]
 
-    bars = ax.bar(names, means, yerr=stds, color=colors, edgecolor="black", linewidth=1.2, width=0.55, capsize=6)
+    bars = ax.bar(names, means, yerr=stds, color=colors[:len(names)], edgecolor="black", linewidth=1.2, width=0.55, capsize=6)
     ax.axhline(y=50.0, color="gray", ls="--", lw=1.5, alpha=0.7, label="Chance Level (50%)")
 
     for bar, m in zip(bars, means):
         ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1.2, f"{m:.1f}%",
-                ha="center", va="bottom", fontsize=11, fontweight="bold")
+                ha="center", va="bottom", fontsize=10, fontweight="bold")
 
     ax.set_ylabel("2x2 Polarity Matching Accuracy (%)", fontsize=12)
-    ax.set_title("E4: Why Cosine Fails — Diagonal (Scaling) vs Off-Diagonal (Interaction)", fontsize=13, fontweight="bold")
+    ax.set_title("E4: Why Cosine Fails — Cosine vs LABCLIP vs Diagonal vs Off-Diagonal vs Full Bilinear", fontsize=13, fontweight="bold")
+    ax.set_xticklabels(names, rotation=15, ha="right", fontsize=9.5)
     ax.set_ylim(0, 105)
     ax.grid(axis="y", ls="--", alpha=0.4)
     ax.legend(fontsize=10, loc="upper left")

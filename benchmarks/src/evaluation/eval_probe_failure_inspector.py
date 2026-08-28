@@ -54,17 +54,20 @@ def run_vision_probing_and_inspect_failures(
     image_root: str,
     device: str,
     output_dir: str,
+    min_pairs: int = 20,
     batch_size: int = 64,
     seed: int = 42,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Executes exact GroupKFold linear probing on 1:1 counterfactual image pairs
     and extracts Out-of-Fold (OOF) misclassified images.
+    Filters objects with fewer than min_pairs counterfactual pairs.
     """
     print("\n" + "=" * 65)
     print("  [Vision Probing & Failure Inspection]")
     print(f"  CSV        : {csv_path}")
     print(f"  Image Root : {image_root}")
+    print(f"  Min Pairs  : {min_pairs}")
     print("=" * 65)
 
     df_raw, df_pairs, pair_metadata = load_and_verify_counterfactual_pairs(csv_path, image_root)
@@ -99,7 +102,7 @@ def run_vision_probing_and_inspect_failures(
     raw_records = []
     failure_records = []
 
-    print(f"  Processing {len(unique_objects)} objects across {len(all_keys)} vision layers...")
+    print(f"  Processing objects with >= {min_pairs} pairs across {len(all_keys)} vision layers...")
 
     for obj in unique_objects:
         mask = (object_names == obj)
@@ -107,7 +110,7 @@ def run_vision_probing_and_inspect_failures(
         obj_pairs = pair_ids[mask]
         sub_df = df_pairs[mask].reset_index(drop=True)
 
-        if n_obj < 2:
+        if n_obj < min_pairs:
             continue
 
         groups_all = np.concatenate([obj_pairs, obj_pairs])
@@ -287,7 +290,7 @@ def run_text_probing_and_inspect_failures(
     csv_path: str,
     device: str,
     output_dir: str,
-    min_samples_per_class: int = 10,
+    min_samples_per_class: int = 20,
     n_splits: int = 5,
     batch_size: int = 256,
     seed: int = 42,
@@ -642,7 +645,8 @@ def main():
     parser.add_argument("--output_dir", type=str, default="logs/evaluation/probe_failure_inspection")
     parser.add_argument("--model", type=str, default="ViT-B-32")
     parser.add_argument("--pretrained", type=str, default="openai")
-    parser.add_argument("--min_samples", type=int, default=10)
+    parser.add_argument("--min_pairs", type=int, default=20, help="Minimum counterfactual pairs per object for vision probing (default: 20)")
+    parser.add_argument("--min_samples", type=int, default=20, help="Minimum samples per class for text probing (default: 20)")
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -653,8 +657,10 @@ def main():
     print("╔═══════════════════════════════════════════════════════════╗")
     print("║  Vision & Text Linear Probe Failure Inspector             ║")
     print("╚═══════════════════════════════════════════════════════════╝")
-    print(f"  Model      : {args.model} ({args.pretrained}) | Device: {device}")
-    print(f"  Output Dir : {args.output_dir}\n")
+    print(f"  Model       : {args.model} ({args.pretrained}) | Device: {device}")
+    print(f"  Output Dir  : {args.output_dir}")
+    print(f"  Min Pairs   : {args.min_pairs}")
+    print(f"  Min Samples : {args.min_samples}\n")
 
     # Load Model
     print(f"Loading CLIP '{args.model}' ({args.pretrained})...")
@@ -665,7 +671,7 @@ def main():
     # 1. Vision Probing & Failures
     df_vis_stats, df_vis_fail = run_vision_probing_and_inspect_failures(
         model, preprocess, args.vision_csv, args.image_root, device, args.output_dir,
-        batch_size=args.batch_size, seed=args.seed
+        min_pairs=args.min_pairs, batch_size=args.batch_size, seed=args.seed
     )
 
     # 2. Text Probing & Failures

@@ -105,11 +105,13 @@ def compute_e1_minimal_pair_auc(
     feats_abs: np.ndarray,
     concept_text_feats: Dict[str, np.ndarray],
     natural_neg_samples: int = 10,
+    min_pairs: int = 20,
     seed: int = 42,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
     """
     Computes pairwise cosine similarity, delta_s, and ROC-AUC per concept
     for both Counterfactual Minimal Pairs (I_pres vs I_abs) and Natural Heterogeneous pairs.
+    Filters concepts with fewer than min_pairs counterfactual pairs.
     """
     np.random.seed(seed)
     unique_concepts = sorted(df_pairs["object_name"].unique().tolist())
@@ -125,7 +127,7 @@ def compute_e1_minimal_pair_auc(
     for c in unique_concepts:
         mask = (df_pairs["object_name"] == c).values
         n_c = int(np.sum(mask))
-        if n_c == 0:
+        if n_c < min_pairs:
             continue
 
         c_indices = np.where(mask)[0]
@@ -225,6 +227,7 @@ def compute_e1_minimal_pair_auc(
 
     summary_report = {
         "alshehri_reported_auc": alshehri_baseline,
+        "min_pairs_threshold": min_pairs,
         "counterfactual_macro_auc": macro_cf_auc,
         "counterfactual_pooled_auc": pooled_cf_auc,
         "natural_between_image_macro_auc": macro_nat_auc,
@@ -335,6 +338,7 @@ def main():
     parser.add_argument("--pretrained", type=str, default="openai")
     parser.add_argument("--prompt_template", type=str, default="a photo of a {}")
     parser.add_argument("--ensemble_prompts", action="store_true", help="Ensemble multiple atomic prompt templates")
+    parser.add_argument("--min_pairs", type=int, default=20, help="Minimum counterfactual pairs per concept (default: 20)")
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -350,6 +354,7 @@ def main():
     print(f"  Dataset CSV : {args.csv_path}")
     print(f"  Image Root  : {args.image_root}")
     print(f"  Output Dir  : {args.output_dir}")
+    print(f"  Min Pairs   : {args.min_pairs}")
     print(f"  Prompt      : {args.prompt_template} (Ensemble: {args.ensemble_prompts})\n")
 
     # 1. Load Counterfactual Minimal Pairs
@@ -395,6 +400,7 @@ def main():
         feats_pres=feats_pres,
         feats_abs=feats_abs,
         concept_text_feats=concept_text_feats,
+        min_pairs=args.min_pairs,
         seed=args.seed,
     )
 
@@ -420,6 +426,7 @@ def main():
     print(f"  AUC Gap (Alshehri vs Counterfactual): {summary['auc_drop_under_counterfactual_control']:+.4f}")
     print(f"  Overall Pairwise Win Rate (s_p > s_a): {summary['overall_pairwise_win_rate_pct']:.2f}%")
     print(f"  Percentage of Failure/Ties (Δs <= 0) : {summary['overall_pct_delta_le_zero']:.2f}%")
+    print(f"  Evaluated Concepts (N >= {args.min_pairs})     : {len(df_concepts_out)} objects (Total {len(df_pairs_out)} pairs)")
     print(f"  Verdict                             : {summary['verdict']}")
     print("═" * 70)
     print(f"  Results saved in: {args.output_dir}")
