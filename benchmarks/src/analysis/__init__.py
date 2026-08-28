@@ -17,6 +17,15 @@ from analysis.config import (
     DEFAULT_TUNING_GRIDS,
     filter_vision_dict,
 )
+from .feature_cache import (
+    cached_encode,
+    make_cache_key,
+    build_provenance,
+    inherit_upstream_provenance,
+    get_git_commit,
+    load_object_restriction,
+    DEFAULT_CACHE_DIR,
+)
 
 __all__ = [
     "PipelineStep",
@@ -32,4 +41,11 @@ __all__ = [
     "set_seed",
     "DEFAULT_TUNING_GRIDS",
     "filter_vision_dict",
+    "cached_encode",
+    "make_cache_key",
+    "build_provenance",
+    "inherit_upstream_provenance",
+    "get_git_commit",
+    "load_object_restriction",
+    "DEFAULT_CACHE_DIR",
 ]
