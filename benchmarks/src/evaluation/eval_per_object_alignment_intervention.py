@@ -73,6 +73,7 @@ try:
     )
     from benchmarks.src.analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
     from benchmarks.src.analysis.beaf.vision_mechanisms import extract_vision_features_unified
+    from benchmarks.src.analysis.model_loader import load_clip_for_eval
     from benchmarks.src.analysis.feature_cache import (
         cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
     )
@@ -662,9 +663,8 @@ def run_per_object_alignment_intervention(
 
     # 1. Load CLIP Model
     print(f"Loading CLIP model '{model_name}' ({pretrained})...")
-    model, _, preprocess = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
-    tokenizer = open_clip.get_tokenizer(model_name)
-    model = model.to(device).eval()
+    model, preprocess, tokenizer = load_clip_for_eval(
+        model_name, pretrained, device)
     embed_dim = 512
 
     # 2. Load Vision 1:1 Counterfactual Pairs

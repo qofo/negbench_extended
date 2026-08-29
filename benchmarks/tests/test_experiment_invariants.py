@@ -621,3 +621,54 @@ class TestPyTorchProbeSklearnContract:
         y = np.array([0] * 20 + [1] * 20 + [2] * 20)
         with pytest.raises(ValueError, match="binary probe"):
             create_probe_classifier("mlp", seed=42, epochs=5).fit(X, y)
+
+
+class TestSharedModelLoader:
+    """
+    ``create_model_and_transforms`` returns (model, preprocess_train,
+    preprocess_val). The train transform is a stochastic RandomResizedCrop, so an
+    entrypoint that grabs the wrong element makes every embedding a different
+    sample of the same image. Four entrypoints once did exactly that, and the rest
+    each repeated the same three-line incantation by hand. load_clip_for_eval is
+    the one place that unpacking happens.
+    """
+
+    E_SERIES = [
+        "eval_e1_minimal_pair_auc",
+        "eval_e1_placebo_test",
+        "eval_e2_hadamard_decomposition",
+        "eval_e2_final_gamma_resolution",
+        "eval_e2_sanity_check_and_grounding",
+        "eval_unary_mechanistic_analysis",
+        "eval_per_object_alignment_intervention",
+        "eval_4condition_decomposition",
+        "eval_probe_failure_inspector",
+    ]
+
+    def test_loader_returns_the_deterministic_transform_and_an_eval_model(self):
+        import torch
+        from PIL import Image
+        from analysis.model_loader import load_clip_for_eval
+
+        model, preprocess, tokenizer = load_clip_for_eval("ViT-B-32", None, device="cpu")
+        assert model.training is False, "extraction must run with the model in eval mode"
+
+        img = Image.fromarray(
+            np.random.default_rng(0).integers(0, 255, (300, 400, 3), dtype=np.uint8))
+        assert torch.equal(preprocess(img), preprocess(img)), (
+            "the loader handed back a stochastic transform, i.e. preprocess_train"
+        )
+        assert tokenizer(["a photo of a cat"]).shape[0] == 1
+
+    @pytest.mark.parametrize("module_name", E_SERIES)
+    def test_e_series_does_not_hand_roll_the_unpack(self, module_name):
+        import importlib
+        import inspect
+
+        mod = importlib.import_module(f"benchmarks.src.evaluation.{module_name}")
+        src = inspect.getsource(mod)
+        assert "load_clip_for_eval" in src, f"{module_name} should load through the shared helper"
+        assert "create_model_and_transforms" not in src, (
+            f"{module_name} still unpacks create_model_and_transforms itself, which is how "
+            f"preprocess_train gets picked up by accident"
+        )

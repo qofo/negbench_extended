@@ -35,6 +35,7 @@ import open_clip
 try:
     from benchmarks.src.analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
     from benchmarks.src.analysis.beaf.vision_mechanisms import extract_vision_features_unified
+    from benchmarks.src.analysis.model_loader import load_clip_for_eval
     from benchmarks.src.analysis.feature_cache import (
         cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
     )
@@ -396,9 +397,8 @@ def main():
 
     # 2. Load Model & Tokenizer
     print(f"\n  [2/4] Initializing CLIP model '{args.model}'...")
-    model, _, preprocess = open_clip.create_model_and_transforms(args.model, pretrained=args.pretrained)
-    tokenizer = open_clip.get_tokenizer(args.model)
-    model = model.to(device).eval()
+    model, preprocess, tokenizer = load_clip_for_eval(
+        args.model, args.pretrained, device)
 
     # 3. Extract Features
     print("\n  [3/4] Extracting vision embeddings for present and absent images...")

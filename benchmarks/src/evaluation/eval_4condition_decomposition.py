@@ -49,6 +49,8 @@ import matplotlib.pyplot as plt
 
 import open_clip
 
+from benchmarks.src.analysis.model_loader import load_clip_for_eval
+
 from benchmarks.src.analysis.config import coerce_bool_column
 
 from benchmarks.src.evaluation.eval_unary_mechanistic_analysis import (
@@ -314,9 +316,8 @@ def run_4condition_decomposition(
 
     # Load CLIP model
     print(f"\n  Loading CLIP model '{model_name}' ({pretrained})...")
-    model, _, preprocess = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
-    tokenizer = open_clip.get_tokenizer(model_name)
-    model = model.to(device).eval()
+    model, preprocess, tokenizer = load_clip_for_eval(
+        model_name, pretrained, device)
     embed_dim = 512
 
     per_object_records = []

@@ -40,6 +40,7 @@ import open_clip
 # Reuse existing verified infrastructure
 from benchmarks.src.analysis.config import get_layer_features as _get_feats, set_seed, coerce_bool_column
 from benchmarks.src.analysis.feature_cache import build_provenance, load_object_restriction
+from benchmarks.src.analysis.model_loader import load_clip_for_eval
 from benchmarks.src.analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
 from benchmarks.src.analysis.beaf.vision_mechanisms import extract_vision_features_unified
 from benchmarks.src.evaluation.eval_layerwise_linear_probe import extract_layerwise_feature_dict
@@ -709,9 +710,8 @@ def main():
 
     # Load Model
     print(f"Loading CLIP '{args.model}' ({args.pretrained})...")
-    model, _, preprocess = open_clip.create_model_and_transforms(args.model, pretrained=args.pretrained)
-    tokenizer = open_clip.get_tokenizer(args.model)
-    model = model.to(device).eval()
+    model, preprocess, tokenizer = load_clip_for_eval(
+        args.model, args.pretrained, device)
 
     # 1. Vision Probing & Failures
     df_vis_stats, df_vis_fail = run_vision_probing_and_inspect_failures(
