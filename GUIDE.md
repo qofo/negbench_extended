@@ -136,7 +136,16 @@ $$\text{Interaction Effect} = (A - B) - (C - D) \quad (\text{시각-텍스트 �
 * $\text{Total Energy} = \sum_{i, j} W_{i, j}^2$
 * $\text{Diagonal Energy (Direct Matching)} = \sum_i W_{i, i}^2 \approx \mathbf{2.83\%}$
 * $\text{Off-Diagonal Energy (Cross-Dimension Interaction)} = \text{Total} - \text{Diag} \approx \mathbf{97.17\%}$
-* **결론**: 기존 코사인 유사도가 1:1 대각 차원만 매칭하는 것과 달리, 부정어 인식은 비대각 교차 차원 상호작용이 필수적임.
+* ⚠️ **이 비율을 "교차 차원이 지배적"의 근거로 쓰지 말 것.** 512×512 행렬에는 비대각 성분이 **511배**
+  많으므로 에너지가 완전히 균등한 **무작위 행렬조차 비대각이 99.8%**이며, 97.17%는 그보다 낮다.
+  성분 하나당으로 환산하면 대각이 비대각의 **14.9배**(균등이면 1.0배)이고, 대각 비율 2.83%는 우연
+  기준 0.195%의 **14.5배**다. 즉 이 수치가 말하는 것은 "$W$가 여전히 대각 편향적"이다.
+  ($W$는 `torch.eye`로 초기화되고 전배치로 학습되어 시드 없이도 결정적이며, 2026-08-29 재실행에서
+  2.83% / 97.17%가 정확히 재현되었다: `logs/evaluation/02_archive/2026-08-29_ii4_internal_weights/`)
+* **결론**: 코사인이 1:1 대각 매칭만 수행하는 것과 달리 부정 판별에는 비대각 교차 상호작용이 필요하다.
+  **단 그 근거는 위 에너지 비율이 아니라 E4 절제다** — 대각 성분만 남기면 0.62%, 비대각만 남기면
+  83.15%로, 절제는 성분 개수 효과에 오염되지 않고 각 성분군의 실제 기여를 직접 잰다
+  (`eval_unary_mechanistic_analysis.py`의 E4, `RESULTS.md` §7).
 
 #### ⑤ 부정 부분공간 및 유효 랭크 (`benchmarks/src/analysis/subspace_analysis.py`)
 * 부정 차이 벡터 $D = X_{\text{pos}} - X_{\text{neg}}$의 공분산 고유값 $\lambda_i$로부터 산출:
