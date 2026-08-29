@@ -152,19 +152,27 @@
   - E4: 코사인이 왜 실패하고 Bilinear가 무엇을 복원하는가 (대각 vs 비대각 절제)
 - **출력**: 4개 Figure PNG + CSV + JSON
 
-#### `eval_per_object_alignment_intervention.py` (743줄)
+#### `eval_per_object_alignment_intervention.py` (872줄)
 - **역할**: 개념별 비전/텍스트 프로브 법선 $d_I^{(o)}, d_T^{(o)}$를 추출하고, 이를 정렬시키는 변환이
   2×2 counterfactual 매칭을 실제로 고치는지 **인과적으로** 검정
 - **7개 조건**: `1_Baseline_Cosine` / `2_Closed_Form_Rotation` ($R^{(o)}d_T = d_I$) /
   `3_Rank1_Polar_Adapter` / `4_LABCLIP_Linear_Alignment` / `5_Learned_LowRank_Bilinear` /
   `6_Learned_Full_Bilinear` / `7_Control_Random_Rotation`(대조군)
-- **CV**: `StratifiedKFold(5)` (개념 내 정확도). 프로브 법선 자체는 교차검증 없이 전체 데이터로 적합
+- **⚠️ 평가 프로토콜 — 교차검증 없음 (in-sample)**: 모든 조건이 $d_I, d_T$ 적합과 조건 4~6 학습에
+  쓰인 **바로 그 쌍** 위에서 채점됩니다. 따라서 학습형 조건의 정확도(Full Bilinear 88.2%)는 일반화가
+  아니라 512×512 자유 파라미터의 **적합도**입니다. 닫힌형 조건(1·2·3·7)만 이 문제에서 자유롭습니다.
+  이 단서는 summary JSON의 `provenance.evaluation_protocol`에 함께 기록됩니다
 - **출력**: `per_object_intervention_results.csv`, `per_object_intervention_summary.json`,
   `fig_intervention_7conditions_bar.png`, `fig_alignment_vs_gain_scatter.png`, `fig_per_object_gain_waterfall.png`
 - **⚠️ 절편 민감성**: 회전 계열은 `--no_bias` 유무에 따라 4.05% ↔ 14.83%로 3.7배 흔들립니다.
   다른 조건은 둔감하므로, 이 스크립트의 결과는 **양쪽을 반드시 병기**해야 재현됩니다.
-- **⚠️ 미지원**: 다른 E1/E2 스크립트와 달리 `--restrict_objects`와 provenance 블록이 없습니다.
-  따라서 산출물을 33개 개념 통일 집합의 계수 표와 직접 비교할 수 없습니다 (R7 재실행 시 선결 과제).
+- **개념 집합 고정**: `--restrict_objects`(콤마 목록 또는 txt/csv/json 경로)로 E1/E2와 동일한 집합을
+  강제합니다. 탈락한 개념은 사유별로 (`비전 쌍 없음` / `텍스트 쌍 부족` / `비전 쌍 부족`) 보고됩니다.
+  `min_pairs=20`만으로도 33개 개념이 선택되므로 기본 실행도 이미 통일 집합과 같지만, 이제 그 사실이
+  **강제되고 기록됩니다**
+- **⚠️ 제약 재현성**: 개념을 제한하면 인코더 배치 구성이 바뀝니다. 닫힌형 조건은 비트 단위로 동일하지만
+  학습형 조건은 평균 0.1~0.3pp(단일 개념 최대 ~12pp) 움직입니다 — 신호가 아니라 잡음으로 읽으십시오
+- **`--use_cache`**: `(model, pretrained, items)` 키 기반 디스크 특징 캐시 재사용 (2m55s → 1m56s)
 
 #### `eval_probe_failure_inspector.py` (689줄)
 - **역할**: Vision/Text 프로브 OOF 실패 사례 수집 및 패턴 분석
@@ -328,21 +336,29 @@ The `benchmarks/src/evaluation/` package is NegBench's **MCQ/Retrieval evaluatio
   - E3: Probe alignment predicts cosine margin
   - E4: Cosine failure diagnosis via W = D + O (Diagonal vs Off-Diagonal ablation)
 
-#### `eval_per_object_alignment_intervention.py` (743 lines)
+#### `eval_per_object_alignment_intervention.py` (872 lines)
 - **Role**: Extract per-concept vision/text probe normals $d_I^{(o)}, d_T^{(o)}$ and test **causally**
   whether a transform that aligns them actually repairs 2×2 counterfactual matching
 - **7 conditions**: `1_Baseline_Cosine` / `2_Closed_Form_Rotation` ($R^{(o)}d_T = d_I$) /
   `3_Rank1_Polar_Adapter` / `4_LABCLIP_Linear_Alignment` / `5_Learned_LowRank_Bilinear` /
   `6_Learned_Full_Bilinear` / `7_Control_Random_Rotation`
-- **CV**: `StratifiedKFold(5)` for within-concept accuracy. The probe normals themselves are fitted on
-  all data with no cross-validation
+- **⚠️ Evaluation protocol — no cross-validation (in-sample)**: every condition is scored on the *same*
+  pairs used to fit $d_I, d_T$ and to train conditions 4–6. The learned-matcher accuracies (Full Bilinear
+  88.2%) are therefore fit quality over 512×512 free parameters, not generalization. Only the closed-form
+  conditions (1/2/3/7) are free of this. The caveat is recorded in the summary JSON under
+  `provenance.evaluation_protocol`
 - **Outputs**: `per_object_intervention_results.csv`, `per_object_intervention_summary.json`,
   `fig_intervention_7conditions_bar.png`, `fig_alignment_vs_gain_scatter.png`, `fig_per_object_gain_waterfall.png`
 - **⚠️ Intercept sensitivity**: the rotation conditions swing 4.05% ↔ 14.83% depending on `--no_bias`,
   a 3.7x difference the other conditions do not show. **Report both** or the result will not reproduce.
-- **⚠️ Not supported**: unlike the other E1/E2 scripts this one has no `--restrict_objects` and writes no
-  provenance block, so its outputs cannot be compared directly against the 33-concept unified coefficient
-  tables (a prerequisite for the R7 re-run).
+- **Pinning the concept set**: `--restrict_objects` (comma list, or a txt/csv/json path) enforces the same
+  set E1/E2 used, and reports each dropped concept by reason (no vision pairs / too few text pairs / too few
+  vision pairs). `min_pairs=20` already selects the same 33 concepts on its own, so a default run matched the
+  unified set incidentally — now it is **enforced and recorded**
+- **⚠️ Restriction reproducibility**: restricting concepts changes encoder batch composition. The closed-form
+  conditions stay bit-identical; the trained ones move by 0.1–0.3pp in the mean (up to ~12pp on one concept).
+  Read such a gap as noise, not signal
+- **`--use_cache`**: reuse on-disk features keyed by `(model, pretrained, items)` (2m55s → 1m56s)
 
 #### `eval_probe_failure_inspector.py` (689 lines)
 - **Role**: Vision/Text probe OOF failure case collection and pattern analysis

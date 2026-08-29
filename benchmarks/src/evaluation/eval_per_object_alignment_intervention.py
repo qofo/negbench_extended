@@ -22,16 +22,28 @@ Outputs:
   - fig_per_object_gain_waterfall.png
   - per_object_intervention_summary.json
 
+Evaluation protocol (important):
+  Every condition is scored on the *same* pairs used to fit d_I/d_T and to train
+  conditions 4-6. There is no cross-validation, so the learned-matcher accuracies
+  measure fit quality on 512x512 (or 512xk) free parameters, not generalization.
+  The summary JSON records this under provenance.evaluation_protocol.
+
 Usage:
     python -m benchmarks.src.evaluation.eval_per_object_alignment_intervention \\
         --output_dir logs/evaluation/per_object_alignment_intervention \\
         --model ViT-B-32 --pretrained openai
+
+    # Pin the concept set to another experiment's, and reuse cached features:
+    python -m benchmarks.src.evaluation.eval_per_object_alignment_intervention \\
+        --restrict_objects logs/evaluation/e2_hadamard/e2_per_concept_coefficients.csv \\
+        --use_cache --output_dir logs/evaluation/r7_alignment_bias
 """
 
 import os
 import json
 import argparse
 import math
+from types import SimpleNamespace
 from typing import Dict, Any, List, Tuple, Optional
 
 import numpy as np
@@ -40,18 +52,33 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import StratifiedKFold
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 import open_clip
 
-# Reuse existing verified infrastructure
-from benchmarks.src.analysis.config import get_layer_features as _get_feats, coerce_bool_column
-from benchmarks.src.analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
-from benchmarks.src.analysis.beaf.vision_mechanisms import extract_vision_features_unified
-from benchmarks.src.evaluation.eval_layerwise_linear_probe import extract_layerwise_feature_dict
+# Reuse existing verified infrastructure (robust to module vs standalone execution)
+try:
+    from benchmarks.src.analysis.config import (
+        get_layer_features as _get_feats, coerce_bool_column, set_seed,
+    )
+    from benchmarks.src.analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
+    from benchmarks.src.analysis.beaf.vision_mechanisms import extract_vision_features_unified
+    from benchmarks.src.analysis.feature_cache import (
+        cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
+    )
+    from benchmarks.src.evaluation.eval_layerwise_linear_probe import extract_layerwise_feature_dict
+except ImportError:
+    from analysis.config import (
+        get_layer_features as _get_feats, coerce_bool_column, set_seed,
+    )
+    from analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
+    from analysis.beaf.vision_mechanisms import extract_vision_features_unified
+    from analysis.feature_cache import (
+        cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
+    )
+    from evaluation.eval_layerwise_linear_probe import extract_layerwise_feature_dict
 
 
 # ============================================================
@@ -377,9 +404,20 @@ def run_per_object_alignment_intervention(
     batch_size: int = 128,
     seed: int = 42,
     use_bias: bool = True,
+    restrict_objects: Optional[str] = None,
+    use_cache: bool = False,
+    cache_dir: str = DEFAULT_CACHE_DIR,
 ):
     os.makedirs(output_dir, exist_ok=True)
+    # Condition 5 initialises two nn.Linear weights from torch's global RNG
+    # (nn.init.normal_, std=0.02); without this its matrix -- and so its accuracy --
+    # differs on every run. Conditions 4 and 6 start from torch.eye and 7 from its
+    # own RandomState, so this seeds the one condition that was floating.
+    set_seed(seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    restrict = load_object_restriction(restrict_objects)
+    cache_kw = dict(model=model_name, pretrained=pretrained,
+                    cache_dir=cache_dir, enabled=use_cache)
 
     print("╔═══════════════════════════════════════════════════════════╗")
     print("║  Per-Object Probe Alignment Causal Intervention (R^(o))   ║")
@@ -388,7 +426,10 @@ def run_per_object_alignment_intervention(
     print(f"  Output Dir  : {output_dir}")
     print(f"  Min Pairs   : {min_pairs_per_obj}")
     print(f"  Rank (k)    : {rank}")
-    print(f"  Use Bias    : {use_bias}\n")
+    print(f"  Use Bias    : {use_bias}")
+    print(f"  Seed        : {seed} | Feature cache: {use_cache}")
+    print(f"  Restrict    : {restrict_objects or 'none (all common concepts)'}"
+          + (f" -> {len(restrict)} requested" if restrict else "") + "\n")
 
     # 1. Load CLIP Model
     print(f"Loading CLIP model '{model_name}' ({pretrained})...")
@@ -400,15 +441,36 @@ def run_per_object_alignment_intervention(
     # 2. Load Vision 1:1 Counterfactual Pairs
     print("\nLoading and verifying Vision 1:1 Counterfactual Pairs...")
     df_raw, df_vis_pairs, _ = load_and_verify_counterfactual_pairs(vision_csv, image_root)
-    vis_orig = extract_vision_features_unified(model, preprocess, df_vis_pairs["orig_path"].tolist(), device, batch_size)
-    vis_cf = extract_vision_features_unified(model, preprocess, df_vis_pairs["cf_path"].tolist(), device, batch_size)
 
-    flags_orig = np.array(vis_orig.get("loaded_flags", [True] * len(df_vis_pairs)))
-    flags_cf = np.array(vis_cf.get("loaded_flags", [True] * len(df_vis_pairs)))
+    # Restricting here rather than after encoding is what makes --restrict_objects
+    # cheap: the dropped concepts never reach the vision encoder. Per-object fitting is
+    # independent, so the closed-form conditions (1/2/3/7) are bit-identical restricted
+    # or not -- measured. The three iteratively trained conditions are not: dropping
+    # concepts changes encoder batch composition, and those last-bit differences amplify
+    # over 150 epochs to ~0.1-0.3pp in the mean (up to ~12pp on a single concept for
+    # LABCLIP). Read a small gap between a restricted and an unrestricted run as noise,
+    # not signal.
+    if restrict is not None:
+        keep = set(restrict)
+        n_before = df_vis_pairs["object_name"].nunique()
+        df_vis_pairs = df_vis_pairs[df_vis_pairs["object_name"].isin(keep)].reset_index(drop=True)
+        print(f"  -> Vision pairs restricted: {n_before} -> "
+              f"{df_vis_pairs['object_name'].nunique()} concepts, {len(df_vis_pairs)} pairs")
+
+    def _encode_images(paths: List[str], slot: str):
+        def _compute():
+            out = extract_vision_features_unified(model, preprocess, paths, device, batch_size)
+            flags = np.asarray(out.get("loaded_flags", [True] * len(paths)), dtype=bool)
+            return out["final_l2norm"], flags
+        return cached_encode(_compute, kind=f"{slot}@l2norm+flags", items=paths, **cache_kw)
+
+    feats_orig_all, flags_orig = _encode_images(df_vis_pairs["orig_path"].tolist(), "image_orig")
+    feats_cf_all, flags_cf = _encode_images(df_vis_pairs["cf_path"].tolist(), "image_cf")
+
     valid_vis = flags_orig & flags_cf
     df_vis_pairs = df_vis_pairs[valid_vis].reset_index(drop=True)
-    feats_vis_orig = vis_orig["final_l2norm"][valid_vis]
-    feats_vis_cf = vis_cf["final_l2norm"][valid_vis]
+    feats_vis_orig = feats_orig_all[valid_vis]
+    feats_vis_cf = feats_cf_all[valid_vis]
 
     # 3. Load Text Diverse Counterfactual Captions
     print("\nLoading Text Diverse Counterfactual Captions...")
@@ -436,20 +498,47 @@ def run_per_object_alignment_intervention(
     all_sents = []
     seen = set()
     for o in obj_txt_aff:
+        if restrict is not None and o not in set(restrict):
+            continue
         for c in obj_txt_aff[o] + obj_txt_neg[o]:
             if c not in seen:
                 all_sents.append(c)
                 seen.add(c)
     sent_idx = {s: i for i, s in enumerate(all_sents)}
     print(f"  Encoding {len(all_sents)} unique sentences...")
-    global_txt_feats = extract_layerwise_feature_dict(model, tokenizer, all_sents, device, "eot", batch_size)
-    txt_final_feats = global_txt_feats["Final (L2 Normed)"]
+
+    def _compute_text():
+        feats = extract_layerwise_feature_dict(model, tokenizer, all_sents, device, "eot", batch_size)
+        return (feats["Final (L2 Normed)"],)
+
+    (txt_final_feats,) = cached_encode(_compute_text, kind="text_alignment@l2norm|eot",
+                                       items=all_sents, **cache_kw)
 
     # 4. Find Common Candidate Objects
     vis_objects = set(df_vis_pairs["object_name"].unique())
     txt_objects = set([o for o in obj_txt_aff if len(obj_txt_aff[o]) >= min_pairs_per_obj and len(obj_txt_neg[o]) >= min_pairs_per_obj])
     common_objects = sorted(list(vis_objects.intersection(txt_objects)))
     common_objects = [o for o in common_objects if "," not in str(o)]
+
+    restriction_report: Optional[Dict[str, Any]] = None
+    if restrict is not None:
+        keep = set(restrict)
+        common_objects = [o for o in common_objects if o in keep]
+        # Say *why* each requested concept is absent -- "33 requested, 27 kept" is
+        # useless for deciding whether the unified set is reachable here.
+        restriction_report = {
+            "requested": sorted(keep),
+            "n_requested": len(keep),
+            "dropped_no_vision_pairs": sorted(keep - vis_objects),
+            "dropped_insufficient_text_pairs": sorted((keep & vis_objects) - txt_objects),
+        }
+        n_drop = len(restriction_report["dropped_no_vision_pairs"]) + \
+            len(restriction_report["dropped_insufficient_text_pairs"])
+        print(f"  -> Restriction: {len(keep)} requested, {len(common_objects)} candidates, {n_drop} dropped")
+        if restriction_report["dropped_no_vision_pairs"]:
+            print(f"     no vision pairs      : {restriction_report['dropped_no_vision_pairs']}")
+        if restriction_report["dropped_insufficient_text_pairs"]:
+            print(f"     < {min_pairs_per_obj} text pairs      : {restriction_report['dropped_insufficient_text_pairs']}")
 
     print(f"\nTotal common valid objects for Per-Object Intervention: {len(common_objects)}")
 
@@ -553,9 +642,37 @@ def run_per_object_alignment_intervention(
     df_results.to_csv(csv_out, index=False)
     print(f"\n  Saved Results CSV: {csv_out}")
 
+    analyzed = sorted(df_results["object_name"].astype(str).tolist()) if len(df_results) else []
+    if restriction_report is not None:
+        # A candidate can still fall out inside the loop on n_vis < min_pairs.
+        restriction_report["dropped_insufficient_vision_pairs"] = sorted(
+            set(common_objects) - set(analyzed))
+        restriction_report["analyzed"] = analyzed
+
+    prov_args = SimpleNamespace(
+        model=model_name, pretrained=pretrained, vision_csv=vision_csv, text_csv=text_csv,
+        image_root=image_root, min_pairs=min_pairs_per_obj, seed=seed, batch_size=batch_size,
+        restrict_objects=restrict_objects, use_cache=use_cache, no_bias=not use_bias,
+    )
+    provenance = build_provenance(
+        prov_args,
+        rank=rank,
+        n_concepts_analyzed=len(analyzed),
+        n_vision_pairs=int(len(df_vis_pairs)),
+        n_text_sentences=len(all_sents),
+        concepts_analyzed=analyzed,
+        restriction=restriction_report,
+        evaluation_protocol=(
+            "in-sample: d_I/d_T and the learned conditions 4-6 are fitted on the same "
+            "pairs every condition is scored on; there is no cross-validation, so the "
+            "learned-matcher accuracies are fit quality, not generalization"
+        ),
+    )
+
     # 5. Generate Comparative Figures and Summary JSON
     generate_intervention_visualizations(
-        df_results, output_dir, condition_names, rank=rank, min_pairs_per_obj=min_pairs_per_obj
+        df_results, output_dir, condition_names, rank=rank, min_pairs_per_obj=min_pairs_per_obj,
+        provenance=provenance,
     )
 
 
@@ -568,6 +685,7 @@ def generate_intervention_visualizations(
     condition_names: List[str],
     rank: int = 32,
     min_pairs_per_obj: int = 20,
+    provenance: Optional[Dict[str, Any]] = None,
 ):
     print("\nGenerating Intervention Visualizations & Summary Report...")
 
@@ -700,6 +818,8 @@ def generate_intervention_visualizations(
 
     # ── Save Full Summary JSON ──
     json_out = os.path.join(output_dir, "per_object_intervention_summary.json")
+    if provenance is not None:
+        summary_dict["provenance"] = provenance
     with open(json_out, "w", encoding="utf-8") as f:
         json.dump(summary_dict, f, indent=2)
     print(f"  Saved Summary JSON: {json_out}\n")
@@ -722,6 +842,12 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no_bias", "--no-bias", action="store_true", default=False,
                         help="Disable bias/intercept in linear probes (default: bias enabled)")
+    parser.add_argument("--restrict_objects", type=str, default=None,
+                        help="Comma list, or path to txt/csv/json, limiting evaluation to an exact "
+                             "concept set (use to share E1/E2's concept set verbatim)")
+    parser.add_argument("--use_cache", action="store_true", default=False,
+                        help="Reuse on-disk encoder features keyed by (model, pretrained, items)")
+    parser.add_argument("--cache_dir", type=str, default=DEFAULT_CACHE_DIR)
     args = parser.parse_args()
 
     run_per_object_alignment_intervention(
@@ -736,6 +862,9 @@ def main():
         batch_size=args.batch_size,
         seed=args.seed,
         use_bias=not args.no_bias,
+        restrict_objects=args.restrict_objects,
+        use_cache=args.use_cache,
+        cache_dir=args.cache_dir,
     )
 
 

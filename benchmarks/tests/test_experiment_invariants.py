@@ -230,3 +230,72 @@ class TestTieAwarePrediction:
         assert ties.mean() == 1.0, f"{head} should tie on every row when the image is zeroed"
         acc = float((preds == targets).mean())
         assert acc < 0.5, f"{head} scored {acc:.0%} on pure ties; the old argmax gave 100%"
+
+
+class TestAlignmentInterventionDeterminism:
+    """
+    The alignment-intervention script trains three matchers per concept. Two start
+    from ``torch.eye`` and are deterministic on their own, but the low-rank head
+    draws ``proj_v``/``proj_t`` from torch's global RNG (``nn.init.normal_``). The
+    script never called ``set_seed``, so that one condition produced a different
+    matrix -- and a different accuracy -- on every run, while its summary JSON
+    recorded a ``seed`` that controlled none of it.
+    """
+
+    @staticmethod
+    def _quad(seed=0, n=24, d=64):
+        import torch
+        rng = np.random.RandomState(seed)
+        mk = lambda: torch.tensor(rng.randn(n, d) / np.sqrt(d), dtype=torch.float32)
+        return mk(), mk(), mk(), mk()
+
+    def test_lowrank_matcher_is_seed_dependent(self):
+        """Without seeding, the low-rank condition is genuinely non-reproducible."""
+        import torch
+        from benchmarks.src.evaluation.eval_per_object_alignment_intervention import (
+            train_lowrank_bilinear_matcher,
+        )
+
+        quad = self._quad()
+        torch.seed()
+        w1 = train_lowrank_bilinear_matcher(*quad, rank=8, epochs=20)
+        torch.seed()
+        w2 = train_lowrank_bilinear_matcher(*quad, rank=8, epochs=20)
+        assert not np.allclose(w1, w2), (
+            "expected the unseeded low-rank matcher to differ between runs; if this "
+            "now passes, the init changed and the set_seed guarantee needs rechecking"
+        )
+
+    def test_set_seed_makes_every_condition_reproducible(self):
+        """With set_seed, all three trained conditions repeat exactly."""
+        from analysis.config import set_seed
+        from benchmarks.src.evaluation.eval_per_object_alignment_intervention import (
+            train_lowrank_bilinear_matcher, train_bilinear_matcher, train_labclip_matcher,
+        )
+
+        quad = self._quad()
+        for train, kw in ((train_lowrank_bilinear_matcher, dict(rank=8, epochs=20)),
+                          (train_bilinear_matcher, dict(epochs=20)),
+                          (train_labclip_matcher, dict(epochs=20))):
+            set_seed(42)
+            a = train(*quad, **kw)
+            set_seed(42)
+            b = train(*quad, **kw)
+            assert np.array_equal(a, b), f"{train.__name__} is not reproducible under set_seed"
+
+    def test_scoring_is_in_sample_by_construction(self):
+        """
+        Guards the caveat the summary JSON now carries: the script imports no CV
+        splitter and scores each condition on the same arrays it fitted on. If a
+        held-out split is ever added, this test should be replaced, not deleted.
+        """
+        import inspect
+        from benchmarks.src.evaluation import eval_per_object_alignment_intervention as mod
+
+        src = inspect.getsource(mod)
+        assert "KFold" not in src, (
+            "a CV splitter appeared in the alignment-intervention script; its accuracies "
+            "are documented as in-sample fit quality, so update the docs and provenance"
+        )
+        run_src = inspect.getsource(mod.run_per_object_alignment_intervention)
+        assert "evaluation_protocol" in run_src, "the in-sample caveat must stay in provenance"
