@@ -158,10 +158,12 @@
 - **7개 조건**: `1_Baseline_Cosine` / `2_Closed_Form_Rotation` ($R^{(o)}d_T = d_I$) /
   `3_Rank1_Polar_Adapter` / `4_LABCLIP_Linear_Alignment` / `5_Learned_LowRank_Bilinear` /
   `6_Learned_Full_Bilinear` / `7_Control_Random_Rotation`(대조군)
-- **⚠️ 평가 프로토콜 — 교차검증 없음 (in-sample)**: 모든 조건이 $d_I, d_T$ 적합과 조건 4~6 학습에
-  쓰인 **바로 그 쌍** 위에서 채점됩니다. 따라서 학습형 조건의 정확도(Full Bilinear 88.2%)는 일반화가
-  아니라 512×512 자유 파라미터의 **적합도**입니다. 닫힌형 조건(1·2·3·7)만 이 문제에서 자유롭습니다.
-  이 단서는 summary JSON의 `provenance.evaluation_protocol`에 함께 기록됩니다
+- **⚠️ 기본 경로는 in-sample입니다**: 모든 조건이 $d_I, d_T$ 적합과 조건 4~6 학습에 쓰인 **바로 그 쌍**
+  위에서 채점됩니다. 학습형 조건의 정확도(Full Bilinear 88.2%)는 일반화가 아니라 **적합도**입니다
+- **`--oof`**: base image(`orig_path`) 기준 `GroupKFold(5)`로 홀드아웃 채점 열을 추가합니다. 폴드마다
+  프로브 법선까지 다시 적합하며, 약 5배 느립니다(2분 → 8분). **일반화를 재는 유일한 열입니다.**
+  실측 격차: 닫힌형 조건 0~1pp, 학습형 조건 **71~80pp** (Full Bilinear 88.28% → **8.69%**, 우연 16.67%).
+  조건 1·7은 적합할 파라미터가 없어 두 열이 정확히 일치해야 하며, 그 일치가 하네스의 자체 검증입니다
 - **출력**: `per_object_intervention_results.csv`, `per_object_intervention_summary.json`,
   `fig_intervention_7conditions_bar.png`, `fig_alignment_vs_gain_scatter.png`, `fig_per_object_gain_waterfall.png`
 - **⚠️ 절편 민감성**: 회전 계열은 `--no_bias` 유무에 따라 4.05% ↔ 14.83%로 3.7배 흔들립니다.
@@ -342,11 +344,14 @@ The `benchmarks/src/evaluation/` package is NegBench's **MCQ/Retrieval evaluatio
 - **7 conditions**: `1_Baseline_Cosine` / `2_Closed_Form_Rotation` ($R^{(o)}d_T = d_I$) /
   `3_Rank1_Polar_Adapter` / `4_LABCLIP_Linear_Alignment` / `5_Learned_LowRank_Bilinear` /
   `6_Learned_Full_Bilinear` / `7_Control_Random_Rotation`
-- **⚠️ Evaluation protocol — no cross-validation (in-sample)**: every condition is scored on the *same*
-  pairs used to fit $d_I, d_T$ and to train conditions 4–6. The learned-matcher accuracies (Full Bilinear
-  88.2%) are therefore fit quality over 512×512 free parameters, not generalization. Only the closed-form
-  conditions (1/2/3/7) are free of this. The caveat is recorded in the summary JSON under
-  `provenance.evaluation_protocol`
+- **⚠️ The default path is in-sample**: every condition is scored on the *same* pairs used to fit
+  $d_I, d_T$ and to train conditions 4–6, so the learned-matcher accuracies (Full Bilinear 88.2%) are fit
+  quality over 512×512 free parameters, not generalization
+- **`--oof`**: adds a held-out column via `GroupKFold(5)` on the base image (`orig_path`), refitting the probe
+  normals per fold. ~5x slower (2min → 8min). **It is the only column that measures generalization.**
+  Measured gaps: 0–1pp for the closed-form conditions, **71–80pp** for the trained ones (Full Bilinear
+  88.28% → **8.69%**, against 16.67% chance). Conditions 1 and 7 fit nothing, so their two columns must match
+  exactly — that equality is the harness's own correctness check
 - **Outputs**: `per_object_intervention_results.csv`, `per_object_intervention_summary.json`,
   `fig_intervention_7conditions_bar.png`, `fig_alignment_vs_gain_scatter.png`, `fig_per_object_gain_waterfall.png`
 - **⚠️ Intercept sensitivity**: the rotation conditions swing 4.05% ↔ 14.83% depending on `--no_bias`,

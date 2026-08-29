@@ -52,6 +52,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import GroupKFold
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -79,6 +80,17 @@ except ImportError:
         cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
     )
     from evaluation.eval_layerwise_linear_probe import extract_layerwise_feature_dict
+
+
+CONDITION_NAMES = [
+    "1_Baseline_Cosine",
+    "2_Closed_Form_Rotation",
+    "3_Rank1_Polar_Adapter",
+    "4_LABCLIP_Linear_Alignment",
+    "5_Learned_LowRank_Bilinear",
+    "6_Learned_Full_Bilinear",
+    "7_Control_Random_Rotation",
+]
 
 
 # ============================================================
@@ -322,6 +334,161 @@ def train_labclip_matcher(
 # ============================================================
 # 3. Evaluation Engine for Intervention Conditions
 # ============================================================
+def build_condition_matrices(
+    v_p: np.ndarray,
+    v_m: np.ndarray,
+    t_p: np.ndarray,
+    t_m: np.ndarray,
+    d_I: np.ndarray,
+    d_T: np.ndarray,
+    rank: int,
+    embed_dim: int,
+    seed: int,
+) -> Dict[str, Tuple[np.ndarray, bool]]:
+    """
+    Build the seven transforms A^(o) from one set of pairs.
+
+    Factored out so the in-sample path and the out-of-fold path construct the
+    conditions identically -- an OOF column is only comparable if the training
+    procedure is the same and only the data it sees changes.
+
+    Returns:
+        dict: condition name -> (matrix, is_labclip)
+    """
+    tt = lambda x: torch.tensor(x, dtype=torch.float32)
+    quad = (tt(v_p), tt(v_m), tt(t_p), tt(t_m))
+
+    return {
+        "1_Baseline_Cosine": (np.eye(embed_dim), False),
+        "2_Closed_Form_Rotation": (build_closed_form_rotation(d_T, d_I), False),
+        "3_Rank1_Polar_Adapter": (build_rank1_adapter(d_T, d_I), False),
+        "4_LABCLIP_Linear_Alignment": (train_labclip_matcher(*quad), True),
+        "5_Learned_LowRank_Bilinear": (train_lowrank_bilinear_matcher(*quad, rank=rank), False),
+        "6_Learned_Full_Bilinear": (train_bilinear_matcher(*quad), False),
+        "7_Control_Random_Rotation": (build_random_orthogonal_rotation(embed_dim, seed=seed), False),
+    }
+
+
+def evaluate_conditions_out_of_fold(
+    v_p: np.ndarray,
+    v_m: np.ndarray,
+    t_p: np.ndarray,
+    t_m: np.ndarray,
+    groups: np.ndarray,
+    rank: int,
+    embed_dim: int,
+    seed: int,
+    use_bias: bool,
+    n_splits: int = 5,
+) -> Tuple[Dict[str, Dict[str, float]], int]:
+    """
+    Re-run every condition with held-out scoring, grouped by base scene.
+
+    The in-sample path fits d_I, d_T and the three trained matchers on the very
+    quads it then scores, so a 512x512 free matrix can memorise the concept. Here
+    each fold refits everything -- probe normals included -- on the training quads
+    only, and scores the held-out quads. Conditions 1 and 7 own no fitted
+    parameters, so their accuracy must come out identical to the in-sample column;
+    that equality is the harness's own correctness check.
+
+    ``groups`` is the base image of each quad (``orig_path``). Two counterfactual
+    pairs cut from one photo would otherwise land on opposite sides of a split and
+    let scene memorisation stand in for negation -- the same failure that put the
+    E1 image probe below chance.
+
+    Returns:
+        (metrics per condition, number of folds actually used)
+    """
+    n = len(v_p)
+    n_groups = len(np.unique(groups))
+    eff_splits = max(2, min(n_splits, n_groups))
+    gkf = GroupKFold(n_splits=eff_splits)
+
+    conds = CONDITION_NAMES
+
+    oof = {c: {k: np.zeros(n) for k in ("s_pp", "s_pm", "s_mp", "s_mm")} for c in conds}
+    aligns = {c: [] for c in conds}
+
+    for tr, te in gkf.split(np.arange(n), groups=groups):
+        # Probe normals refitted on the training quads only.
+        clf_v = LogisticRegression(C=1.0, max_iter=1000, random_state=seed, fit_intercept=use_bias)
+        clf_v.fit(np.vstack([v_p[tr], v_m[tr]]), np.array([1] * len(tr) + [0] * len(tr)))
+        w_v = clf_v.coef_[0]
+        d_I_tr = w_v / (np.linalg.norm(w_v) + 1e-12)
+
+        clf_t = LogisticRegression(C=1.0, max_iter=1000, random_state=seed, fit_intercept=use_bias)
+        clf_t.fit(np.vstack([t_p[tr], t_m[tr]]), np.array([1] * len(tr) + [0] * len(tr)))
+        w_t = clf_t.coef_[0]
+        d_T_tr = w_t / (np.linalg.norm(w_t) + 1e-12)
+
+        fold_A = build_condition_matrices(v_p[tr], v_m[tr], t_p[tr], t_m[tr], d_I_tr, d_T_tr,
+                                          rank=rank, embed_dim=embed_dim, seed=seed)
+
+        for cond, (A, is_labclip) in fold_A.items():
+            scores = compute_quad_scores(v_p[te], v_m[te], t_p[te], t_m[te], A, is_labclip)
+            for key, arr in zip(("s_pp", "s_pm", "s_mp", "s_mm"), scores):
+                oof[cond][key][te] = arr
+            aligns[cond].append(compute_direction_alignment(A, d_I_tr, d_T_tr, is_labclip))
+
+    results = {
+        cond: metrics_from_quad_scores(
+            oof[cond]["s_pp"], oof[cond]["s_pm"], oof[cond]["s_mp"], oof[cond]["s_mm"],
+            float(np.mean(aligns[cond])))
+        for cond in conds
+    }
+    return results, eff_splits
+
+
+def compute_direction_alignment(A: np.ndarray, d_I: np.ndarray, d_T: np.ndarray,
+                                is_labclip: bool = False) -> float:
+    """cos(d_I, A d_T) -- how close the transform brings the text normal to the vision normal."""
+    At_d = np.dot(d_T, A.T) if is_labclip else np.dot(A, d_T)
+    norm_At = np.linalg.norm(At_d) + 1e-12
+    norm_dI = np.linalg.norm(d_I) + 1e-12
+    return float(np.dot(d_I, At_d) / (norm_dI * norm_At))
+
+
+def compute_quad_scores(v_p, v_m, t_p, t_m, A: np.ndarray, is_labclip: bool = False):
+    """
+    The four 2x2 scores under transform A:
+      - Standard linear/bilinear: s(v, t) = (v @ A) . t
+      - LABCLIP linear alignment: s(v, t) = normalize(v) . normalize(t @ A.T)
+    """
+    if is_labclip:
+        def score_fn(v, t):
+            t_proj = t @ A.T
+            t_norm = t_proj / (np.linalg.norm(t_proj, axis=-1, keepdims=True) + 1e-12)
+            v_norm = v / (np.linalg.norm(v, axis=-1, keepdims=True) + 1e-12)
+            return np.sum(v_norm * t_norm, axis=-1)
+        return (score_fn(v_p, t_p), score_fn(v_p, t_m),
+                score_fn(v_m, t_p), score_fn(v_m, t_m))
+
+    return (np.sum((v_p @ A) * t_p, axis=-1), np.sum((v_p @ A) * t_m, axis=-1),
+            np.sum((v_m @ A) * t_p, axis=-1), np.sum((v_m @ A) * t_m, axis=-1))
+
+
+def metrics_from_quad_scores(s_pp, s_pm, s_mp, s_mm, dir_alignment: float) -> Dict[str, float]:
+    """
+    Turn four score vectors into the reported metrics. Shared by the in-sample path
+    and the out-of-fold path so the two columns cannot drift apart.
+    """
+    m = np.minimum(s_pp, s_mm) - np.maximum(s_pm, s_mp)
+
+    acc_pos = float(np.mean(s_pp > s_pm) * 100.0)
+    acc_neg = float(np.mean(s_mm > s_mp) * 100.0)
+
+    return {
+        "direction_alignment": dir_alignment,
+        "acc_joint_pct": float(np.mean(m > 0) * 100.0),
+        "acc_pairwise_avg_pct": (acc_pos + acc_neg) / 2.0,
+        "acc_pos_pct": acc_pos,
+        "acc_neg_pct": acc_neg,
+        "margin_mean": float(np.mean(m)),
+        "margin_std": float(np.std(m)),
+        "margin_median": float(np.median(m)),
+    }
+
+
 def evaluate_condition_scoring(
     v_p: np.ndarray,
     v_m: np.ndarray,
@@ -332,61 +499,10 @@ def evaluate_condition_scoring(
     d_T: np.ndarray,
     is_labclip: bool = False,
 ) -> Dict[str, float]:
-    """
-    Evaluates scoring for a given transformation matrix A:
-      - Standard linear/bilinear: s(v, t) = (v @ A) . t
-      - LABCLIP linear alignment: s(v, t) = normalize(v) . normalize(t @ A.T)
-    """
-    if is_labclip:
-        # LABCLIP direction alignment
-        At_d = np.dot(d_T, A.T)
-        norm_At = np.linalg.norm(At_d) + 1e-12
-        norm_dI = np.linalg.norm(d_I) + 1e-12
-        dir_alignment = float(np.dot(d_I, At_d) / (norm_dI * norm_At))
-
-        # LABCLIP scoring
-        def score_fn(v, t):
-            t_proj = t @ A.T
-            t_norm = t_proj / (np.linalg.norm(t_proj, axis=-1, keepdims=True) + 1e-12)
-            v_norm = v / (np.linalg.norm(v, axis=-1, keepdims=True) + 1e-12)
-            return np.sum(v_norm * t_norm, axis=-1)
-
-        s_pp = score_fn(v_p, t_p)
-        s_pm = score_fn(v_p, t_m)
-        s_mp = score_fn(v_m, t_p)
-        s_mm = score_fn(v_m, t_m)
-    else:
-        # 1. Compute Direction Alignment
-        At_d = np.dot(A, d_T)
-        norm_At = np.linalg.norm(At_d) + 1e-12
-        norm_dI = np.linalg.norm(d_I) + 1e-12
-        dir_alignment = float(np.dot(d_I, At_d) / (norm_dI * norm_At))
-
-        # 2. Compute 2x2 Scores
-        s_pp = np.sum((v_p @ A) * t_p, axis=-1)
-        s_pm = np.sum((v_p @ A) * t_m, axis=-1)
-        s_mp = np.sum((v_m @ A) * t_p, axis=-1)
-        s_mm = np.sum((v_m @ A) * t_m, axis=-1)
-
-    correct_min = np.minimum(s_pp, s_mm)
-    wrong_max = np.maximum(s_pm, s_mp)
-    m = correct_min - wrong_max
-
-    acc_joint = float(np.mean(m > 0) * 100.0)
-    acc_pos = float(np.mean(s_pp > s_pm) * 100.0)
-    acc_neg = float(np.mean(s_mm > s_mp) * 100.0)
-    acc_pairwise_avg = (acc_pos + acc_neg) / 2.0
-
-    return {
-        "direction_alignment": dir_alignment,
-        "acc_joint_pct": acc_joint,
-        "acc_pairwise_avg_pct": acc_pairwise_avg,
-        "acc_pos_pct": acc_pos,
-        "acc_neg_pct": acc_neg,
-        "margin_mean": float(np.mean(m)),
-        "margin_std": float(np.std(m)),
-        "margin_median": float(np.median(m)),
-    }
+    """In-sample evaluation of one condition (scored on the pairs it was fitted on)."""
+    s_pp, s_pm, s_mp, s_mm = compute_quad_scores(v_p, v_m, t_p, t_m, A, is_labclip)
+    return metrics_from_quad_scores(
+        s_pp, s_pm, s_mp, s_mm, compute_direction_alignment(A, d_I, d_T, is_labclip))
 
 
 # ============================================================
@@ -407,6 +523,7 @@ def run_per_object_alignment_intervention(
     restrict_objects: Optional[str] = None,
     use_cache: bool = False,
     cache_dir: str = DEFAULT_CACHE_DIR,
+    oof: bool = False,
 ):
     os.makedirs(output_dir, exist_ok=True)
     # Condition 5 initialises two nn.Linear weights from torch's global RNG
@@ -427,7 +544,7 @@ def run_per_object_alignment_intervention(
     print(f"  Min Pairs   : {min_pairs_per_obj}")
     print(f"  Rank (k)    : {rank}")
     print(f"  Use Bias    : {use_bias}")
-    print(f"  Seed        : {seed} | Feature cache: {use_cache}")
+    print(f"  Seed        : {seed} | Feature cache: {use_cache} | OOF: {oof}")
     print(f"  Restrict    : {restrict_objects or 'none (all common concepts)'}"
           + (f" -> {len(restrict)} requested" if restrict else "") + "\n")
 
@@ -543,15 +660,7 @@ def run_per_object_alignment_intervention(
     print(f"\nTotal common valid objects for Per-Object Intervention: {len(common_objects)}")
 
     per_obj_records = []
-    condition_names = [
-        "1_Baseline_Cosine",
-        "2_Closed_Form_Rotation",
-        "3_Rank1_Polar_Adapter",
-        "4_LABCLIP_Linear_Alignment",
-        "5_Learned_LowRank_Bilinear",
-        "6_Learned_Full_Bilinear",
-        "7_Control_Random_Rotation",
-    ]
+    condition_names = CONDITION_NAMES
 
     for obj in common_objects:
         # ── Step 1: Vision Normal d_I^(o) ──
@@ -597,31 +706,8 @@ def run_per_object_alignment_intervention(
         t_m = X_t_neg[:n_eval]
 
         # ── Step 4: Build 7 Transformation Matrices A^(o) ──
-        A_matrices = {
-            "1_Baseline_Cosine": (np.eye(embed_dim), False),
-            "2_Closed_Form_Rotation": (build_closed_form_rotation(d_T, d_I), False),
-            "3_Rank1_Polar_Adapter": (build_rank1_adapter(d_T, d_I), False),
-            "4_LABCLIP_Linear_Alignment": (train_labclip_matcher(
-                torch.tensor(v_p, dtype=torch.float32),
-                torch.tensor(v_m, dtype=torch.float32),
-                torch.tensor(t_p, dtype=torch.float32),
-                torch.tensor(t_m, dtype=torch.float32),
-            ), True),
-            "5_Learned_LowRank_Bilinear": (train_lowrank_bilinear_matcher(
-                torch.tensor(v_p, dtype=torch.float32),
-                torch.tensor(v_m, dtype=torch.float32),
-                torch.tensor(t_p, dtype=torch.float32),
-                torch.tensor(t_m, dtype=torch.float32),
-                rank=rank,
-            ), False),
-            "6_Learned_Full_Bilinear": (train_bilinear_matcher(
-                torch.tensor(v_p, dtype=torch.float32),
-                torch.tensor(v_m, dtype=torch.float32),
-                torch.tensor(t_p, dtype=torch.float32),
-                torch.tensor(t_m, dtype=torch.float32),
-            ), False),
-            "7_Control_Random_Rotation": (build_random_orthogonal_rotation(embed_dim, seed=seed), False),
-        }
+        A_matrices = build_condition_matrices(v_p, v_m, t_p, t_m, d_I, d_T,
+                                              rank=rank, embed_dim=embed_dim, seed=seed)
 
         # ── Step 5: Evaluate All 7 Conditions ──
         obj_row = {
@@ -634,6 +720,18 @@ def run_per_object_alignment_intervention(
             metrics = evaluate_condition_scoring(v_p, v_m, t_p, t_m, A, d_I, d_T, is_labclip=is_labclip)
             for k, val in metrics.items():
                 obj_row[f"{cond_name}_{k}"] = val
+
+        # ── Step 6 (optional): the same conditions, scored out of fold ──
+        if oof:
+            groups = df_vis_pairs["orig_path"].values[vis_mask][:n_eval]
+            oof_metrics, n_folds = evaluate_conditions_out_of_fold(
+                v_p, v_m, t_p, t_m, groups, rank=rank, embed_dim=embed_dim,
+                seed=seed, use_bias=use_bias)
+            obj_row["n_oof_folds"] = n_folds
+            obj_row["n_base_scenes"] = int(len(np.unique(groups)))
+            for cond_name, metrics in oof_metrics.items():
+                for k, val in metrics.items():
+                    obj_row[f"{cond_name}_oof_{k}"] = val
 
         per_obj_records.append(obj_row)
 
@@ -662,10 +760,16 @@ def run_per_object_alignment_intervention(
         n_text_sentences=len(all_sents),
         concepts_analyzed=analyzed,
         restriction=restriction_report,
+        oof=oof,
+        oof_grouping="orig_path (base image)" if oof else None,
         evaluation_protocol=(
             "in-sample: d_I/d_T and the learned conditions 4-6 are fitted on the same "
-            "pairs every condition is scored on; there is no cross-validation, so the "
-            "learned-matcher accuracies are fit quality, not generalization"
+            "pairs every condition is scored on, so those accuracies are fit quality, "
+            "not generalization"
+            + (". The *_oof_* columns add GroupKFold(5) held-out scoring grouped on the "
+               "base image, refitting probe normals and matchers per fold; read those for "
+               "generalization." if oof else
+               ". Pass --oof to add the held-out column.")
         ),
     )
 
@@ -727,6 +831,20 @@ def generate_intervention_visualizations(
             "acc_pos_mean_pct": p_acc,
             "acc_neg_mean_pct": n_acc,
         }
+
+        # The generalization column, when --oof produced one. The gap against
+        # acc_joint_mean_pct is how much of a condition's score was memorisation.
+        if f"{c}_oof_acc_joint_pct" in df.columns:
+            oof_j = float(df[f"{c}_oof_acc_joint_pct"].mean())
+            summary_dict[c].update({
+                "oof_direction_alignment_mean": float(df[f"{c}_oof_direction_alignment"].mean()),
+                "oof_acc_joint_mean_pct": oof_j,
+                "oof_acc_joint_std_pct": float(df[f"{c}_oof_acc_joint_pct"].std()),
+                "oof_margin_mean": float(df[f"{c}_oof_margin_mean"].mean()),
+                "oof_acc_pos_mean_pct": float(df[f"{c}_oof_acc_pos_pct"].mean()),
+                "oof_acc_neg_mean_pct": float(df[f"{c}_oof_acc_neg_pct"].mean()),
+                "in_sample_minus_oof_pp": j_acc - oof_j,
+            })
 
     # ── Figure 1: 7-Condition Comparison Bar Chart ──
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 6))
@@ -816,6 +934,14 @@ def generate_intervention_visualizations(
     plt.close()
     print(f"  Saved: {out_fig3}")
 
+    if any(f"{c}_oof_acc_joint_pct" in df.columns for c in condition_names):
+        print(f"\n  {'condition':30s} {'in-sample':>10s} {'OOF':>10s} {'gap (pp)':>10s}")
+        for c in condition_names:
+            a = summary_dict[c]["acc_joint_mean_pct"]
+            b = summary_dict[c].get("oof_acc_joint_mean_pct")
+            if b is not None:
+                print(f"  {c:30s} {a:10.2f} {b:10.2f} {a - b:+10.2f}")
+
     # ── Save Full Summary JSON ──
     json_out = os.path.join(output_dir, "per_object_intervention_summary.json")
     if provenance is not None:
@@ -848,6 +974,10 @@ def main():
     parser.add_argument("--use_cache", action="store_true", default=False,
                         help="Reuse on-disk encoder features keyed by (model, pretrained, items)")
     parser.add_argument("--cache_dir", type=str, default=DEFAULT_CACHE_DIR)
+    parser.add_argument("--oof", action="store_true", default=False,
+                        help="Additionally score every condition out of fold, GroupKFold(5) on the "
+                             "base image, refitting probe normals and matchers per fold. ~5x slower; "
+                             "the only column that measures generalization rather than fit quality")
     args = parser.parse_args()
 
     run_per_object_alignment_intervention(
@@ -865,6 +995,7 @@ def main():
         restrict_objects=args.restrict_objects,
         use_cache=args.use_cache,
         cache_dir=args.cache_dir,
+        oof=args.oof,
     )
 
 

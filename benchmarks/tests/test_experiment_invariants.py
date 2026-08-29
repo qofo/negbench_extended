@@ -283,19 +283,103 @@ class TestAlignmentInterventionDeterminism:
             b = train(*quad, **kw)
             assert np.array_equal(a, b), f"{train.__name__} is not reproducible under set_seed"
 
-    def test_scoring_is_in_sample_by_construction(self):
+    def test_default_run_stays_in_sample_and_says_so(self):
         """
-        Guards the caveat the summary JSON now carries: the script imports no CV
-        splitter and scores each condition on the same arrays it fitted on. If a
-        held-out split is ever added, this test should be replaced, not deleted.
+        The default path is still in-sample -- held-out scoring is opt-in behind
+        ``--oof`` because it costs ~5x the runtime. Both facts have to keep reaching
+        the reader, so the summary must carry the protocol note either way.
         """
         import inspect
         from benchmarks.src.evaluation import eval_per_object_alignment_intervention as mod
 
-        src = inspect.getsource(mod)
-        assert "KFold" not in src, (
-            "a CV splitter appeared in the alignment-intervention script; its accuracies "
-            "are documented as in-sample fit quality, so update the docs and provenance"
-        )
         run_src = inspect.getsource(mod.run_per_object_alignment_intervention)
         assert "evaluation_protocol" in run_src, "the in-sample caveat must stay in provenance"
+        assert "oof: bool = False" in inspect.getsource(mod.run_per_object_alignment_intervention), \
+            "held-out scoring must stay opt-in; flipping the default silently changes every number"
+        assert "GroupKFold" in inspect.getsource(mod.evaluate_conditions_out_of_fold), (
+            "the OOF path must group folds, not split rows at random"
+        )
+
+
+class TestAlignmentInterventionOutOfFold:
+    """
+    The alignment-intervention script scores in-sample by default. ``--oof`` adds a
+    held-out column, grouped on the base image so two counterfactual pairs cut from
+    one photo cannot straddle a split. Conditions 1 (identity) and 7 (a random
+    rotation drawn from a fixed seed) fit nothing, so their held-out accuracy must
+    equal their in-sample accuracy exactly -- that equality is what proves the
+    harness routes scores to the right rows.
+    """
+
+    @staticmethod
+    def _concept(n=40, d=48, seed=0):
+        rng = np.random.RandomState(seed)
+        unit = lambda x: x / np.linalg.norm(x, axis=-1, keepdims=True)
+        dv, dt = unit(rng.randn(d)), unit(rng.randn(d))
+        base_v, base_t = rng.randn(n, d), rng.randn(n, d)
+        v_p, v_m = unit(base_v + dv), unit(base_v - dv)
+        t_p, t_m = unit(base_t + dt), unit(base_t - dt)
+        groups = np.repeat(np.arange(n // 2), 2)  # two pairs share each base scene
+        return v_p, v_m, t_p, t_m, groups
+
+    def test_parameter_free_conditions_match_in_sample(self):
+        from benchmarks.src.evaluation.eval_per_object_alignment_intervention import (
+            build_condition_matrices, evaluate_condition_scoring,
+            evaluate_conditions_out_of_fold,
+        )
+
+        v_p, v_m, t_p, t_m, groups = self._concept()
+        d = v_p.shape[1]
+        d_I = np.ones(d) / np.sqrt(d)
+        d_T = np.ones(d) / np.sqrt(d)
+
+        oof, n_folds = evaluate_conditions_out_of_fold(
+            v_p, v_m, t_p, t_m, groups, rank=4, embed_dim=d, seed=42, use_bias=True)
+        assert n_folds == 5
+
+        mats = build_condition_matrices(v_p, v_m, t_p, t_m, d_I, d_T,
+                                        rank=4, embed_dim=d, seed=42)
+        for cond in ("1_Baseline_Cosine", "7_Control_Random_Rotation"):
+            A, is_lab = mats[cond]
+            in_sample = evaluate_condition_scoring(v_p, v_m, t_p, t_m, A, d_I, d_T, is_lab)
+            assert in_sample["acc_joint_pct"] == pytest.approx(oof[cond]["acc_joint_pct"]), (
+                f"{cond} fits nothing, so held-out scoring must reproduce it exactly"
+            )
+
+    def test_base_scene_never_straddles_a_fold(self):
+        """The grouping contract: no base image appears in both halves of a split."""
+        from sklearn.model_selection import GroupKFold
+
+        _, _, _, _, groups = self._concept()
+        for tr, te in GroupKFold(n_splits=5).split(np.arange(len(groups)), groups=groups):
+            assert not (set(groups[tr]) & set(groups[te])), "a base scene leaked across the split"
+
+    def test_free_matrix_scores_lower_out_of_fold(self):
+        """
+        A 512x512-shaped free matrix fitted on noise should collapse out of fold.
+        This is the defect the OOF column exists to expose.
+        """
+        from benchmarks.src.evaluation.eval_per_object_alignment_intervention import (
+            build_condition_matrices, evaluate_condition_scoring,
+            evaluate_conditions_out_of_fold,
+        )
+
+        rng = np.random.RandomState(1)
+        n, d = 40, 48
+        unit = lambda x: x / np.linalg.norm(x, axis=-1, keepdims=True)
+        v_p, v_m, t_p, t_m = (unit(rng.randn(n, d)) for _ in range(4))  # pure noise
+        groups = np.repeat(np.arange(n // 2), 2)
+        d_I = d_T = np.ones(d) / np.sqrt(d)
+
+        cond = "6_Learned_Full_Bilinear"
+        A, is_lab = build_condition_matrices(v_p, v_m, t_p, t_m, d_I, d_T,
+                                             rank=4, embed_dim=d, seed=42)[cond]
+        fit = evaluate_condition_scoring(v_p, v_m, t_p, t_m, A, d_I, d_T, is_lab)["acc_joint_pct"]
+        oof, _ = evaluate_conditions_out_of_fold(
+            v_p, v_m, t_p, t_m, groups, rank=4, embed_dim=d, seed=42, use_bias=True)
+
+        assert fit > oof[cond]["acc_joint_pct"], (
+            f"on label-free noise the free matrix scored {fit:.1f}% in-sample and "
+            f"{oof[cond]['acc_joint_pct']:.1f}% out of fold; the in-sample number "
+            "should be the inflated one"
+        )
