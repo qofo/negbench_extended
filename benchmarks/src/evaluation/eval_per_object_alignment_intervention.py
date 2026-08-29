@@ -5,7 +5,7 @@ For each object o:
   1. Extracts vision probe normal vector d_I^(o) from 1:1 counterfactual image pairs (I_orig vs I_cf).
   2. Extracts text probe normal vector d_T^(o) from diverse counterfactual caption pairs (T_pos vs T_neg).
   3. Computes closed-form orthogonal rotation matrix R^(o) in SO(d) such that R^(o) d_T^(o) = d_I^(o) (cos = 1.0).
-  4. Evaluates 7 intervention conditions on 2x2 counterfactual matching:
+  4. Evaluates 9 intervention conditions on 2x2 counterfactual matching:
        - Baseline: Standard Cosine (A = I)
        - Intervention 1: Closed-Form 2D Rotation (A = R^(o))
        - Intervention 2: Rank-1 Polar Adapter (A = A_rank1^(o))
@@ -13,11 +13,18 @@ For each object o:
        - Intervention 4: Learned Low-Rank Bilinear (A = U V^T, rank=k)
        - Intervention 5: Learned Full Bilinear (A = W^(o))
        - Control: Random Orthogonal Rotation (A = R_rand)
+       - Intervention 6: Rotation + Zero-alpha (rotate the text by R^(o), then project the
+         text polarity vector off the pair's image mean so the text main effect vanishes)
+       - Control: Zero-alpha only (the same projection with no rotation) -- the comparison
+         condition 8 must beat for its gain to be attributable to the combination
   5. Measures whether aligning d_T to d_I, linear alignment (LABCLIP), or learning bilinear interaction causally fixes CLIP's negation matching failure.
+  6. Reports the Hadamard coordinates (alpha, beta, gamma) of every condition, so the
+     gamma amplification each intervention achieves can be read against the additive
+     model's prediction.
 
 Outputs:
   - per_object_intervention_results.csv
-  - fig_intervention_7conditions_bar.png
+  - fig_intervention_conditions_bar.png
   - fig_alignment_vs_gain_scatter.png
   - fig_per_object_gain_waterfall.png
   - per_object_intervention_summary.json
@@ -70,6 +77,9 @@ try:
         cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
     )
     from benchmarks.src.evaluation.eval_layerwise_linear_probe import extract_layerwise_feature_dict
+    from benchmarks.src.evaluation.eval_e2_hadamard_decomposition import (
+        compute_hadamard_coordinates, compute_main_effect_ablation,
+    )
 except ImportError:
     from analysis.config import (
         get_layer_features as _get_feats, coerce_bool_column, set_seed,
@@ -80,6 +90,9 @@ except ImportError:
         cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
     )
     from evaluation.eval_layerwise_linear_probe import extract_layerwise_feature_dict
+    from evaluation.eval_e2_hadamard_decomposition import (
+        compute_hadamard_coordinates, compute_main_effect_ablation,
+    )
 
 
 CONDITION_NAMES = [
@@ -90,7 +103,16 @@ CONDITION_NAMES = [
     "5_Learned_LowRank_Bilinear",
     "6_Learned_Full_Bilinear",
     "7_Control_Random_Rotation",
+    "8_Rotation_Zero_Alpha",
+    "9_Zero_Alpha_Only",
 ]
+
+# Conditions 1-7 are a single transform A; condition 8 is a two-step intervention
+# (rotate the text, then project the text polarity vector off the image mean), so it
+# is built and scored on its own path rather than through build_condition_matrices.
+MATRIX_CONDITIONS = CONDITION_NAMES[:-2]
+ROTATION_ZERO_ALPHA = "8_Rotation_Zero_Alpha"
+ZERO_ALPHA_ONLY = "9_Zero_Alpha_Only"
 
 
 # ============================================================
@@ -369,6 +391,86 @@ def build_condition_matrices(
     }
 
 
+def rotation_zero_alpha_scores(
+    v_p: np.ndarray,
+    v_m: np.ndarray,
+    t_p: np.ndarray,
+    t_m: np.ndarray,
+    d_I: np.ndarray,
+    d_T: np.ndarray,
+    rotate: bool = True,
+) -> Tuple[Tuple[np.ndarray, ...], float]:
+    """
+    Condition 8 -- the intervention §7's "alignment + gap orthogonalisation" row predicts.
+
+    Neither existing script computes this combination: the intervention script rotates
+    only, and the E2 decomposition ablates main effects only. Here both are applied in
+    order, which is what the row actually claims:
+
+      1. Rotate the text embeddings by the concept's closed-form R^(o), so
+         cos(d_I, R d_T) = 1 exactly.
+      2. Project the text polarity vector off the pair's own image mean, which removes
+         the text main effect alpha exactly (E2's ``perobj_alpha`` ablation).
+
+    Step 2 runs *after* the rotation on purpose: rotating moves the text polarity
+    vector, so the direction alpha must be removed along moves with it. Doing it in
+    the other order would remove alpha from a vector the rotation then turns.
+
+    With ``rotate=False`` this is condition 9, the ablation-only control. It is the
+    comparison condition 8 has to beat: without it, a gain over the plain cosine
+    baseline cannot be attributed to the combination rather than to removing alpha.
+    The equivalent number in the E2 decomposition comes from a different text source
+    (its 2x2 baseline is 0.375%, this script's is 1.35%), so the two are not
+    interchangeable and the control has to be measured inside this run.
+
+    Returns:
+        ((s_pp, s_pm, s_mp, s_mm), direction_alignment)
+    """
+    R = build_closed_form_rotation(d_T, d_I) if rotate else np.eye(len(d_T))
+    t_p_rot, t_m_rot = t_p @ R.T, t_m @ R.T
+
+    coords = compute_main_effect_ablation(
+        v_p, v_m, t_p_rot, t_m_rot,
+        mu_I_global=np.zeros(v_p.shape[1], dtype=v_p.dtype),
+        mode="perobj_alpha",
+    )
+
+    # compute_main_effect_ablation returns coordinates, not scores; the map back is
+    # exact because the Hadamard transform is its own inverse up to a factor of 4.
+    C, a, b, g = coords["C"], coords["alpha"], coords["beta"], coords["gamma"]
+    S11, S12 = C + b + a + g, C - b + a - g
+    S21, S22 = C + b - a - g, C - b - a + g
+
+    # (S11, S12, S21, S22) -> (s_pp, s_pm, s_mp, s_mm)
+    return (S11, S21, S12, S22), compute_direction_alignment(R, d_I, d_T)
+
+
+def compute_all_condition_scores(
+    v_p: np.ndarray,
+    v_m: np.ndarray,
+    t_p: np.ndarray,
+    t_m: np.ndarray,
+    A_matrices: Dict[str, Tuple[np.ndarray, bool]],
+    d_I: np.ndarray,
+    d_T: np.ndarray,
+) -> Dict[str, Tuple[Tuple[np.ndarray, ...], float]]:
+    """
+    Per-quad scores and the direction alignment for all eight conditions.
+
+    Returns scores rather than metrics so the out-of-fold path can stitch folds
+    together at the score level and then apply exactly the same metric code as the
+    in-sample path.
+    """
+    out = {
+        cond: (compute_quad_scores(v_p, v_m, t_p, t_m, A, is_lab),
+               compute_direction_alignment(A, d_I, d_T, is_lab))
+        for cond, (A, is_lab) in A_matrices.items()
+    }
+    out[ROTATION_ZERO_ALPHA] = rotation_zero_alpha_scores(v_p, v_m, t_p, t_m, d_I, d_T)
+    out[ZERO_ALPHA_ONLY] = rotation_zero_alpha_scores(v_p, v_m, t_p, t_m, d_I, d_T, rotate=False)
+    return out
+
+
 def evaluate_conditions_out_of_fold(
     v_p: np.ndarray,
     v_m: np.ndarray,
@@ -424,11 +526,12 @@ def evaluate_conditions_out_of_fold(
         fold_A = build_condition_matrices(v_p[tr], v_m[tr], t_p[tr], t_m[tr], d_I_tr, d_T_tr,
                                           rank=rank, embed_dim=embed_dim, seed=seed)
 
-        for cond, (A, is_labclip) in fold_A.items():
-            scores = compute_quad_scores(v_p[te], v_m[te], t_p[te], t_m[te], A, is_labclip)
+        fold_scores = compute_all_condition_scores(
+            v_p[te], v_m[te], t_p[te], t_m[te], fold_A, d_I_tr, d_T_tr)
+        for cond, (scores, align) in fold_scores.items():
             for key, arr in zip(("s_pp", "s_pm", "s_mp", "s_mm"), scores):
                 oof[cond][key][te] = arr
-            aligns[cond].append(compute_direction_alignment(A, d_I_tr, d_T_tr, is_labclip))
+            aligns[cond].append(align)
 
     results = {
         cond: metrics_from_quad_scores(
@@ -477,8 +580,17 @@ def metrics_from_quad_scores(s_pp, s_pm, s_mp, s_mm, dir_alignment: float) -> Di
     acc_pos = float(np.mean(s_pp > s_pm) * 100.0)
     acc_neg = float(np.mean(s_mm > s_mp) * 100.0)
 
+    # E2's index convention is (S11, S12, S21, S22) = (v+t+, v-t+, v+t-, v-t-),
+    # so s_mp and s_pm swap places on the way in.
+    had = compute_hadamard_coordinates(s_pp, s_mp, s_pm, s_mm)
+
     return {
         "direction_alignment": dir_alignment,
+        "alpha_mean": float(np.mean(had["alpha"])),
+        "abs_alpha_mean": float(np.mean(had["abs_alpha"])),
+        "beta_mean": float(np.mean(had["beta"])),
+        "abs_beta_mean": float(np.mean(had["abs_beta"])),
+        "gamma_mean": float(np.mean(had["gamma"])),
         "acc_joint_pct": float(np.mean(m > 0) * 100.0),
         "acc_pairwise_avg_pct": (acc_pos + acc_neg) / 2.0,
         "acc_pos_pct": acc_pos,
@@ -716,9 +828,9 @@ def run_per_object_alignment_intervention(
             "raw_cos_dI_dT": float(np.dot(d_I, d_T)),
         }
 
-        for cond_name, (A, is_labclip) in A_matrices.items():
-            metrics = evaluate_condition_scoring(v_p, v_m, t_p, t_m, A, d_I, d_T, is_labclip=is_labclip)
-            for k, val in metrics.items():
+        for cond_name, (scores, align) in compute_all_condition_scores(
+                v_p, v_m, t_p, t_m, A_matrices, d_I, d_T).items():
+            for k, val in metrics_from_quad_scores(*scores, align).items():
                 obj_row[f"{cond_name}_{k}"] = val
 
         # ── Step 6 (optional): the same conditions, scored out of fold ──
@@ -802,6 +914,8 @@ def generate_intervention_visualizations(
         f"LowRank Bilinear (k={rank})",
         "Full Bilinear W",
         "Random Rotation (Control)",
+        "Rotation + Zero-α",
+        "Zero-α only (control)",
     ]
 
     mean_aligns = []
@@ -830,6 +944,11 @@ def generate_intervention_visualizations(
             "margin_mean": margin,
             "acc_pos_mean_pct": p_acc,
             "acc_neg_mean_pct": n_acc,
+            # Hadamard coordinates: gamma is the only term that can carry negation,
+            # so an intervention's effect on it is the mechanistic reading of its score.
+            "gamma_mean": float(df[f"{c}_gamma_mean"].mean()),
+            "abs_alpha_mean": float(df[f"{c}_abs_alpha_mean"].mean()),
+            "abs_beta_mean": float(df[f"{c}_abs_beta_mean"].mean()),
         }
 
         # The generalization column, when --oof produced one. The gap against
@@ -850,7 +969,7 @@ def generate_intervention_visualizations(
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 6))
 
     x = np.arange(len(condition_names))
-    colors = ["#7f8c8d", "#2ecc71", "#3498db", "#9b59b6", "#e67e22", "#1abc9c", "#e74c3c"]
+    colors = ["#7f8c8d", "#2ecc71", "#3498db", "#9b59b6", "#e67e22", "#1abc9c", "#e74c3c", "#16a085", "#8e44ad"]
 
     # Subplot 1: 2x2 Joint Matching Accuracy
     bars1 = ax1.bar(x, mean_joint_accs, color=colors[:len(condition_names)], edgecolor="black", width=0.55)
@@ -878,7 +997,7 @@ def generate_intervention_visualizations(
         ax2.text(bar.get_x() + bar.get_width()/2.0, yval + 0.03, f"{yval:+.3f}", ha="center", va="bottom", fontweight="bold", fontsize=9)
 
     plt.tight_layout()
-    out_fig1 = os.path.join(output_dir, "fig_intervention_7conditions_bar.png")
+    out_fig1 = os.path.join(output_dir, "fig_intervention_conditions_bar.png")
     plt.savefig(out_fig1, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {out_fig1}")
@@ -933,6 +1052,20 @@ def generate_intervention_visualizations(
     plt.savefig(out_fig3, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {out_fig3}")
+
+    # gamma is the only term that can carry negation, so every condition's headline
+    # number belongs next to what it did to gamma.
+    gamma_base = summary_dict[condition_names[0]]["gamma_mean"]
+    for c in condition_names:
+        g = summary_dict[c]["gamma_mean"]
+        summary_dict[c]["gamma_ratio_vs_baseline"] = (
+            float(g / gamma_base) if gamma_base not in (0.0,) else None)
+
+    print(f"\n  {'condition':30s} {'acc(%)':>8s} {'gamma':>11s} {'x baseline':>11s}")
+    for c in condition_names:
+        r = summary_dict[c]["gamma_ratio_vs_baseline"]
+        print(f"  {c:30s} {summary_dict[c]['acc_joint_mean_pct']:8.2f} "
+              f"{summary_dict[c]['gamma_mean']:11.3e} {r if r is None else f'{r:11.2f}'}")
 
     if any(f"{c}_oof_acc_joint_pct" in df.columns for c in condition_names):
         print(f"\n  {'condition':30s} {'in-sample':>10s} {'OOF':>10s} {'gap (pp)':>10s}")

@@ -155,9 +155,16 @@
 #### `eval_per_object_alignment_intervention.py` (872줄)
 - **역할**: 개념별 비전/텍스트 프로브 법선 $d_I^{(o)}, d_T^{(o)}$를 추출하고, 이를 정렬시키는 변환이
   2×2 counterfactual 매칭을 실제로 고치는지 **인과적으로** 검정
-- **7개 조건**: `1_Baseline_Cosine` / `2_Closed_Form_Rotation` ($R^{(o)}d_T = d_I$) /
+- **9개 조건**: `1_Baseline_Cosine` / `2_Closed_Form_Rotation` ($R^{(o)}d_T = d_I$) /
   `3_Rank1_Polar_Adapter` / `4_LABCLIP_Linear_Alignment` / `5_Learned_LowRank_Bilinear` /
-  `6_Learned_Full_Bilinear` / `7_Control_Random_Rotation`(대조군)
+  `6_Learned_Full_Bilinear` / `7_Control_Random_Rotation`(대조군) /
+  **`8_Rotation_Zero_Alpha`** (회전 후 α 직교 사영 — §7 "정렬 + 갭 직교화" 행의 직접 검정) /
+  **`9_Zero_Alpha_Only`**(대조군: 회전 없는 α 사영 단독)
+- **조건 8·9는 행렬 하나가 아니라 2단계 개입**이라 `build_condition_matrices`가 아니라
+  `rotation_zero_alpha_scores`가 만듭니다. α 사영은 **회전 이후**에 적용합니다 — 회전이 텍스트 극성
+  벡터를 움직이므로 제거해야 할 방향도 함께 움직이기 때문입니다
+- **모든 조건의 Hadamard 좌표(α·β·γ)를 보고합니다.** γ는 부정을 담을 수 있는 유일한 항이므로,
+  각 개입이 γ를 몇 배로 키웠는지가 그 조건의 기계적 해석입니다 (`gamma_ratio_vs_baseline`)
 - **⚠️ 기본 경로는 in-sample입니다**: 모든 조건이 $d_I, d_T$ 적합과 조건 4~6 학습에 쓰인 **바로 그 쌍**
   위에서 채점됩니다. 학습형 조건의 정확도(Full Bilinear 88.2%)는 일반화가 아니라 **적합도**입니다
 - **`--oof`**: base image(`orig_path`) 기준 `GroupKFold(5)`로 홀드아웃 채점 열을 추가합니다. 폴드마다
@@ -165,7 +172,7 @@
   실측 격차: 닫힌형 조건 0~1pp, 학습형 조건 **71~80pp** (Full Bilinear 88.28% → **8.69%**, 우연 16.67%).
   조건 1·7은 적합할 파라미터가 없어 두 열이 정확히 일치해야 하며, 그 일치가 하네스의 자체 검증입니다
 - **출력**: `per_object_intervention_results.csv`, `per_object_intervention_summary.json`,
-  `fig_intervention_7conditions_bar.png`, `fig_alignment_vs_gain_scatter.png`, `fig_per_object_gain_waterfall.png`
+  `fig_intervention_conditions_bar.png`, `fig_alignment_vs_gain_scatter.png`, `fig_per_object_gain_waterfall.png`
 - **⚠️ 절편 민감성**: 회전 계열은 `--no_bias` 유무에 따라 4.05% ↔ 14.83%로 3.7배 흔들립니다.
   다른 조건은 둔감하므로, 이 스크립트의 결과는 **양쪽을 반드시 병기**해야 재현됩니다.
 - **개념 집합 고정**: `--restrict_objects`(콤마 목록 또는 txt/csv/json 경로)로 E1/E2와 동일한 집합을
@@ -341,9 +348,19 @@ The `benchmarks/src/evaluation/` package is NegBench's **MCQ/Retrieval evaluatio
 #### `eval_per_object_alignment_intervention.py` (872 lines)
 - **Role**: Extract per-concept vision/text probe normals $d_I^{(o)}, d_T^{(o)}$ and test **causally**
   whether a transform that aligns them actually repairs 2×2 counterfactual matching
-- **7 conditions**: `1_Baseline_Cosine` / `2_Closed_Form_Rotation` ($R^{(o)}d_T = d_I$) /
+- **9 conditions**: `1_Baseline_Cosine` / `2_Closed_Form_Rotation` ($R^{(o)}d_T = d_I$) /
   `3_Rank1_Polar_Adapter` / `4_LABCLIP_Linear_Alignment` / `5_Learned_LowRank_Bilinear` /
-  `6_Learned_Full_Bilinear` / `7_Control_Random_Rotation`
+  `6_Learned_Full_Bilinear` / `7_Control_Random_Rotation` /
+  **`8_Rotation_Zero_Alpha`** (rotate, then project alpha away — the direct test of §7's
+  "alignment + gap orthogonalisation" row) / **`9_Zero_Alpha_Only`** (control: the projection
+  with no rotation)
+- **Conditions 8 and 9 are two-step interventions**, not a single matrix, so
+  `rotation_zero_alpha_scores` builds them rather than `build_condition_matrices`. The
+  projection runs *after* the rotation: rotating moves the text polarity vector, so the
+  direction alpha must be removed along moves with it
+- **Hadamard coordinates (alpha, beta, gamma) are reported for every condition.** gamma is the
+  only term that can carry negation, so what an intervention did to it
+  (`gamma_ratio_vs_baseline`) is the mechanistic reading of its score
 - **⚠️ The default path is in-sample**: every condition is scored on the *same* pairs used to fit
   $d_I, d_T$ and to train conditions 4–6, so the learned-matcher accuracies (Full Bilinear 88.2%) are fit
   quality over 512×512 free parameters, not generalization
@@ -353,7 +370,7 @@ The `benchmarks/src/evaluation/` package is NegBench's **MCQ/Retrieval evaluatio
   88.28% → **8.69%**, against 16.67% chance). Conditions 1 and 7 fit nothing, so their two columns must match
   exactly — that equality is the harness's own correctness check
 - **Outputs**: `per_object_intervention_results.csv`, `per_object_intervention_summary.json`,
-  `fig_intervention_7conditions_bar.png`, `fig_alignment_vs_gain_scatter.png`, `fig_per_object_gain_waterfall.png`
+  `fig_intervention_conditions_bar.png`, `fig_alignment_vs_gain_scatter.png`, `fig_per_object_gain_waterfall.png`
 - **⚠️ Intercept sensitivity**: the rotation conditions swing 4.05% ↔ 14.83% depending on `--no_bias`,
   a 3.7x difference the other conditions do not show. **Report both** or the result will not reproduce.
 - **Pinning the concept set**: `--restrict_objects` (comma list, or a txt/csv/json path) enforces the same

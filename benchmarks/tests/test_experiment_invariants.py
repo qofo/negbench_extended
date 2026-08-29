@@ -383,3 +383,88 @@ class TestAlignmentInterventionOutOfFold:
             f"{oof[cond]['acc_joint_pct']:.1f}% out of fold; the in-sample number "
             "should be the inflated one"
         )
+
+
+class TestRotationZeroAlphaCondition:
+    """
+    Conditions 8 and 9 test the "alignment + gap orthogonalisation" row of the
+    additive model: rotate the text so cos(d_I, R d_T) = 1, then project the text
+    polarity vector off the image mean so the text main effect alpha vanishes.
+    Condition 9 is the same projection without the rotation -- the control that makes
+    a gain attributable to the combination rather than to removing alpha alone.
+    """
+
+    @staticmethod
+    def _quads(n=40, d=32, seed=3):
+        rng = np.random.RandomState(seed)
+        unit = lambda x: x / np.linalg.norm(x, axis=-1, keepdims=True)
+        dv, dt = unit(rng.randn(d)), unit(rng.randn(d))
+        bv, bt = rng.randn(n, d), rng.randn(n, d)
+        return (unit(bv + 0.3 * dv), unit(bv - 0.3 * dv),
+                unit(bt + 0.3 * dt), unit(bt - 0.3 * dt), unit(dv), unit(dt))
+
+    def test_hadamard_reconstruction_is_exact(self):
+        """
+        Conditions 8 and 9 recover scores from Hadamard coordinates. The transform is
+        its own inverse up to a factor of 4; if that ever stops holding, both
+        conditions silently report the wrong numbers.
+        """
+        from benchmarks.src.evaluation.eval_e2_hadamard_decomposition import (
+            compute_hadamard_coordinates,
+        )
+
+        rng = np.random.RandomState(0)
+        S11, S12, S21, S22 = (rng.randn(50) for _ in range(4))
+        h = compute_hadamard_coordinates(S11, S12, S21, S22)
+        C, a, b, g = h["C"], h["alpha"], h["beta"], h["gamma"]
+
+        assert np.allclose(C + b + a + g, S11)
+        assert np.allclose(C - b + a - g, S12)
+        assert np.allclose(C + b - a - g, S21)
+        assert np.allclose(C - b - a + g, S22)
+
+    @pytest.mark.parametrize("rotate", [True, False])
+    def test_alpha_is_removed_exactly(self, rotate):
+        """Both conditions exist to zero the text main effect; verify they do."""
+        from benchmarks.src.evaluation.eval_per_object_alignment_intervention import (
+            rotation_zero_alpha_scores, metrics_from_quad_scores,
+        )
+
+        v_p, v_m, t_p, t_m, d_I, d_T = self._quads()
+        scores, align = rotation_zero_alpha_scores(v_p, v_m, t_p, t_m, d_I, d_T, rotate=rotate)
+        m = metrics_from_quad_scores(*scores, align)
+
+        assert m["abs_alpha_mean"] < 1e-9, (
+            f"alpha survived the projection at {m['abs_alpha_mean']:.3e}; the "
+            "intervention's whole claim is that it does not"
+        )
+
+    def test_rotation_reaches_perfect_alignment_and_the_control_does_not(self):
+        from benchmarks.src.evaluation.eval_per_object_alignment_intervention import (
+            rotation_zero_alpha_scores,
+        )
+
+        v_p, v_m, t_p, t_m, d_I, d_T = self._quads()
+        _, rotated = rotation_zero_alpha_scores(v_p, v_m, t_p, t_m, d_I, d_T, rotate=True)
+        _, control = rotation_zero_alpha_scores(v_p, v_m, t_p, t_m, d_I, d_T, rotate=False)
+
+        assert rotated == pytest.approx(1.0, abs=1e-6), "R is built so that R d_T = d_I"
+        assert control == pytest.approx(float(np.dot(d_I, d_T)), abs=1e-6), (
+            "the control applies no rotation, so alignment must stay at the raw value"
+        )
+
+    def test_conditions_8_and_9_survive_the_oof_harness(self):
+        """Both are closed-form given the probe normals, so they must be OOF-scorable."""
+        from benchmarks.src.evaluation.eval_per_object_alignment_intervention import (
+            evaluate_conditions_out_of_fold, CONDITION_NAMES,
+        )
+
+        v_p, v_m, t_p, t_m, _, _ = self._quads()
+        groups = np.repeat(np.arange(len(v_p) // 2), 2)
+        oof, _ = evaluate_conditions_out_of_fold(
+            v_p, v_m, t_p, t_m, groups, rank=4, embed_dim=v_p.shape[1],
+            seed=42, use_bias=True)
+
+        assert set(oof) == set(CONDITION_NAMES), "every condition must reach the OOF column"
+        for cond in ("8_Rotation_Zero_Alpha", "9_Zero_Alpha_Only"):
+            assert oof[cond]["abs_alpha_mean"] < 1e-9, f"{cond} must zero alpha out of fold too"
