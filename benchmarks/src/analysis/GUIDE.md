@@ -98,7 +98,11 @@
 - **역할**: 텍스트 인코더 기하 구조 분석 **메인 오케스트레이터**
 - **흐름**: CLI 파싱 → 모델 로드 → CSV 읽기 → `extract_all_features_unified` → `metrics.*` 호출 → `AnalysisReporter` 렌더링
 - **CLI 인자**: `--model`, `--pretrained`, `--target_token`, `--csv_path`, `--output_dir`, `--max_samples`, `--image_root`, `--batch_size`, `--seed`
-- **실행**: → [CLI_CHEATSHEET.md #1 참조](../../../CLI_CHEATSHEET.md)
+- **실행** (저장소 루트에서):
+  ```bash
+  python -m analysis.run_analysis --csv_path benchmarks/data/images/COCO_val_full_paired.csv \
+      --output_dir logs/analysis_modular/openai_vit_b32
+  ```
 
 #### `run_beaf_analysis_v2.py` (441줄)
 - **역할**: BEAF 2x2 Factorial ANOVA + Vision 통합 실행 엔트리포인트
@@ -106,7 +110,12 @@
   - Part A: 4-Axis BEAF 분석 (Text-Text, Image-Text, Image-Image, 4-Way Cross)
   - Part B: Vision 인코더 메커니즘 분석 (레이어 분해, SVD 스윕, 선형 프로브, 방향 보존)
 - **⚠️ 현재 제한**: Step 6~10 주석 처리 상태
-- **실행**: → [CLI_CHEATSHEET.md #3 참조](../../../CLI_CHEATSHEET.md)
+- **실행** (저장소 루트에서):
+  ```bash
+  python -m analysis.run_beaf_analysis_v2 --csv_path benchmarks/data/images/beaf_counterfactual_6col.csv \
+      --image_root "" --output_dir logs/evaluation/beaf_counterfactual_v2/openai_vit_b32 \
+      --model ViT-B-32 --pretrained openai
+  ```
 
 #### `train_beaf_dual_probes.py` (369줄)
 - **역할**: Dual Classifier ($f_T$, $f_V$) 학습 및 NPZ 가중치 저장
@@ -246,7 +255,11 @@ The `benchmarks/src/analysis/` package is the **representation analysis core** t
 - **Role**: Main orchestrator for text encoder geometric structure analysis
 - **Flow**: CLI parsing → model load → CSV read → `extract_all_features_unified` → `metrics.*` calls → `AnalysisReporter` rendering
 - **CLI Args**: `--model`, `--pretrained`, `--target_token`, `--csv_path`, `--output_dir`, `--max_samples`, `--image_root`, `--batch_size`, `--seed`
-- **Execution**: → [CLI_CHEATSHEET.md #1 Reference](../../../CLI_CHEATSHEET.md)
+- **Execution** (from repo root):
+  ```bash
+  python -m analysis.run_analysis --csv_path benchmarks/data/images/COCO_val_full_paired.csv \
+      --output_dir logs/analysis_modular/openai_vit_b32
+  ```
 
 #### `run_beaf_analysis_v2.py` (441 lines)
 - **Role**: BEAF 2×2 Factorial ANOVA + Vision unified execution entrypoint
@@ -254,7 +267,12 @@ The `benchmarks/src/analysis/` package is the **representation analysis core** t
   - Part A: 4-Axis BEAF Analysis (Text-Text, Image-Text, Image-Image, 4-Way Cross)
   - Part B: Vision encoder mechanism analysis (layer breakdown, SVD sweep, linear probe, direction preservation)
 - **⚠️ Current Limitation**: Steps 6–10 commented out
-- **Execution**: → [CLI_CHEATSHEET.md #3 Reference](../../../CLI_CHEATSHEET.md)
+- **Execution** (from repo root):
+  ```bash
+  python -m analysis.run_beaf_analysis_v2 --csv_path benchmarks/data/images/beaf_counterfactual_6col.csv \
+      --image_root "" --output_dir logs/evaluation/beaf_counterfactual_v2/openai_vit_b32 \
+      --model ViT-B-32 --pretrained openai
+  ```
 
 #### `train_beaf_dual_probes.py` (369 lines)
 - **Role**: Train Dual Classifiers ($f_T$, $f_V$) and save NPZ weights

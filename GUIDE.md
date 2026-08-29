@@ -67,7 +67,7 @@ flowchart TD
 | **Training Pipeline** | [`benchmarks/src/training/GUIDE.md`](benchmarks/src/training/GUIDE.md) | NegCLIP 분산 파인튜닝 루프, CsvMCQDataset, 하이퍼파라미터 파서, 비디오 유틸리티 (16+ 파일) |
 | **Data Generation** | [`benchmarks/src/data_generation/GUIDE.md`](benchmarks/src/data_generation/GUIDE.md) | COCO Paired Caption 생성, BEAF AB-Swap 데이터셋 생성기 및 `synthetic_datasets/` 상호 참조 (3개 파일) |
 | **Data Schema Reference** | [`DATA_SCHEMA.md`](DATA_SCHEMA.md) | 21개 평가/분석 CSV 스키마 정의 및 컬럼별 매핑 명세 |
-| **CLI Cheatsheet** | [`CLI_CHEATSHEET.md`](CLI_CHEATSHEET.md) | 전체 30개 이상의 셸 스크립트 및 Python 직접 실행 CLI 종합 가이드 |
+| **실행 명령** | [`benchmarks/scripts/`](benchmarks/scripts/) + 각 스크립트 모듈 docstring의 `Usage:` 블록 | 셸 래퍼는 `benchmarks/scripts/*.sh`, 단일 스크립트 실행법은 해당 파일 상단 docstring이 정본입니다 |
 
 ---
 
@@ -229,7 +229,7 @@ See Mermaid diagram in Section 2 above.
 | **Training Pipeline** | [`benchmarks/src/training/GUIDE.md`](benchmarks/src/training/GUIDE.md) | NegCLIP distributed fine-tuning, CsvMCQDataset, hyperparameter parser, video utils (16+ files) |
 | **Data Generation** | [`benchmarks/src/data_generation/GUIDE.md`](benchmarks/src/data_generation/GUIDE.md) | COCO paired captions, BEAF AB-Swap generator, and `synthetic_datasets/` cross-reference (3 files) |
 | **Data Schema Reference** | [`DATA_SCHEMA.md`](DATA_SCHEMA.md) | Schema definitions and column mappings for all 21 dataset CSVs |
-| **CLI Cheatsheet** | [`CLI_CHEATSHEET.md`](CLI_CHEATSHEET.md) | Comprehensive execution guide for 30+ shell scripts and direct Python commands |
+| **Execution** | [`benchmarks/scripts/`](benchmarks/scripts/) + each module's `Usage:` docstring | Shell wrappers live in `benchmarks/scripts/*.sh`; for a single script, the `Usage:` block at the top of that file is authoritative |
 
 ---
 

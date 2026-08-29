@@ -89,7 +89,7 @@ COCO 2017 Val Images can be found **[here](https://cocodataset.org/#download)**
 
 The images corresponding to the stable diffusion generated dataset that was introduced in NegBench will be uploaded shortly. 
 
-For mode details about preparing the datasets for evaluation, refer to [`dataset.md`](../dataset.md).
+For mode details about preparing the datasets for evaluation, refer to [`dataset.md`](../datasets.md).
 
 
 ### Models Directory (`models/`)

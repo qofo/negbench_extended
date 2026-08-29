@@ -37,7 +37,7 @@
 - **SUPPORTED_PROBES**: `logistic`, `svm_linear`, `ridge`, `sgd_log`, `sgd_hinge`, `svm_rbf`, `mlp`, `bilinear_lowrank`, `bilinear_full`, `elementwise`
 - **팩토리 함수**: `create_probe_classifier(probe_type, d_in, **params)` — Sklearn 또는 `PyTorchProbeEstimator` 반환
 - **래퍼**: `PyTorchProbeEstimator` — PyTorch 모델을 Sklearn `BaseEstimator` API로 감싸서 `fit()`, `score()`, `predict()` 제공
-- **수식**: → [루트 GUIDE.md §5 ③ 참조](../../../GUIDE.md)
+- **수식**: → [루트 GUIDE.md §5 ③ 참조](../../../../GUIDE.md)
 
 #### `beaf_loader.py` (136줄)
 - **역할**: Counterfactual 6-column CSV 로더 및 엄격한 Pair 무결성 검증
@@ -46,7 +46,7 @@
   - `load_and_verify_counterfactual_pairs(csv_path, image_root)`: 연속 행 쌍의 무결성 강제 검증
     - 검증 조건: 한 행은 `object_in_image=True` (orig), 다른 행은 `False` (cf)
     - 두 행은 동일한 `object_name`과 `source_template` 공유
-- **CSV 스키마**: → [DATA_SCHEMA.md 참조](../../../DATA_SCHEMA.md)
+- **CSV 스키마**: → [DATA_SCHEMA.md 참조](../../../../DATA_SCHEMA.md)
 - **반환**: `(df_raw, df_pairs, pair_metadata)` — `df_pairs`에는 `pair_id`, `orig_path`, `cf_path`, `positive_caption`, `negative_caption` 포함
 
 #### `beaf_stats.py` (266줄)
@@ -57,7 +57,7 @@
     - 출력: Text Main Effect, Visual Main Effect, Interaction Effect + 95% Bootstrap CI
   - `compute_quadrant_bootstrap_ci(...)`: 사분면별 Bootstrap CI
   - `compute_per_object_layerwise_stats(vis_orig, vis_cf, df_pairs)`: 객체별 레이어별 코사인 유사도 & 선형 프로빙
-- **수식**: → [루트 GUIDE.md §5 ② 참조](../../../GUIDE.md)
+- **수식**: → [루트 GUIDE.md §5 ② 참조](../../../../GUIDE.md)
 
 #### `vision_mechanisms.py` (852줄) — 패키지 내 최대 파일
 - **역할**: 비전 트랜스포머 레이어 분해, SVD 스윕, 방향성 보존 분석
@@ -98,7 +98,7 @@
   - 2순위: Text Separability (코사인 유사도 + 프로빙)
   - 3순위: Vision Per-Pair Probing (Base Scene GroupKFold)
   - 4순위: Image-Blind Forced-Choice (`image_blind_xy_preference_pct`)
-- **수식**: → [루트 GUIDE.md §5 ⑦ 참조](../../../GUIDE.md)
+- **수식**: → [루트 GUIDE.md §5 ⑦ 참조](../../../../GUIDE.md)
 
 #### `visualizer.py` (513줄)
 - **역할**: BEAF 전용 시각화 렌더러
@@ -203,7 +203,7 @@ The `benchmarks/src/analysis/beaf/` package is the core implementation of **BEAF
 - **SUPPORTED_PROBES**: `logistic`, `svm_linear`, `ridge`, `sgd_log`, `sgd_hinge`, `svm_rbf`, `mlp`, `bilinear_lowrank`, `bilinear_full`, `elementwise`
 - **Factory**: `create_probe_classifier(probe_type, d_in, **params)` — returns Sklearn or `PyTorchProbeEstimator`
 - **Wrapper**: `PyTorchProbeEstimator` — wraps PyTorch models as Sklearn `BaseEstimator` API (`fit()`, `score()`, `predict()`)
-- **Formulas**: → [Root GUIDE.md §5 ③ Reference](../../../GUIDE.md)
+- **Formulas**: → [Root GUIDE.md §5 ③ Reference](../../../../GUIDE.md)
 
 #### `beaf_loader.py` (136 lines)
 - **Role**: Counterfactual 6-column CSV loader with strict pair integrity verification
@@ -212,7 +212,7 @@ The `benchmarks/src/analysis/beaf/` package is the core implementation of **BEAF
   - `load_and_verify_counterfactual_pairs(csv_path, image_root)`: Strict consecutive row pair verification
     - Validation: one row `object_in_image=True` (orig), the other `False` (cf)
     - Both rows share the same `object_name` and `source_template`
-- **CSV Schema**: → [DATA_SCHEMA.md Reference](../../../DATA_SCHEMA.md)
+- **CSV Schema**: → [DATA_SCHEMA.md Reference](../../../../DATA_SCHEMA.md)
 - **Returns**: `(df_raw, df_pairs, pair_metadata)` — `df_pairs` includes `pair_id`, `orig_path`, `cf_path`, `positive_caption`, `negative_caption`
 
 #### `beaf_stats.py` (266 lines)
@@ -223,7 +223,7 @@ The `benchmarks/src/analysis/beaf/` package is the core implementation of **BEAF
     - Output: Text Main Effect, Visual Main Effect, Interaction Effect + 95% Bootstrap CI
   - `compute_quadrant_bootstrap_ci(...)`: Per-quadrant Bootstrap CI
   - `compute_per_object_layerwise_stats(vis_orig, vis_cf, df_pairs)`: Per-object layerwise cosine similarity & linear probing
-- **Formulas**: → [Root GUIDE.md §5 ② Reference](../../../GUIDE.md)
+- **Formulas**: → [Root GUIDE.md §5 ② Reference](../../../../GUIDE.md)
 
 #### `vision_mechanisms.py` (852 lines) — Largest file in the package
 - **Role**: Vision Transformer layer decomposition, SVD sweep, direction preservation analysis
@@ -264,7 +264,7 @@ The `benchmarks/src/analysis/beaf/` package is the core implementation of **BEAF
   - P2: Text Separability (cosine similarity + probing)
   - P3: Vision Per-Pair Probing (Base Scene GroupKFold)
   - P4: Image-Blind Forced-Choice (`image_blind_xy_preference_pct`)
-- **Formulas**: → [Root GUIDE.md §5 ⑦ Reference](../../../GUIDE.md)
+- **Formulas**: → [Root GUIDE.md §5 ⑦ Reference](../../../../GUIDE.md)
 
 #### `visualizer.py` (513 lines)
 - **Role**: BEAF-specific visualization renderer
