@@ -331,7 +331,7 @@ def main():
     parser.add_argument(
         "--per_pair_csv",
         type=str,
-        default="logs/evaluation/e2_hadamard_decomposition/e2_per_pair_decomposition.csv",
+        default="logs/evaluation/01_paper/2026-08-28_e2_hadamard_decomposition/e2_per_pair_decomposition.csv",
         help="Path to pair-level decomposition CSV from E2",
     )
     parser.add_argument(

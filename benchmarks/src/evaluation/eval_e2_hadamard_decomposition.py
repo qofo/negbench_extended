@@ -417,7 +417,7 @@ def main():
     parser = argparse.ArgumentParser(description="E2: Exact 2x2 Hadamard Coordinate Decomposition")
     parser.add_argument("--csv_path", type=str, default="benchmarks/data/images/beaf_counterfactual_6col.csv")
     parser.add_argument("--image_root", type=str, default="benchmarks/data/images")
-    parser.add_argument("--e1_report_dir", type=str, default="logs/evaluation/e1_minimal_pair_auc")
+    parser.add_argument("--e1_report_dir", type=str, default="logs/evaluation/01_paper/2026-08-27_e1_minimal_pair_auc_79concepts")
     parser.add_argument("--output_dir", type=str, default="logs/evaluation/e2_hadamard_decomposition")
     parser.add_argument("--model", type=str, default="ViT-B-32")
     parser.add_argument("--pretrained", type=str, default="openai")

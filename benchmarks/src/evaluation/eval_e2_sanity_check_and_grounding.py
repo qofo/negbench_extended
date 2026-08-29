@@ -10,9 +10,9 @@ Provides concrete mathematical and source-file evidence for:
 
 Source File References:
 - Paired Data Source: benchmarks/data/images/beaf_counterfactual_6col.csv
-- Pair-Level Decomposition: logs/evaluation/0828_e2_final_gamma_resolution_ver2/e2_final_per_pair.csv
+- Pair-Level Decomposition: logs/evaluation/01_paper/2026-08-28_e2_final_gamma_resolution/e2_final_per_pair.csv
 - E2 Alignment Report: logs/evaluation/unary_mechanistic_analysis/full_mechanistic_report.json
-- Final Summary JSON: logs/evaluation/0828_e2_final_gamma_resolution_ver2/e2_final_resolution_summary.json
+- Final Summary JSON: logs/evaluation/01_paper/2026-08-28_e2_final_gamma_resolution/e2_final_resolution_summary.json
 """
 
 import os
@@ -46,7 +46,7 @@ def main():
     parser = argparse.ArgumentParser(description="E2 Sanity Check and Data Grounding")
     parser.add_argument("--csv_path", type=str, default="benchmarks/data/images/beaf_counterfactual_6col.csv")
     parser.add_argument("--image_root", type=str, default="benchmarks/data/images")
-    parser.add_argument("--per_pair_csv", type=str, default="logs/evaluation/0828_e2_final_gamma_resolution_ver2/e2_final_per_pair.csv")
+    parser.add_argument("--per_pair_csv", type=str, default="logs/evaluation/01_paper/2026-08-28_e2_final_gamma_resolution/e2_final_per_pair.csv")
     parser.add_argument("--output_dir", type=str, default="logs/evaluation/e2_sanity_grounding")
     parser.add_argument("--model", type=str, default="ViT-B-32")
     parser.add_argument("--pretrained", type=str, default="openai")

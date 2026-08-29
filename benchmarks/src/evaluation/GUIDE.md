@@ -173,8 +173,12 @@
   조건 1·7은 적합할 파라미터가 없어 두 열이 정확히 일치해야 하며, 그 일치가 하네스의 자체 검증입니다
 - **출력**: `per_object_intervention_results.csv`, `per_object_intervention_summary.json`,
   `fig_intervention_conditions_bar.png`, `fig_alignment_vs_gain_scatter.png`, `fig_per_object_gain_waterfall.png`
-- **⚠️ 절편 민감성**: 회전 계열은 `--no_bias` 유무에 따라 4.05% ↔ 14.83%로 3.7배 흔들립니다.
-  다른 조건은 둔감하므로, 이 스크립트의 결과는 **양쪽을 반드시 병기**해야 재현됩니다.
+- **⚠️ 절편 민감성**: 회전 계열은 `--no_bias` 유무에 따라 **4.05% ↔ 11.09%(2.7배)**, 조건 8은
+  **11.63% ↔ 26.61%** 흔들립니다. 학습형 조건(4·5·6)은 $d_I, d_T$를 쓰지 않아 완전히 둔감합니다.
+  결과는 **양쪽을 반드시 병기**해야 재현됩니다.
+  (예전 문서의 "4.05% ↔ 14.83% = 3.7배"는 **폐기하십시오** — 14.83%는 6조건짜리 옛 스크립트에서
+  사흘 전에 나온 값이라 통제된 비교가 아닙니다:
+  `logs/evaluation/03_discarded/2026-08-25_alignment_intervention_6cond_UNCONTROLLED/`)
 - **개념 집합 고정**: `--restrict_objects`(콤마 목록 또는 txt/csv/json 경로)로 E1/E2와 동일한 집합을
   강제합니다. 탈락한 개념은 사유별로 (`비전 쌍 없음` / `텍스트 쌍 부족` / `비전 쌍 부족`) 보고됩니다.
   `min_pairs=20`만으로도 33개 개념이 선택되므로 기본 실행도 이미 통일 집합과 같지만, 이제 그 사실이
@@ -371,8 +375,12 @@ The `benchmarks/src/evaluation/` package is NegBench's **MCQ/Retrieval evaluatio
   exactly — that equality is the harness's own correctness check
 - **Outputs**: `per_object_intervention_results.csv`, `per_object_intervention_summary.json`,
   `fig_intervention_conditions_bar.png`, `fig_alignment_vs_gain_scatter.png`, `fig_per_object_gain_waterfall.png`
-- **⚠️ Intercept sensitivity**: the rotation conditions swing 4.05% ↔ 14.83% depending on `--no_bias`,
-  a 3.7x difference the other conditions do not show. **Report both** or the result will not reproduce.
+- **⚠️ Intercept sensitivity**: with `--no_bias` the rotation conditions swing **4.05% ↔ 11.09% (2.7x)**
+  and condition 8 swings **11.63% ↔ 26.61%**. Conditions 4-6 never touch $d_I, d_T$ and are completely
+  insensitive. **Report both** or the result will not reproduce.
+  (Discard the older "4.05% ↔ 14.83%, 3.7x" claim: the 14.83% came from a 6-condition version of the
+  script three days earlier, so it was never a controlled comparison —
+  `logs/evaluation/03_discarded/2026-08-25_alignment_intervention_6cond_UNCONTROLLED/`.)
 - **Pinning the concept set**: `--restrict_objects` (comma list, or a txt/csv/json path) enforces the same
   set E1/E2 used, and reports each dropped concept by reason (no vision pairs / too few text pairs / too few
   vision pairs). `min_pairs=20` already selects the same 33 concepts on its own, so a default run matched the
