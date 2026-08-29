@@ -672,3 +672,57 @@ class TestSharedModelLoader:
             f"{module_name} still unpacks create_model_and_transforms itself, which is how "
             f"preprocess_train gets picked up by accident"
         )
+
+
+class TestSharedCLIGroups:
+    """
+    Thirty-nine entrypoints each re-declared the same flags -- --model in 29 of
+    them, --seed in 25 -- with nothing tying the copies together. That is why
+    --use_cache and --restrict_objects reached only 6 and 7 call sites while the
+    older flags were everywhere: a flag added later only lands where someone
+    remembers to add it.
+    """
+
+    E_SERIES = TestSharedModelLoader.E_SERIES
+
+    @pytest.mark.parametrize("module_name", E_SERIES)
+    def test_e_series_declares_standard_flags_through_the_shared_groups(self, module_name):
+        import importlib
+        import inspect
+
+        src = inspect.getsource(importlib.import_module(f"benchmarks.src.evaluation.{module_name}"))
+        for flag in ('"--model"', '"--pretrained"', '"--output_dir"', '"--batch_size"'):
+            assert f"add_argument({flag}" not in src.replace(" ", ""), (
+                f"{module_name} still declares {flag} itself instead of using the shared group"
+            )
+        assert "from benchmarks.src.analysis.cli import" in src
+
+    def test_min_pairs_has_no_hidden_default(self):
+        """
+        min_pairs silently selects the population: the defaults across this repo are
+        6, 10 and 20, and the paper's 33-concept set only appears at 20 -- the E2
+        decomposition's own default of 10 yields 53 concepts instead. So the shared
+        group refuses to supply one.
+        """
+        import argparse
+        import inspect
+        from analysis.cli import add_concept_args
+
+        assert inspect.signature(add_concept_args).parameters["min_pairs"].default \
+            is inspect.Parameter.empty, "min_pairs must stay a required argument"
+
+        p = argparse.ArgumentParser()
+        add_concept_args(p, 20)
+        assert p.parse_args([]).min_pairs == 20
+        assert "33-concept set requires 20" in p.format_help()
+
+    def test_groups_can_skip_flags_a_script_does_not_honor(self):
+        """An accepted flag that changes nothing is worse than an absent one."""
+        import argparse
+        from analysis.cli import add_run_args, add_data_args
+
+        p = argparse.ArgumentParser()
+        add_run_args(p, "logs/x", seed=None, batch_size=None)
+        add_data_args(p, csv_path=None)
+        got = vars(p.parse_args([]))
+        assert set(got) == {"output_dir", "image_root"}, got

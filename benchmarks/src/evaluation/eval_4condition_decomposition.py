@@ -49,6 +49,11 @@ import matplotlib.pyplot as plt
 
 import open_clip
 
+from benchmarks.src.analysis.cli import (
+    add_model_args, add_run_args, add_data_args, add_cache_args,
+    add_restriction_args, add_concept_args, add_bias_args,
+)
+
 from benchmarks.src.analysis.model_loader import load_clip_for_eval
 
 from benchmarks.src.analysis.config import coerce_bool_column
@@ -450,15 +455,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="4-Condition Inequality Decomposition for CLIP Cosine Negation Matching (Table 1)"
     )
-    parser.add_argument("--csv_path", type=str,
-                        default="benchmarks/data/images/beaf_counterfactual_6col.csv")
-    parser.add_argument("--output_dir", type=str,
-                        default="logs/evaluation/4condition_decomposition")
-    parser.add_argument("--model", type=str, default="ViT-B-32")
-    parser.add_argument("--pretrained", type=str, default="openai")
-    parser.add_argument("--min_pairs", type=int, default=6,
-                        help="Minimum counterfactual pairs per object (default: 6)")
-    parser.add_argument("--batch_size", type=int, default=128)
+    add_model_args(parser, "ViT-B-32", "openai")
+    add_run_args(parser, "logs/evaluation/4condition_decomposition", seed=None, batch_size=128)
+    add_data_args(parser, csv_path="benchmarks/data/images/beaf_counterfactual_6col.csv", image_root=None)
+    add_concept_args(parser, 6, "Minimum counterfactual pairs per object (default: 6)")
     args = parser.parse_args()
 
     run_4condition_decomposition(

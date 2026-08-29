@@ -25,6 +25,11 @@ import pandas as pd
 import torch
 import open_clip
 
+from benchmarks.src.analysis.cli import (
+    add_model_args, add_run_args, add_data_args, add_cache_args,
+    add_restriction_args, add_concept_args, add_bias_args,
+)
+
 try:
     from benchmarks.src.analysis.beaf.vision_mechanisms import extract_vision_features_unified
     from benchmarks.src.analysis.model_loader import load_clip_for_eval
@@ -47,20 +52,13 @@ except ImportError:
 
 def main():
     parser = argparse.ArgumentParser(description="E2 Sanity Check and Data Grounding")
-    parser.add_argument("--csv_path", type=str, default="benchmarks/data/images/beaf_counterfactual_6col.csv")
-    parser.add_argument("--image_root", type=str, default="benchmarks/data/images")
+    add_model_args(parser, "ViT-B-32", "openai")
+    add_run_args(parser, "logs/evaluation/e2_sanity_grounding", seed=42, batch_size=128)
+    add_data_args(parser, csv_path="benchmarks/data/images/beaf_counterfactual_6col.csv", image_root="benchmarks/data/images")
+    add_cache_args(parser)
+    add_restriction_args(parser, "Comma list, or path to txt/csv/json, limiting evaluation to an exact concept set")
+    add_concept_args(parser, 10)
     parser.add_argument("--per_pair_csv", type=str, default="logs/evaluation/01_paper/2026-08-28_e2_final_gamma_resolution/e2_final_per_pair.csv")
-    parser.add_argument("--output_dir", type=str, default="logs/evaluation/e2_sanity_grounding")
-    parser.add_argument("--model", type=str, default="ViT-B-32")
-    parser.add_argument("--pretrained", type=str, default="openai")
-    parser.add_argument("--min_pairs", type=int, default=10)
-    parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--use_cache", action="store_true", default=False,
-                        help="Reuse on-disk encoder features keyed by (model, pretrained, items)")
-    parser.add_argument("--cache_dir", type=str, default=DEFAULT_CACHE_DIR)
-    parser.add_argument("--restrict_objects", type=str, default=None,
-                        help="Comma list, or path to txt/csv/json, limiting evaluation to an exact concept set")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)

@@ -44,6 +44,11 @@ from PIL import Image
 
 import open_clip
 
+from benchmarks.src.analysis.cli import (
+    add_model_args, add_run_args, add_data_args, add_cache_args,
+    add_restriction_args, add_concept_args, add_bias_args,
+)
+
 from benchmarks.src.analysis.model_loader import load_clip_for_eval
 from benchmarks.src.analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
 
@@ -828,15 +833,12 @@ def _render_fig4_bilinear_ablation(ablation_accs: Dict[str, List[float]], output
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="4-Stage Unary Mechanistic Analysis")
-    parser.add_argument("--csv_path", type=str, default="benchmarks/data/images/beaf_counterfactual_6col.csv")
-    parser.add_argument("--output_dir", type=str, default="logs/evaluation/unary_mechanistic_analysis")
-    parser.add_argument("--model", type=str, default="ViT-B-32")
-    parser.add_argument("--pretrained", type=str, default="openai")
+    add_model_args(parser, "ViT-B-32", "openai")
+    add_run_args(parser, "logs/evaluation/unary_mechanistic_analysis", seed=None, batch_size=256)
+    add_data_args(parser, csv_path="benchmarks/data/images/beaf_counterfactual_6col.csv", image_root=None)
+    add_concept_args(parser, 6)
+    add_bias_args(parser, "Disable bias/intercept in linear probes and Bilinear matching head (default: bias enabled)")
     parser.add_argument("--target_objects", nargs="+", default=None)
-    parser.add_argument("--min_pairs", type=int, default=6)
-    parser.add_argument("--batch_size", type=int, default=256)
-    parser.add_argument("--no_bias", "--no-bias", action="store_true", default=False,
-                        help="Disable bias/intercept in linear probes and Bilinear matching head (default: bias enabled)")
     args = parser.parse_args()
 
     run_unary_mechanistic_analysis(

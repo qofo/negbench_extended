@@ -37,6 +37,11 @@ import matplotlib.pyplot as plt
 
 import open_clip
 
+from benchmarks.src.analysis.cli import (
+    add_model_args, add_run_args, add_data_args, add_cache_args,
+    add_restriction_args, add_concept_args, add_bias_args,
+)
+
 # Reuse existing verified infrastructure
 from benchmarks.src.analysis.config import get_layer_features as _get_feats, set_seed, coerce_bool_column
 from benchmarks.src.analysis.feature_cache import build_provenance, load_object_restriction
@@ -679,20 +684,14 @@ def generate_failure_analytics(
 # ============================================================
 def main():
     parser = argparse.ArgumentParser(description="Vision and Text Linear Probe Failure Inspector")
+    add_model_args(parser, "ViT-B-32", "openai")
+    add_run_args(parser, "logs/evaluation/probe_failure_inspection", seed=42, batch_size=128)
+    add_data_args(parser, csv_path=None, image_root="benchmarks/data/images")
+    add_restriction_args(parser, "Comma list, or path to txt/csv/json, pinning both probes to an exact " "concept set (e.g. E2's 33-concept table, so probe accuracies and " "decomposition coefficients describe the same population)")
+    add_concept_args(parser, 20, "Minimum counterfactual pairs per object for vision probing (default: 20)")
     parser.add_argument("--vision_csv", type=str, default="benchmarks/data/images/beaf_counterfactual_6col.csv")
     parser.add_argument("--text_csv", type=str, default="benchmarks/data/images/beaf_counterfactual_ab_swap_diverse.csv")
-    parser.add_argument("--image_root", type=str, default="benchmarks/data/images")
-    parser.add_argument("--output_dir", type=str, default="logs/evaluation/probe_failure_inspection")
-    parser.add_argument("--model", type=str, default="ViT-B-32")
-    parser.add_argument("--pretrained", type=str, default="openai")
-    parser.add_argument("--min_pairs", type=int, default=20, help="Minimum counterfactual pairs per object for vision probing (default: 20)")
     parser.add_argument("--min_samples", type=int, default=20, help="Minimum samples per class for text probing (default: 20)")
-    parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--restrict_objects", type=str, default=None,
-                        help="Comma list, or path to txt/csv/json, pinning both probes to an exact "
-                             "concept set (e.g. E2's 33-concept table, so probe accuracies and "
-                             "decomposition coefficients describe the same population)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)

@@ -31,6 +31,11 @@ import matplotlib.pyplot as plt
 
 import open_clip
 
+from benchmarks.src.analysis.cli import (
+    add_model_args, add_run_args, add_data_args, add_cache_args,
+    add_restriction_args, add_concept_args, add_bias_args,
+)
+
 # Robust imports for both module and standalone execution
 try:
     from benchmarks.src.analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
@@ -346,22 +351,14 @@ def render_e1_visualizations(
 
 def main():
     parser = argparse.ArgumentParser(description="E1: Minimal-Pair Atomic Concept Detection AUC Evaluator")
-    parser.add_argument("--csv_path", type=str, default="benchmarks/data/images/beaf_counterfactual_6col.csv")
-    parser.add_argument("--image_root", type=str, default="benchmarks/data/images")
-    parser.add_argument("--output_dir", type=str, default="logs/evaluation/e1_minimal_pair_auc")
-    parser.add_argument("--model", type=str, default="ViT-B-32")
-    parser.add_argument("--pretrained", type=str, default="openai")
+    add_model_args(parser, "ViT-B-32", "openai")
+    add_run_args(parser, "logs/evaluation/e1_minimal_pair_auc", seed=42, batch_size=128)
+    add_data_args(parser, csv_path="benchmarks/data/images/beaf_counterfactual_6col.csv", image_root="benchmarks/data/images")
+    add_cache_args(parser)
+    add_restriction_args(parser, "Comma list, or path to txt/csv/json, limiting evaluation to an exact concept set " "(use to share E2's concept set verbatim)")
+    add_concept_args(parser, 20, "Minimum counterfactual pairs per concept (default: 20)")
     parser.add_argument("--prompt_template", type=str, default="a photo of a {}")
     parser.add_argument("--ensemble_prompts", action="store_true", help="Ensemble multiple atomic prompt templates")
-    parser.add_argument("--min_pairs", type=int, default=20, help="Minimum counterfactual pairs per concept (default: 20)")
-    parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--use_cache", action="store_true", default=False,
-                        help="Reuse on-disk encoder features keyed by (model, pretrained, items)")
-    parser.add_argument("--cache_dir", type=str, default=DEFAULT_CACHE_DIR)
-    parser.add_argument("--restrict_objects", type=str, default=None,
-                        help="Comma list, or path to txt/csv/json, limiting evaluation to an exact concept set "
-                             "(use to share E2's concept set verbatim)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
