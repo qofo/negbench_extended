@@ -122,3 +122,52 @@ class TestCounterfactualPairingContract:
             assert (
                 present["source_template"][:n].values == absent["source_template"][:n].values
             ).all(), f"positional pairing crosses templates for {obj!r}"
+
+
+class TestPairedProbeCrossValidation:
+    """A counterfactual pair split across folds inverts the probe it is meant to measure.
+
+    E1's image probe reported a macro 29.06% -- 28 of 33 concepts below chance -- for
+    exactly this reason: ``StratifiedKFold`` put one half of a minimal pair in train
+    and the other in test, and since the two vectors are near-identical with opposite
+    labels, memorising the scene assigns the held-out half its twin's label. Grouping
+    the halves into one fold gives 62.65% on the same features.
+    """
+
+    @staticmethod
+    def _paired_features(n=60, dim=32, eps=0.3, seed=0):
+        """Scenes shared within a pair, plus a small +/- shift along one direction."""
+        rng = np.random.default_rng(seed)
+        scenes = rng.normal(size=(n, dim))
+        d = rng.normal(size=dim)
+        d /= np.linalg.norm(d)
+        return scenes + eps * d, scenes - eps * d
+
+    def test_stratified_cv_inverts_a_weak_paired_signal(self):
+        from benchmarks.src.evaluation.eval_unary_mechanistic_analysis import fit_linear_probe
+
+        X_pos, X_neg = self._paired_features(eps=0.02)
+        acc, _, _, _, acc_leaky = fit_linear_probe(X_pos, X_neg, seed=0)
+        assert acc_leaky < 25.0, (
+            f"StratifiedKFold on paired data should invert, got {acc_leaky:.2f}%"
+        )
+        assert acc >= 45.0, f"pair grouping should not be inverted, got {acc:.2f}%"
+
+    def test_pair_grouping_recovers_the_signal(self):
+        from benchmarks.src.evaluation.eval_unary_mechanistic_analysis import fit_linear_probe
+
+        X_pos, X_neg = self._paired_features(eps=0.3)
+        acc, _, _, _, acc_leaky = fit_linear_probe(X_pos, X_neg, seed=0)
+        assert acc > 55.0 > acc_leaky, (
+            f"expected grouped {acc:.2f}% > 55% > leaky {acc_leaky:.2f}%"
+        )
+
+    def test_grouping_is_the_default_and_leaky_value_is_still_reported(self):
+        from benchmarks.src.evaluation.eval_unary_mechanistic_analysis import fit_linear_probe
+
+        X_pos, X_neg = self._paired_features(eps=0.02)
+        default = fit_linear_probe(X_pos, X_neg, seed=0)
+        assert len(default) == 5, "the leaky StratifiedKFold value must stay auditable"
+        opted_out = fit_linear_probe(X_pos, X_neg, seed=0, paired=False)
+        assert default[0] != opted_out[0]
+        assert opted_out[0] == opted_out[4], "paired=False must report the stratified score"

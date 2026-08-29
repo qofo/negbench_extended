@@ -35,7 +35,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.linear_model import LogisticRegression, RidgeClassifier
-from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.model_selection import GroupKFold, StratifiedKFold, cross_val_score
 from scipy import stats
 import matplotlib
 matplotlib.use("Agg")
@@ -44,7 +44,7 @@ from PIL import Image
 
 import open_clip
 
-from benchmarks.src.analysis.config import coerce_bool_column
+from benchmarks.src.analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
 
 from benchmarks.src.evaluation.eval_layerwise_linear_probe import (
     extract_layerwise_feature_dict,
@@ -127,10 +127,30 @@ def fit_linear_probe(
     n_splits: int = 5,
     seed: int = 42,
     fit_intercept: bool = True,
-) -> Tuple[float, float, np.ndarray, float]:
+    paired: bool = True,
+) -> Tuple[float, float, np.ndarray, float, float]:
     """
-    Fit Logistic Regression linear probe on pos vs neg features.
-    Returns (mean_accuracy_pct, std_accuracy_pct, unit_normal_vector_w, bias_b).
+    Fit a Logistic Regression linear probe on pos vs neg features.
+
+    ``X_pos[i]`` and ``X_neg[i]`` are the two halves of one counterfactual minimal
+    pair: the same scene with and without the object, or the same caption with and
+    without the negation. That pairing is what makes the fold splitter a claim
+    rather than a detail.
+
+    With ``StratifiedKFold`` the two halves of a pair can land on opposite sides of
+    the split. The vectors are near-identical and carry opposite labels, so a probe
+    that keys on scene identity assigns the held-out half the *label of its twin* —
+    a systematic inversion, not noise. On BEAF this drove the image probe to a macro
+    29.06% (28 of 33 concepts below chance) while the same features under pair
+    grouping give 62.65%.
+
+    ``paired=True`` (the default) therefore groups the two halves of each pair into
+    the same fold via ``GroupKFold``. The leaky ``StratifiedKFold`` number is still
+    computed and returned last, so a run can show what the grouping changed.
+
+    Returns:
+        (accuracy_pct, std_pct, unit_normal_w, bias_b, stratified_accuracy_pct)
+        where the first value uses pair grouping when ``paired`` is set.
     """
     n_pos, n_neg = len(X_pos), len(X_neg)
     n = min(n_pos, n_neg)
@@ -139,9 +159,18 @@ def fit_linear_probe(
     y = np.array([1] * n + [0] * n)
 
     eff_splits = max(2, min(n_splits, n))
-    cv = StratifiedKFold(n_splits=eff_splits, shuffle=True, random_state=seed)
     clf = LogisticRegression(max_iter=1000, C=1.0, random_state=seed, fit_intercept=fit_intercept)
-    scores = cross_val_score(clf, X_norm, y, cv=cv, scoring="accuracy")
+
+    strat_cv = StratifiedKFold(n_splits=eff_splits, shuffle=True, random_state=seed)
+    strat_scores = cross_val_score(clf, X_norm, y, cv=strat_cv, scoring="accuracy")
+
+    if paired:
+        # Pair i is (X_pos[i], X_neg[i]); one group per pair keeps both halves together.
+        groups = np.concatenate([np.arange(n), np.arange(n)])
+        scores = cross_val_score(clf, X_norm, y, cv=GroupKFold(n_splits=eff_splits),
+                                 groups=groups, scoring="accuracy")
+    else:
+        scores = strat_scores
 
     # Fit on all data for normal vector
     clf.fit(X_norm, y)
@@ -149,7 +178,8 @@ def fit_linear_probe(
     w_unit = w / (np.linalg.norm(w) + 1e-8)
     b = float(clf.intercept_[0]) if fit_intercept else 0.0
 
-    return float(np.mean(scores)) * 100.0, float(np.std(scores)) * 100.0, w_unit, b
+    return (float(np.mean(scores)) * 100.0, float(np.std(scores)) * 100.0,
+            w_unit, b, float(np.mean(strat_scores)) * 100.0)
 
 
 # ============================================================
@@ -455,13 +485,15 @@ def run_unary_mechanistic_analysis(
     print(f"  Output Dir  : {output_dir}")
     print(f"  Use Bias    : {use_bias}\n")
 
-    # Load dataset
-    df = pd.read_csv(csv_path)
-    coerce_bool_column(df, "object_in_image")
+    # Load dataset through the loader that enforces the BEAF pairing contract:
+    # consecutive rows must share object_name/source_template and differ only in
+    # object_in_image. Filtering True and False rows independently and then zipping
+    # them by position (what this script used to do) can mispair rows whenever an
+    # object's rows are not already ordered, and silently produces pairs that are
+    # not counterfactuals of each other.
+    _, df_pairs, _ = load_and_verify_counterfactual_pairs(csv_path, image_root="")
 
-    # Filter single-object unary pairs
-    # Group by object_name and pair consecutive True/False rows
-    objects_in_data = df["object_name"].unique().tolist()
+    objects_in_data = df_pairs["object_name"].unique().tolist()
     if target_objects is None:
         target_objects = [o for o in objects_in_data if "," not in str(o)]
 
@@ -493,11 +525,9 @@ def run_unary_mechanistic_analysis(
     analyzed_objects = []
 
     for obj in target_objects:
-        df_obj = df[df["object_name"] == obj].reset_index(drop=True)
-        df_true = df_obj[df_obj["object_in_image"] == True].reset_index(drop=True)
-        df_false = df_obj[df_obj["object_in_image"] == False].reset_index(drop=True)
+        df_obj = df_pairs[df_pairs["object_name"] == obj].reset_index(drop=True)
 
-        n_pairs = min(len(df_true), len(df_false))
+        n_pairs = len(df_obj)
         if n_pairs < min_pairs_per_obj:
             continue
 
@@ -505,10 +535,10 @@ def run_unary_mechanistic_analysis(
         print(f"  Analyzing Object: [{obj}] (N = {n_pairs} counterfactual pairs)")
         print("──────────────────────────────────────────────────────────")
 
-        img_paths_pos = df_true["image_path"].tolist()[:n_pairs]
-        img_paths_neg = df_false["image_path"].tolist()[:n_pairs]
-        t_pos_texts = df_true["positive_caption"].tolist()[:n_pairs]
-        t_neg_texts = df_true["negative_caption"].tolist()[:n_pairs]
+        img_paths_pos = df_obj["orig_path"].tolist()
+        img_paths_neg = df_obj["cf_path"].tolist()
+        t_pos_texts = df_obj["positive_caption"].tolist()
+        t_neg_texts = df_obj["negative_caption"].tolist()
 
         # 1. Encode Images & Texts
         v_pos, mask_vp = encode_images_safely(model, preprocess, img_paths_pos, device, embed_dim)
@@ -530,13 +560,17 @@ def run_unary_mechanistic_analysis(
         analyzed_objects.append(obj)
 
         # ── Stage E1: Information Probing ──
-        acc_v, std_v, w_I, b_I = fit_linear_probe(v_pos.numpy(), v_neg.numpy(), fit_intercept=use_bias)
-        acc_t, std_t, w_T, b_T = fit_linear_probe(t_pos.numpy(), t_neg.numpy(), fit_intercept=use_bias)
+        acc_v, std_v, w_I, b_I, acc_v_strat = fit_linear_probe(
+            v_pos.numpy(), v_neg.numpy(), fit_intercept=use_bias)
+        acc_t, std_t, w_T, b_T, acc_t_strat = fit_linear_probe(
+            t_pos.numpy(), t_neg.numpy(), fit_intercept=use_bias)
 
         d_I = np.mean(v_pos.numpy(), axis=0) - np.mean(v_neg.numpy(), axis=0)
         d_T = np.mean(t_pos.numpy(), axis=0) - np.mean(t_neg.numpy(), axis=0)
 
         print(f"  [E1 Probe] Image Acc : {acc_v:5.1f}% (±{std_v:4.1f}%) | Text Acc : {acc_t:5.1f}% (±{std_t:4.1f}%)")
+        print(f"             (leaky StratifiedKFold for reference: image {acc_v_strat:5.1f}% | "
+              f"text {acc_t_strat:5.1f}%)")
 
         # ── Stage E2: Cross-Modal Alignment ──
         align_metrics = compute_cross_modal_alignment(w_I, w_T, d_I, d_T)
@@ -569,6 +603,8 @@ def run_unary_mechanistic_analysis(
             "n_pairs": len(valid_idx),
             "e1_image_probe_acc": acc_v,
             "e1_text_probe_acc": acc_t,
+            "e1_image_probe_acc_stratified_leaky": acc_v_strat,
+            "e1_text_probe_acc_stratified_leaky": acc_t_strat,
             "e2_a_normal": align_metrics["a_normal"],
             "e2_a_centroid": align_metrics["a_centroid"],
             "e2_p_val_centroid": align_metrics["p_val_centroid"],
@@ -618,6 +654,17 @@ def run_unary_mechanistic_analysis(
         "e1_probing_mean": {
             "image_probe_acc": float(df_summary["e1_image_probe_acc"].mean()),
             "text_probe_acc": float(df_summary["e1_text_probe_acc"].mean()),
+            "cv_strategy": "GroupKFold(pair) - both halves of a counterfactual pair share a fold",
+            "image_probe_acc_stratified_leaky":
+                float(df_summary["e1_image_probe_acc_stratified_leaky"].mean()),
+            "text_probe_acc_stratified_leaky":
+                float(df_summary["e1_text_probe_acc_stratified_leaky"].mean()),
+            "leaky_cv_note": (
+                "The *_stratified_leaky fields are StratifiedKFold on paired data, which splits "
+                "counterfactual twins across folds and inverts the image probe (macro 29.06% on "
+                "BEAF, 28/33 concepts below chance). Reported for comparison only; do not cite."
+            ),
+            "n_concepts_below_chance": int((df_summary["e1_image_probe_acc"] < 50.0).sum()),
         },
         "e2_alignment_mean": {
             "a_normal_mean": float(df_summary["e2_a_normal"].mean()),
