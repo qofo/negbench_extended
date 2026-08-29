@@ -10,7 +10,7 @@
 **핵심 연구 질문과의 매핑:**
 - **RQ1 (Representation vs Scoring Head)**: 텍스트 잠재 공간에 부정 정보가 보존되어 있는가? → `metrics.py` 선형 프로빙, `extractor.py` 레이어별 추출
 - **RQ2 (Sparse vs Distributed)**: 소수 차원에 의존하는가? → `eval_sparse_text_dimensions.py`
-- **RQ3 (Bilinear 필요성)**: 대각 매칭으로 충분한가? → `analyze_internal_weights.py`
+- **RQ3 (Bilinear 필요성)**: 대각 매칭으로 충분한가? → `evaluation/analyze_internal_weights.py`
 - **BEAF 통합**: Counterfactual Pair 기반 인과 검증 → `run_beaf_*.py` 시리즈
 
 ---
@@ -73,15 +73,6 @@
   - 텍스트 프로브 + 비전 프로브 모두 수행
 - **출력**: `sparse_dim_analysis.png`, CSV, JSON
 - **수식**: → [루트 GUIDE.md §5 ⑥ 참조](../../../GUIDE.md)
-
-#### `analyze_internal_weights.py` (381줄)
-- **역할**: Linear Probe 가중치 및 Bilinear $W$ 행렬 에너지 분석
-- **분석 대상**:
-  1. Linear Probe 텍스트 가중치 분포
-  2. Weighted Cosine Scorer 차원별 가중치 분포
-  3. Bilinear Scorer $W$ 행렬의 대각/비대각 에너지 비율 (약 2.83% / 97.17%)
-- **의존성**: `evaluation.scoring_heads.WeightedCosineScorer`, `BilinearScorer`
-- **수식**: → [루트 GUIDE.md §5 ④ 참조](../../../GUIDE.md)
 
 #### `reporter.py` (351줄)
 - **역할**: PNG 시각화 렌더러 및 JSON/CSV 보고서 직렬화
@@ -150,7 +141,6 @@ config.py  ←─  extractor.py  ←─  metrics.py  ←─  run_analysis.py
      │
      ├── subspace_analysis.py (독립 엔트리포인트)
      ├── eval_sparse_text_dimensions.py (독립 엔트리포인트)
-     ├── analyze_internal_weights.py (evaluation.scoring_heads 의존)
      │
      └── run_beaf_*.py  ──→  beaf/ 패키지 (→ beaf/GUIDE.md 참조)
 ```
@@ -167,7 +157,7 @@ The `benchmarks/src/analysis/` package is the **representation analysis core** t
 **Mapping to Core Research Questions:**
 - **RQ1 (Representation vs Scoring Head)**: Is negation information preserved in text latent space? → `metrics.py` linear probing, `extractor.py` layer-wise extraction
 - **RQ2 (Sparse vs Distributed)**: Does accuracy depend on a few dimensions? → `eval_sparse_text_dimensions.py`
-- **RQ3 (Bilinear Necessity)**: Is diagonal matching sufficient? → `analyze_internal_weights.py`
+- **RQ3 (Bilinear Necessity)**: Is diagonal matching sufficient? → `evaluation/analyze_internal_weights.py`
 - **BEAF Integration**: Causal verification via counterfactual pairs → `run_beaf_*.py` series
 
 ---
@@ -230,15 +220,6 @@ The `benchmarks/src/analysis/` package is the **representation analysis core** t
   - Both text and vision probes evaluated
 - **Output**: `sparse_dim_analysis.png`, CSV, JSON
 - **Formulas**: → [Root GUIDE.md §5 ⑥ Reference](../../../GUIDE.md)
-
-#### `analyze_internal_weights.py` (381 lines)
-- **Role**: Linear Probe weight & Bilinear $W$ matrix energy analysis
-- **Analysis Targets**:
-  1. Linear Probe text weight distribution
-  2. Weighted Cosine Scorer per-dimension weight distribution
-  3. Bilinear Scorer $W$ matrix diagonal/off-diagonal energy ratio (~2.83% / ~97.17%)
-- **Dependencies**: `evaluation.scoring_heads.WeightedCosineScorer`, `BilinearScorer`
-- **Formulas**: → [Root GUIDE.md §5 ④ Reference](../../../GUIDE.md)
 
 #### `reporter.py` (351 lines)
 - **Role**: PNG visualization renderer and JSON/CSV report serializer
@@ -307,7 +288,6 @@ config.py  ←─  extractor.py  ←─  metrics.py  ←─  run_analysis.py
      │
      ├── subspace_analysis.py (standalone entrypoint)
      ├── eval_sparse_text_dimensions.py (standalone entrypoint)
-     ├── analyze_internal_weights.py (depends on evaluation.scoring_heads)
      │
      └── run_beaf_*.py  ──→  beaf/ package (→ see beaf/GUIDE.md)
 ```

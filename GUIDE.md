@@ -132,7 +132,7 @@ $$\text{Interaction Effect} = (A - B) - (C - D) \quad (\text{시각-텍스트 �
 | `FullBilinearPyTorch` | $f(x) = x^T W x + x w_{\text{lin}} + b$ | Full $D \times D$ 2차 형식 상호작용 |
 | `MLPVisionPyTorch` | $f(x) = W_2 \cdot \text{GELU}(W_1 x + b_1) + b_2$ | 2계층 비선형 MLP |
 
-#### ④ Bilinear $W$ 행렬 에너지 분해 (`benchmarks/src/analysis/analyze_internal_weights.py`)
+#### ④ Bilinear $W$ 행렬 에너지 분해 (`benchmarks/src/evaluation/analyze_internal_weights.py`)
 * $\text{Total Energy} = \sum_{i, j} W_{i, j}^2$
 * $\text{Diagonal Energy (Direct Matching)} = \sum_i W_{i, i}^2 \approx \mathbf{2.83\%}$
 * $\text{Off-Diagonal Energy (Cross-Dimension Interaction)} = \text{Total} - \text{Diag} \approx \mathbf{97.17\%}$

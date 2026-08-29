@@ -726,3 +726,44 @@ class TestSharedCLIGroups:
         add_data_args(p, csv_path=None)
         got = vars(p.parse_args([]))
         assert set(got) == {"output_dir", "image_root"}, got
+
+
+class TestPackageLayering:
+    """
+    ``analysis/`` holds the shared primitives -- config, paths, feature cache,
+    model loader, CLI groups, probes, extractors -- and ``evaluation/`` builds
+    experiments on top of them: 90 import edges run that way. One file ran the
+    other way, ``analyze_internal_weights.py``, which imported
+    ``evaluation.scoring_heads`` while using nothing from ``analysis`` at all. It
+    now lives in ``evaluation/``, where its dependencies already were.
+    """
+
+    @staticmethod
+    def _imports(pkg):
+        import io
+        import pathlib
+        import re
+
+        root = pathlib.Path("benchmarks/src") / pkg
+        out = []
+        for f in root.rglob("*.py"):
+            src = io.open(f, encoding="utf-8").read()
+            for m in re.finditer(
+                    r"from\s+(?:benchmarks\.src\.)?(\w+)[\w\.]*\s+import|"
+                    r"import\s+(?:benchmarks\.src\.)?(\w+)\.", src):
+                out.append((str(f), m.group(1) or m.group(2)))
+        return out
+
+    def test_analysis_never_imports_evaluation(self):
+        bad = [f for f, tgt in self._imports("analysis") if tgt == "evaluation"]
+        assert not bad, (
+            "analysis/ is the lower layer; these files invert it: " + ", ".join(sorted(set(bad)))
+        )
+
+    def test_evaluation_still_builds_on_analysis(self):
+        """The guard above must not be satisfied by severing the intended direction."""
+        good = [f for f, tgt in self._imports("evaluation") if tgt == "analysis"]
+        assert len(set(good)) > 15, (
+            f"only {len(set(good))} evaluation modules import analysis; the shared primitives "
+            "should be reused, not re-implemented"
+        )

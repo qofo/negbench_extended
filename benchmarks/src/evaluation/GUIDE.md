@@ -187,6 +187,19 @@
   학습형 조건은 평균 0.1~0.3pp(단일 개념 최대 ~12pp) 움직입니다 — 신호가 아니라 잡음으로 읽으십시오
 - **`--use_cache`**: `(model, pretrained, items)` 키 기반 디스크 특징 캐시 재사용 (2m55s → 1m56s)
 
+#### `analyze_internal_weights.py` (381줄)
+- **역할**: Linear Probe 가중치 및 Bilinear $W$ 행렬 에너지 분석
+- **분석 대상**:
+  1. Linear Probe 텍스트 가중치 분포
+  2. Weighted Cosine Scorer 차원별 가중치 분포
+  3. Bilinear Scorer $W$ 행렬의 대각/비대각 에너지 비율 (약 2.83% / 97.17%)
+- **의존성**: 같은 패키지의 `scoring_heads.WeightedCosineScorer`, `BilinearScorer`
+- **위치**: 2026-08-29에 `analysis/`에서 옮겨왔습니다. `analysis/` 안에서 유일하게 `evaluation/`을
+  import하던 파일이라 패키지 계층을 역행시켰고, 정작 `analysis/`에서는 아무것도 쓰지 않았습니다
+- **⚠️ 에너지 비율 해석**: 97.17%를 "교차 차원이 지배적"의 근거로 쓰지 마십시오 — 비대각 성분이
+  511배 많아 무작위 행렬도 99.8%입니다. 루트 `GUIDE.md` §5 ④ 참조
+- **수식**: → [루트 GUIDE.md §5 ④ 참조](../../../GUIDE.md)
+
 #### `eval_probe_failure_inspector.py` (689줄)
 - **역할**: Vision/Text 프로브 OOF 실패 사례 수집 및 패턴 분석
 - **출력**:
@@ -389,6 +402,20 @@ The `benchmarks/src/evaluation/` package is NegBench's **MCQ/Retrieval evaluatio
   conditions stay bit-identical; the trained ones move by 0.1–0.3pp in the mean (up to ~12pp on one concept).
   Read such a gap as noise, not signal
 - **`--use_cache`**: reuse on-disk features keyed by `(model, pretrained, items)` (2m55s → 1m56s)
+
+#### `analyze_internal_weights.py` (381 lines)
+- **Role**: Linear Probe weight & Bilinear $W$ matrix energy analysis
+- **Analysis Targets**:
+  1. Linear Probe text weight distribution
+  2. Weighted Cosine Scorer per-dimension weight distribution
+  3. Bilinear Scorer $W$ matrix diagonal/off-diagonal energy ratio (~2.83% / ~97.17%)
+- **Dependencies**: `scoring_heads.WeightedCosineScorer`, `BilinearScorer`, now in the same package
+- **Location**: moved here from `analysis/` on 2026-08-29. It was the only file in `analysis/`
+  importing `evaluation/`, inverting the package layering, and it used nothing from `analysis/`
+- **⚠️ Reading the energy ratio**: do not cite 97.17% as evidence that cross-dimensional
+  interaction dominates -- there are 511x more off-diagonal entries, so a random matrix already
+  gives 99.8%. See root `GUIDE.md` §5 (4)
+- **Formulas**: → [Root GUIDE.md §5 ④ Reference](../../../GUIDE.md)
 
 #### `eval_probe_failure_inspector.py` (689 lines)
 - **Role**: Vision/Text probe OOF failure case collection and pattern analysis
