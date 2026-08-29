@@ -14,18 +14,103 @@ from sklearn.linear_model import LogisticRegression, RidgeClassifier, SGDClassif
 from sklearn.svm import SVC
 
 
-SUPPORTED_PROBES = [
-    "logistic",
-    "svm_linear",
-    "ridge",
-    "sgd_log",
-    "sgd_hinge",
-    "svm_rbf",
-    "mlp",
-    "bilinear_lowrank",
-    "bilinear_full",
-    "elementwise",
-]
+# ==============================================================================
+# Probe registry -- the single place a probe type is declared
+# ==============================================================================
+# A probe used to be declared in three places that had to agree by hand: this
+# name list, an elif chain in get_param_candidates, and another in
+# create_probe_classifier. Nothing enforced the agreement, so adding a probe to
+# two of the three would raise "Unsupported probe_type" from whichever one was
+# missed -- or, worse, tune a probe against another's grid.
+#
+# Now the grid lives in the registry and the name list is derived from it.
+# ``build`` stays a small function per entry because each one constructs a
+# genuinely different estimator; the registry is what keeps the set of names,
+# the grids, and the builders from drifting apart.
+
+_C_GRID = [{"C": c} for c in [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]]
+
+_TORCH_DEFAULTS = {"hidden_dim": 64, "rank": 4, "lr": 1e-2, "weight_decay": 1e-4, "epochs": 200}
+
+# sklearn's SVC exposes no fit_intercept, so --no_bias cannot be honored for these.
+_NO_INTERCEPT_CONTROL = ("svm_linear", "svm_rbf")
+
+
+def _grid_svm_rbf() -> List[Dict[str, Any]]:
+    return [{"C": c, "gamma": g}
+            for c in [0.1, 1.0, 10.0, 100.0]
+            for g in ["scale", "auto", 0.01, 0.1]]
+
+
+def _build_torch(p_type: str, params: Dict[str, Any], seed: int, use_bias: bool) -> Any:
+    kw = {k: params.get(k, v) for k, v in _TORCH_DEFAULTS.items()}
+    return PyTorchProbeEstimator(model_type=p_type, seed=seed, use_bias=use_bias, **kw)
+
+
+PROBE_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "logistic": {
+        "grid": lambda: list(_C_GRID),
+        "build": lambda p, seed, use_bias: LogisticRegression(
+            C=p.get("C", 1.0), max_iter=1000, random_state=seed, fit_intercept=use_bias),
+    },
+    "svm_linear": {
+        "grid": lambda: list(_C_GRID),
+        "build": lambda p, seed, use_bias: SVC(
+            kernel="linear", C=p.get("C", 1.0), random_state=seed),
+    },
+    "ridge": {
+        "grid": lambda: list(_C_GRID),
+        "build": lambda p, seed, use_bias: RidgeClassifier(
+            alpha=1.0 / max(p.get("C", 1.0), 1e-6), random_state=seed, fit_intercept=use_bias),
+    },
+    "sgd_log": {
+        "grid": lambda: list(_C_GRID),
+        "build": lambda p, seed, use_bias: SGDClassifier(
+            loss="log_loss", alpha=1.0 / max(p.get("C", 1.0) * 1000.0, 1e-6),
+            max_iter=1000, random_state=seed, fit_intercept=use_bias),
+    },
+    "sgd_hinge": {
+        "grid": lambda: list(_C_GRID),
+        "build": lambda p, seed, use_bias: SGDClassifier(
+            loss="hinge", alpha=1.0 / max(p.get("C", 1.0) * 1000.0, 1e-6),
+            max_iter=1000, random_state=seed, fit_intercept=use_bias),
+    },
+    "svm_rbf": {
+        "grid": _grid_svm_rbf,
+        "build": lambda p, seed, use_bias: SVC(
+            kernel="rbf", C=p.get("C", 1.0), gamma=p.get("gamma", "scale"), random_state=seed),
+    },
+    "mlp": {
+        "grid": lambda: [{"hidden_dim": h, "lr": 0.01, "weight_decay": wd, "epochs": 200}
+                         for h in [8, 16, 32, 64, 128] for wd in [1e-4, 1e-3, 1e-2, 1e-1]],
+        "build": lambda p, seed, use_bias: _build_torch("mlp", p, seed, use_bias),
+    },
+    "bilinear_lowrank": {
+        "grid": lambda: [{"rank": r, "lr": 0.01, "weight_decay": wd, "epochs": 200}
+                         for r in [2, 4, 8, 16, 32] for wd in [1e-4, 1e-3, 1e-2, 1e-1]],
+        "build": lambda p, seed, use_bias: _build_torch("bilinear_lowrank", p, seed, use_bias),
+    },
+    "bilinear_full": {
+        "grid": lambda: [{"lr": lr, "weight_decay": wd, "epochs": 200}
+                         for lr in [0.005, 0.01, 0.02] for wd in [1e-4, 1e-3, 1e-2, 1e-1]],
+        "build": lambda p, seed, use_bias: _build_torch("bilinear_full", p, seed, use_bias),
+    },
+    "elementwise": {
+        "grid": lambda: [{"lr": 0.01, "weight_decay": wd, "epochs": 200}
+                         for wd in [1e-4, 1e-3, 1e-2, 1e-1]],
+        "build": lambda p, seed, use_bias: _build_torch("elementwise", p, seed, use_bias),
+    },
+}
+
+SUPPORTED_PROBES = list(PROBE_REGISTRY)
+
+
+def _lookup(probe_type: str) -> Dict[str, Any]:
+    spec = PROBE_REGISTRY.get(probe_type.lower().strip())
+    if spec is None:
+        raise ValueError(
+            f"Unsupported probe_type '{probe_type}'. Supported probes: {SUPPORTED_PROBES}")
+    return spec
 
 
 # ==============================================================================
@@ -129,7 +214,10 @@ class PyTorchProbeEstimator(BaseEstimator, ClassifierMixin):
         self.epochs = epochs
         self.seed = seed
         self.use_bias = use_bias
-        self.classes_ = np.array([0, 1])
+        # classes_ is a *fitted* attribute in the sklearn contract, so it is set in
+        # fit() from the data. Hardcoding [0, 1] here meant labels like {2, 5} were
+        # cast straight into BCE and predict() still returned 0/1 -- scoring 0% on
+        # perfectly separable data with no error raised anywhere.
         self.model_ = None
         self.device_ = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -146,6 +234,17 @@ class PyTorchProbeEstimator(BaseEstimator, ClassifierMixin):
             raise ValueError(f"Unknown model_type '{self.model_type}'")
 
     def fit(self, X: np.ndarray, y: np.ndarray):
+        y = np.asarray(y)
+        self.classes_ = np.unique(y)
+        if len(self.classes_) != 2:
+            raise ValueError(
+                f"{type(self).__name__} is a binary probe (BCEWithLogitsLoss), but y has "
+                f"{len(self.classes_)} classes: {self.classes_.tolist()}"
+            )
+        # BCE needs 0/1 targets; remember which observed label is the positive one so
+        # predict() can hand the caller back its own labels.
+        y = (y == self.classes_[1]).astype(np.float32)
+
         torch.manual_seed(self.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(self.seed)
@@ -158,7 +257,7 @@ class PyTorchProbeEstimator(BaseEstimator, ClassifierMixin):
         criterion = nn.BCEWithLogitsLoss()
 
         X_t = torch.tensor(X, dtype=torch.float32, device=self.device_)
-        y_t = torch.tensor(y.astype(np.float32), dtype=torch.float32, device=self.device_)
+        y_t = torch.tensor(y, dtype=torch.float32, device=self.device_)
 
         self.model_.train()
         for _ in range(self.epochs):
@@ -170,7 +269,12 @@ class PyTorchProbeEstimator(BaseEstimator, ClassifierMixin):
 
         return self
 
+    def _check_fitted(self) -> None:
+        if self.model_ is None:
+            raise ValueError(f"{type(self).__name__} is not fitted yet; call fit() first.")
+
     def decision_function(self, X: np.ndarray) -> np.ndarray:
+        self._check_fitted()
         if len(X) == 0:
             return np.empty((0,), dtype=np.float32)
         self.model_.eval()
@@ -180,6 +284,7 @@ class PyTorchProbeEstimator(BaseEstimator, ClassifierMixin):
             return logits
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        self._check_fitted()
         self.model_.eval()
         with torch.no_grad():
             X_t = torch.tensor(X, dtype=torch.float32, device=self.device_)
@@ -190,11 +295,10 @@ class PyTorchProbeEstimator(BaseEstimator, ClassifierMixin):
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         proba = self.predict_proba(X)[:, 1]
-        return (proba >= 0.5).astype(int)
+        return self.classes_[(proba >= 0.5).astype(int)]
 
     def score(self, X: np.ndarray, y: np.ndarray) -> float:
-        preds = self.predict(X)
-        return float(np.mean(preds == y))
+        return float(np.mean(self.predict(X) == np.asarray(y)))
 
 
 # ==============================================================================
@@ -203,55 +307,7 @@ class PyTorchProbeEstimator(BaseEstimator, ClassifierMixin):
 
 def get_param_candidates(probe_type: str) -> List[Dict[str, Any]]:
     """Return candidate hyperparameter dictionaries for inner CV tuning."""
-    p_type = probe_type.lower().strip()
-
-    if p_type in ["logistic", "svm_linear"]:
-        return [{"C": c} for c in [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]]
-
-    elif p_type == "ridge":
-        return [{"C": c} for c in [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]]
-
-    elif p_type in ["sgd_log", "sgd_hinge"]:
-        return [{"C": c} for c in [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]]
-
-    elif p_type == "svm_rbf":
-        candidates = []
-        for c in [0.1, 1.0, 10.0, 100.0]:
-            for gamma in ["scale", "auto", 0.01, 0.1]:
-                candidates.append({"C": c, "gamma": gamma})
-        return candidates
-
-    elif p_type == "mlp":
-        candidates = []
-        for hidden in [8, 16, 32, 64, 128]:
-            for wd in [1e-4, 1e-3, 1e-2, 1e-1]:
-                candidates.append({"hidden_dim": hidden, "lr": 0.01, "weight_decay": wd, "epochs": 200})
-        return candidates
-
-    elif p_type == "bilinear_lowrank":
-        candidates = []
-        for rank in [2, 4, 8, 16, 32]:
-            for wd in [1e-4, 1e-3, 1e-2, 1e-1]:
-                candidates.append({"rank": rank, "lr": 0.01, "weight_decay": wd, "epochs": 200})
-        return candidates
-
-    elif p_type == "bilinear_full":
-        candidates = []
-        for lr in [0.005, 0.01, 0.02]:
-            for wd in [1e-4, 1e-3, 1e-2, 1e-1]:
-                candidates.append({"lr": lr, "weight_decay": wd, "epochs": 200})
-        return candidates
-
-    elif p_type == "elementwise":
-        candidates = []
-        for wd in [1e-4, 1e-3, 1e-2, 1e-1]:
-            candidates.append({"lr": 0.01, "weight_decay": wd, "epochs": 200})
-        return candidates
-
-    else:
-        raise ValueError(
-            f"Unsupported probe_type '{probe_type}'. Supported probes: {SUPPORTED_PROBES}"
-        )
+    return _lookup(probe_type)["grid"]()
 
 
 def format_params(params: Dict[str, Any]) -> str:
@@ -273,7 +329,7 @@ def create_probe_classifier(probe_type: str, seed: int = 42, fit_intercept: bool
     Instantiate classifier based on probe_type and hyperparameter dictionary.
 
     Args:
-        probe_type (str): Probe algorithm identifier.
+        probe_type (str): Probe algorithm identifier, one of ``SUPPORTED_PROBES``.
         seed (int): Random seed for reproducibility.
         fit_intercept (bool): Whether to include bias / intercept term (default: True).
         **params: Hyperparameters for the classifier.
@@ -282,63 +338,15 @@ def create_probe_classifier(probe_type: str, seed: int = 42, fit_intercept: bool
         Scikit-learn compatible classifier instance.
     """
     p_type = probe_type.lower().strip()
+    spec = _lookup(p_type)
     use_bias = params.get("use_bias", fit_intercept)
 
     # sklearn's SVC has no fit_intercept, so --no_bias cannot be honored for the two
     # SVM probes. Say so instead of reporting a "no-bias" number that still has one.
-    if not use_bias and p_type in ("svm_linear", "svm_rbf") and p_type not in _NO_BIAS_WARNED:
+    if not use_bias and p_type in _NO_INTERCEPT_CONTROL and p_type not in _NO_BIAS_WARNED:
         _NO_BIAS_WARNED.add(p_type)
         print(f"[WARNING] probe '{p_type}' is backed by sklearn SVC, which always fits an "
               f"intercept; fit_intercept=False is NOT applied. Use 'logistic' or 'ridge' "
               f"for a genuinely intercept-free linear probe.")
 
-    if p_type == "logistic":
-        c = params.get("C", 1.0)
-        return LogisticRegression(C=c, max_iter=1000, random_state=seed, fit_intercept=use_bias)
-
-    elif p_type == "svm_linear":
-        c = params.get("C", 1.0)
-        return SVC(kernel="linear", C=c, random_state=seed)
-
-    elif p_type == "ridge":
-        c = params.get("C", 1.0)
-        alpha = 1.0 / max(c, 1e-6)
-        return RidgeClassifier(alpha=alpha, random_state=seed, fit_intercept=use_bias)
-
-    elif p_type == "sgd_log":
-        c = params.get("C", 1.0)
-        alpha = 1.0 / max(c * 1000.0, 1e-6)
-        return SGDClassifier(loss="log_loss", alpha=alpha, max_iter=1000, random_state=seed, fit_intercept=use_bias)
-
-    elif p_type == "sgd_hinge":
-        c = params.get("C", 1.0)
-        alpha = 1.0 / max(c * 1000.0, 1e-6)
-        return SGDClassifier(loss="hinge", alpha=alpha, max_iter=1000, random_state=seed, fit_intercept=use_bias)
-
-    elif p_type == "svm_rbf":
-        c = params.get("C", 1.0)
-        gamma = params.get("gamma", "scale")
-        return SVC(kernel="rbf", C=c, gamma=gamma, random_state=seed)
-
-    elif p_type in ["mlp", "bilinear_lowrank", "bilinear_full", "elementwise"]:
-        hidden_dim = params.get("hidden_dim", 64)
-        rank = params.get("rank", 4)
-        lr = params.get("lr", 1e-2)
-        weight_decay = params.get("weight_decay", 1e-4)
-        epochs = params.get("epochs", 200)
-        return PyTorchProbeEstimator(
-            model_type=p_type,
-            hidden_dim=hidden_dim,
-            rank=rank,
-            lr=lr,
-            weight_decay=weight_decay,
-            epochs=epochs,
-            seed=seed,
-            use_bias=use_bias,
-        )
-
-    else:
-        raise ValueError(
-            f"Unsupported probe_type '{probe_type}'. Supported probes: {SUPPORTED_PROBES}"
-        )
-
+    return spec["build"](params, seed, use_bias)

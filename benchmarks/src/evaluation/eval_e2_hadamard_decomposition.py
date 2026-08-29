@@ -49,14 +49,16 @@ import open_clip
 try:
     from benchmarks.src.analysis.beaf.vision_mechanisms import extract_vision_features_unified
     from benchmarks.src.analysis.feature_cache import (
-        cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
+        cached_encode, build_provenance, load_object_restriction, resolve_upstream_artifact,
+        DEFAULT_CACHE_DIR,
     )
     from benchmarks.src.analysis.config import set_seed, coerce_bool_column
     from benchmarks.src.analysis.paths import resolve_image_path as resolve_path
 except ImportError:
     from analysis.beaf.vision_mechanisms import extract_vision_features_unified
     from analysis.feature_cache import (
-        cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
+        cached_encode, build_provenance, load_object_restriction, resolve_upstream_artifact,
+        DEFAULT_CACHE_DIR,
     )
     from analysis.config import set_seed, coerce_bool_column
     from analysis.paths import resolve_image_path as resolve_path
@@ -662,9 +664,14 @@ def main():
     df_pairs_out = pd.DataFrame(per_pair_records)
 
     # 5. Load E1 per-concept AUC for cross-validation
+    # Optional: the E1 cross-check is a nice-to-have, but a silently missing one
+    # used to leave the report indistinguishable from one where the check passed.
     df_e1 = None
-    e1_csv = os.path.join(args.e1_report_dir, "e1_per_concept_auc.csv")
-    if os.path.exists(e1_csv):
+    e1_csv = resolve_upstream_artifact(
+        os.path.join(args.e1_report_dir, "e1_per_concept_auc.csv"),
+        produced_by="python -m benchmarks.src.evaluation.eval_e1_minimal_pair_auc",
+        required=False, label="E1 per-concept AUC CSV")
+    if e1_csv is not None:
         df_e1 = pd.read_csv(e1_csv)
 
     # Global summary metrics
@@ -734,6 +741,10 @@ def main():
             "retriever uses one shared W. Read these as the reachable point of removing "
             "main effects near W=I, not as a physical ceiling."
         ),
+        # Whether the E1 cross-check actually ran. Without this a report produced
+        # with the E1 CSV missing looks identical to one where the check passed.
+        "e1_cross_check": ("ran" if df_e1 is not None else
+                           f"SKIPPED: no e1_per_concept_auc.csv under {args.e1_report_dir}"),
         "provenance": build_provenance(args, n_concepts=len(df_concepts),
                                        n_pairs=total_pairs_evaluated),
         "verdict": verdict,

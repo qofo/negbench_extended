@@ -28,14 +28,16 @@ import open_clip
 try:
     from benchmarks.src.analysis.beaf.vision_mechanisms import extract_vision_features_unified
     from benchmarks.src.analysis.feature_cache import (
-        cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
+        cached_encode, build_provenance, load_object_restriction, resolve_upstream_artifact,
+        DEFAULT_CACHE_DIR,
     )
     from benchmarks.src.analysis.config import set_seed, coerce_bool_column
     from benchmarks.src.analysis.paths import resolve_image_path as resolve_path
 except ImportError:
     from analysis.beaf.vision_mechanisms import extract_vision_features_unified
     from analysis.feature_cache import (
-        cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
+        cached_encode, build_provenance, load_object_restriction, resolve_upstream_artifact,
+        DEFAULT_CACHE_DIR,
     )
     from analysis.config import set_seed, coerce_bool_column
     from analysis.paths import resolve_image_path as resolve_path
@@ -76,6 +78,10 @@ def main():
     # ──────────────────────────────────────────────────────────
     print("  [1/4] Checking 0.8843% Joint Accuracy & Algebraic Identity...")
     print(f"        Source: {args.per_pair_csv}")
+    resolve_upstream_artifact(
+        args.per_pair_csv,
+        produced_by="python -m benchmarks.src.evaluation.eval_e2_final_gamma_resolution",
+        label="final per-pair decomposition CSV")
     df_pairs = pd.read_csv(args.per_pair_csv)
     n_pairs = len(df_pairs)
 

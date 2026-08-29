@@ -468,3 +468,156 @@ class TestRotationZeroAlphaCondition:
         assert set(oof) == set(CONDITION_NAMES), "every condition must reach the OOF column"
         for cond in ("8_Rotation_Zero_Alpha", "9_Zero_Alpha_Only"):
             assert oof[cond]["abs_alpha_mean"] < 1e-9, f"{cond} must zero alpha out of fold too"
+
+
+class TestUpstreamArtifactResolution:
+    """
+    Several experiments read another experiment's output through a default path
+    under logs/, which is gitignored -- so a fresh clone has none of them. The
+    three call sites used to handle that three different ways: a clear error, a
+    raw pandas traceback, and a silent skip that dropped a cross-check from the
+    report with nothing recording the omission.
+    """
+
+    def test_missing_required_artifact_names_the_producing_command(self, tmp_path):
+        from analysis.feature_cache import resolve_upstream_artifact
+
+        with pytest.raises(FileNotFoundError) as e:
+            resolve_upstream_artifact(str(tmp_path / "absent.csv"),
+                                      produced_by="python -m some.producer")
+        msg = str(e.value)
+        assert "python -m some.producer" in msg, "the error must say how to produce the file"
+        assert "gitignored" in msg, "and why a fresh clone lacks it"
+
+    def test_optional_artifact_returns_none_instead_of_raising(self, tmp_path, capsys):
+        from analysis.feature_cache import resolve_upstream_artifact
+
+        got = resolve_upstream_artifact(str(tmp_path / "absent.csv"),
+                                        produced_by="python -m some.producer",
+                                        required=False)
+        assert got is None
+        assert "skipped" in capsys.readouterr().out, "an optional skip must still be visible"
+
+    def test_existing_artifact_passes_through(self, tmp_path):
+        from analysis.feature_cache import resolve_upstream_artifact
+
+        p = tmp_path / "present.csv"
+        p.write_text("a,b\n1,2\n")
+        assert resolve_upstream_artifact(str(p), produced_by="x") == str(p)
+
+    def test_hadamard_summary_records_whether_the_e1_check_ran(self):
+        """
+        The silent-skip case: the summary has to distinguish a report whose E1
+        cross-check ran from one where the CSV was simply absent.
+        """
+        import inspect
+        from benchmarks.src.evaluation import eval_e2_hadamard_decomposition as mod
+
+        src = inspect.getsource(mod)
+        assert '"e1_cross_check"' in src, "the summary must record whether the E1 check ran"
+        assert "SKIPPED" in src, "and say so explicitly when it did not"
+
+
+class TestProbeRegistry:
+    """
+    A probe used to be declared in three places that had to agree by hand: the
+    SUPPORTED_PROBES name list, an elif chain for its hyperparameter grid, and
+    another for its constructor. Nothing checked the agreement, so a probe added
+    to two of the three would raise "Unsupported probe_type" from the one that was
+    missed -- or silently get tuned against another probe's grid.
+    """
+
+    def test_name_list_is_derived_from_the_registry(self):
+        from analysis.beaf.probe_factory import SUPPORTED_PROBES, PROBE_REGISTRY
+
+        assert SUPPORTED_PROBES == list(PROBE_REGISTRY), (
+            "SUPPORTED_PROBES must be derived from PROBE_REGISTRY, not maintained beside it"
+        )
+
+    def test_every_registered_probe_has_a_grid_and_builds(self):
+        from analysis.beaf.probe_factory import (
+            SUPPORTED_PROBES, get_param_candidates, create_probe_classifier,
+        )
+
+        for name in SUPPORTED_PROBES:
+            grid = get_param_candidates(name)
+            assert grid, f"{name} has an empty hyperparameter grid"
+            for params in (grid[0], grid[-1]):
+                assert create_probe_classifier(name, seed=42, **params) is not None
+
+    def test_unknown_probe_fails_the_same_way_from_both_entry_points(self):
+        from analysis.beaf.probe_factory import get_param_candidates, create_probe_classifier
+
+        for fn in (get_param_candidates, create_probe_classifier):
+            with pytest.raises(ValueError, match="Unsupported probe_type"):
+                fn("no_such_probe")
+
+    def test_no_bias_reaches_the_probes_that_can_honor_it(self):
+        """`--no_bias` is a claim about the fitted model, so it has to land."""
+        from analysis.beaf.probe_factory import create_probe_classifier
+
+        for name in ("logistic", "ridge", "sgd_log", "sgd_hinge"):
+            clf = create_probe_classifier(name, seed=42, fit_intercept=False)
+            assert clf.get_params()["fit_intercept"] is False, f"{name} ignored fit_intercept"
+
+    def test_svm_probes_warn_that_they_cannot_honor_no_bias(self, capsys):
+        """sklearn's SVC has no fit_intercept; reporting a 'no-bias' SVM number would lie."""
+        import analysis.beaf.probe_factory as pf
+
+        pf._NO_BIAS_WARNED.discard("svm_rbf")
+        pf.create_probe_classifier("svm_rbf", seed=42, fit_intercept=False)
+        assert "NOT applied" in capsys.readouterr().out
+
+
+class TestPyTorchProbeSklearnContract:
+    """
+    PyTorchProbeEstimator set ``classes_`` to [0, 1] in ``__init__``. In the
+    sklearn contract ``classes_`` is a fitted attribute read from the data, and
+    hardcoding it meant any other label pair was cast straight into BCE while
+    predict() still returned 0/1 -- scoring 0% on perfectly separable data with
+    nothing raised. Every experiment here happens to use {0, 1}, so the bug was
+    invisible until a probe was reused on differently-labelled data.
+    """
+
+    @staticmethod
+    def _separable(seed=0, n=40, d=8):
+        rng = np.random.RandomState(seed)
+        X = np.vstack([rng.randn(n, d) + 1.5, rng.randn(n, d) - 1.5])
+        return X, np.array([1] * n + [0] * n)
+
+    @pytest.mark.parametrize("labels", [(0, 1), (2, 5), ("neg", "pos")])
+    def test_any_binary_label_pair_scores_correctly(self, labels):
+        from analysis.beaf.probe_factory import create_probe_classifier
+
+        X, y01 = self._separable()
+        y = np.where(y01 == 1, labels[1], labels[0])
+        clf = create_probe_classifier("mlp", seed=42, epochs=60)
+        clf.fit(X, y)
+
+        assert clf.score(X, y) > 0.9, (
+            f"labels {labels} scored {clf.score(X, y):.0%} on separable data"
+        )
+        assert set(np.unique(clf.predict(X))) <= set(labels), "predict must return the caller's labels"
+        assert list(clf.classes_) == sorted(labels, key=str)
+
+    def test_classes_is_not_set_before_fit(self):
+        from analysis.beaf.probe_factory import create_probe_classifier
+
+        clf = create_probe_classifier("mlp", seed=42)
+        assert not hasattr(clf, "classes_"), "classes_ is a fitted attribute, not a constructor one"
+
+    def test_predict_before_fit_raises_instead_of_crashing_on_none(self):
+        from analysis.beaf.probe_factory import create_probe_classifier
+
+        X, _ = self._separable()
+        with pytest.raises(ValueError, match="not fitted"):
+            create_probe_classifier("mlp", seed=42).predict(X)
+
+    def test_non_binary_target_is_rejected(self):
+        from analysis.beaf.probe_factory import create_probe_classifier
+
+        rng = np.random.RandomState(0)
+        X = rng.randn(60, 8)
+        y = np.array([0] * 20 + [1] * 20 + [2] * 20)
+        with pytest.raises(ValueError, match="binary probe"):
+            create_probe_classifier("mlp", seed=42, epochs=5).fit(X, y)

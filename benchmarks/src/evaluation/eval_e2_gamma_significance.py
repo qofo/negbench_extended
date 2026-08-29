@@ -42,10 +42,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 try:
-    from benchmarks.src.analysis.feature_cache import build_provenance, inherit_upstream_provenance
+    from benchmarks.src.analysis.feature_cache import (
+        build_provenance, inherit_upstream_provenance, resolve_upstream_artifact)
     from benchmarks.src.analysis.config import set_seed
 except ImportError:
-    from analysis.feature_cache import build_provenance, inherit_upstream_provenance
+    from analysis.feature_cache import (
+        build_provenance, inherit_upstream_provenance, resolve_upstream_artifact)
     from analysis.config import set_seed
 
 
@@ -357,8 +359,10 @@ def main():
     print(f"  Bootstraps (B) : {args.n_bootstraps}")
     print(f"  Permutations(M): {args.n_permutations}\n")
 
-    if not os.path.exists(args.per_pair_csv):
-        raise FileNotFoundError(f"Missing pair-level decomposition CSV at: {args.per_pair_csv}")
+    resolve_upstream_artifact(
+        args.per_pair_csv,
+        produced_by="python -m benchmarks.src.evaluation.eval_e2_hadamard_decomposition",
+        label="pair-level decomposition CSV")
 
     df_pairs = pd.read_csv(args.per_pair_csv)
     print(f"  Loaded {len(df_pairs)} total pairs across {df_pairs['object_name'].nunique()} concepts.")

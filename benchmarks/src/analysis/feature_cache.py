@@ -242,3 +242,58 @@ def load_object_restriction(spec: Optional[str]) -> Optional[List[str]]:
 
     names = sorted({n.strip() for n in names if n and n.strip()})
     return names or None
+
+
+def resolve_upstream_artifact(
+    path: str,
+    *,
+    produced_by: str,
+    required: bool = True,
+    label: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Resolve a path holding another experiment's output.
+
+    ``logs/`` is gitignored, so every cross-experiment default points at something
+    a fresh clone does not have. The three call sites that read an upstream
+    artifact each handled that differently: one raised a clear error, one let
+    pandas raise from inside ``read_csv``, and one silently set its dataframe to
+    ``None`` -- dropping a cross-check out of the report with nothing to say so.
+    A reader of that report could not tell the check had been skipped.
+
+    This makes the outcome one of exactly two things, chosen by the caller:
+    a hard failure that names the command which produces the file, or a loud
+    skip that the caller records in its own output.
+
+    Args:
+        path: The upstream file or directory.
+        produced_by: The command that creates it, quoted in the error or warning
+            so the reader can act without going to look for it.
+        required: Fail when missing (default) rather than returning None.
+        label: Human-readable name for the artifact; defaults to its basename.
+
+    Returns:
+        str | None: ``path`` when it exists; ``None`` when it is missing and
+        ``required`` is False.
+
+    Raises:
+        FileNotFoundError: When it is missing and ``required`` is True.
+    """
+    name = label or os.path.basename(path.rstrip("/")) or path
+
+    if os.path.exists(path):
+        return path
+
+    if required:
+        raise FileNotFoundError(
+            f"{name} not found at: {path}\n"
+            f"  This is another experiment's output, and logs/ is gitignored, so a fresh\n"
+            f"  clone will not have it. Produce it with:\n"
+            f"      {produced_by}\n"
+            f"  or pass an existing path explicitly."
+        )
+
+    print(f"  [skipped] {name} not found at {path}")
+    print(f"            Produce it with: {produced_by}")
+    print(f"            Continuing without it; the report will record the omission.")
+    return None
