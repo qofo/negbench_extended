@@ -70,6 +70,7 @@ import matplotlib.pyplot as plt
 import open_clip
 
 from src.evaluation.scoring_heads import (
+    predict_with_tie_report,
     BaseScorer,
     CosineScorer,
     build_scorer,
@@ -254,7 +255,7 @@ def eval_scorer_on_loader(
     with torch.no_grad():
         for imgs, texts, _ in val_loader:
             imgs, texts = imgs.to(device), texts.to(device)
-            p = torch.argmax(scorer(imgs, texts), dim=1).cpu().numpy()
+            p, _ = predict_with_tie_report(scorer(imgs, texts))
             preds.append(p)
     return np.concatenate(preds)
 

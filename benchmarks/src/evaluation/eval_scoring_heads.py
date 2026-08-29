@@ -31,6 +31,7 @@ import open_clip
 
 # Import scoring heads
 from evaluation.scoring_heads import (
+    predict_with_tie_report,
     BaseScorer,
     CosineScorer,
     WeightedCosineScorer,
@@ -221,7 +222,7 @@ def train_and_eval_fold(
             for imgs, texts, _ in val_loader:
                 imgs, texts = imgs.to(device), texts.to(device)
                 scores = scorer(imgs, texts)
-                preds = torch.argmax(scores, dim=1).cpu().numpy()
+                preds, _ = predict_with_tie_report(scores)
                 oof_preds.append(preds)
         return scorer, np.concatenate(oof_preds)
 
@@ -245,7 +246,7 @@ def train_and_eval_fold(
         for imgs, texts, _ in val_loader:
             imgs, texts = imgs.to(device), texts.to(device)
             scores = scorer(imgs, texts)
-            preds = torch.argmax(scores, dim=1).cpu().numpy()
+            preds, _ = predict_with_tie_report(scores)
             oof_preds.append(preds)
 
     return scorer, np.concatenate(oof_preds)

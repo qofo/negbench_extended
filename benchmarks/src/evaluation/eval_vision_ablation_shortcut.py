@@ -44,6 +44,7 @@ import matplotlib.pyplot as plt
 import open_clip
 
 from src.evaluation.scoring_heads import (
+    predict_with_tie_report,
     BaseScorer,
     CosineScorer,
     WeightedCosineScorer,
@@ -70,8 +71,9 @@ def compute_extended_breakdown(
     oof_preds: np.ndarray,
     targets: np.ndarray,
     question_types: List[str],
+    tie_mask: np.ndarray = None,
 ) -> Dict[str, Any]:
-    """Compute accuracy breakdown by question type with counts."""
+    """Compute accuracy breakdown by question type with counts and the tie rate."""
     total_samples = len(targets)
     correct_mask = (oof_preds == targets)
     total_acc = float(np.mean(correct_mask)) * 100.0
@@ -82,6 +84,19 @@ def compute_extended_breakdown(
         "total_samples": total_samples,
         "total_correct": int(np.sum(correct_mask)),
     }
+
+    # A condition whose accuracy rests on ties is reporting the tie-breaker, not the
+    # scorer. Record it so the number can never be read without that qualifier again.
+    if tie_mask is not None:
+        tie_rate = float(np.mean(tie_mask)) * 100.0
+        result["tie_rate"] = tie_rate
+        result["n_tied"] = int(np.sum(tie_mask))
+        if tie_rate > 0.0:
+            result["tie_warning"] = (
+                f"{tie_rate:.2f}% of rows had every option tied at the maximum; "
+                f"the scorer produced no ranking on those rows and the accuracy "
+                f"shown for them is the random tie-breaker (chance level)."
+            )
 
     for qt in sorted(set(question_types)):
         mask = (q_types_np == qt)
@@ -137,17 +152,27 @@ def eval_scorer_on_loader(
     scorer: BaseScorer,
     val_loader: DataLoader,
     device: str = "cuda",
-) -> np.ndarray:
-    """Evaluate trained scorer on val_loader and return predictions."""
+    seed: int = 42,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Evaluate a trained scorer and return (predictions, tie_mask).
+
+    Ties are broken at random rather than by ``argmax``'s lowest-index rule. The
+    ablated conditions are exactly where that matters: zeroing the image makes the
+    three image-linear heads emit one identical score for every option, and since
+    every MCQ row has correct_answer = 0, lowest-index tie-breaking reported that
+    as 100.00% accuracy. See ``scoring_heads.predict_with_tie_report``.
+    """
     scorer.eval()
-    oof_preds = []
+    oof_preds, oof_ties = [], []
     with torch.no_grad():
         for imgs, texts, _ in val_loader:
             imgs, texts = imgs.to(device), texts.to(device)
             scores = scorer(imgs, texts)
-            preds = torch.argmax(scores, dim=1).cpu().numpy()
+            preds, ties = predict_with_tie_report(scores, seed=seed)
             oof_preds.append(preds)
-    return np.concatenate(oof_preds)
+            oof_ties.append(ties)
+    return np.concatenate(oof_preds), np.concatenate(oof_ties)
 
 
 def create_ablated_loader(
@@ -249,8 +274,9 @@ def run_vision_ablation_diagnostic(
         print(f"  Scorer: {model_name:22s} | Expressiveness: {expr_level}")
         print(f"{'='*80}")
 
-        # Store predictions per condition
+        # Store predictions and tie flags per condition
         condition_preds = {mode: np.zeros(N, dtype=int) for mode in ablation_modes}
+        condition_ties = {mode: np.zeros(N, dtype=bool) for mode in ablation_modes}
 
         for fold, (train_idx, val_idx) in enumerate(skf.split(np.zeros(N), qtype_indices)):
             print(f"\n  Fold {fold+1}/{n_splits}  (train={len(train_idx)}, val={len(val_idx)})")
@@ -273,14 +299,18 @@ def run_vision_ablation_diagnostic(
                     val_idx, ablation_mode=mode,
                     batch_size=batch_size, seed=seed + fold,
                 )
-                fold_preds = eval_scorer_on_loader(scorer, val_loader, device=device)
+                fold_preds, fold_ties = eval_scorer_on_loader(
+                    scorer, val_loader, device=device, seed=seed + fold
+                )
                 condition_preds[mode][val_idx] = fold_preds
+                condition_ties[mode][val_idx] = fold_ties
 
         # ── Compute accuracy breakdown per condition ──
         model_results = {}
         for mode in ablation_modes:
             metrics = compute_extended_breakdown(
-                condition_preds[mode], targets_np, question_types
+                condition_preds[mode], targets_np, question_types,
+                tie_mask=condition_ties[mode],
             )
             model_results[mode] = metrics
 
@@ -289,6 +319,8 @@ def run_vision_ablation_diagnostic(
                 k = f"{qt}_accuracy"
                 if k in metrics:
                     print(f" | {qt.capitalize()[:3]}: {metrics[k]:.2f}%", end="")
+            if metrics.get("tie_rate", 0.0) > 0.0:
+                print(f"  <-- TIED on {metrics['tie_rate']:.1f}% of rows (no ranking produced)", end="")
             print()
 
         # ── Compute delta (drop from original) ──

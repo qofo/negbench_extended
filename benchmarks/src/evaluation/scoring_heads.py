@@ -13,10 +13,54 @@ caching-preserving Non-Linear Bi-Encoders:
 8. NonLinearBiEncoderScorer: GELU(Av).GELU(Bt), O(1) offline caching + non-linearity.
 """
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional
+from typing import Optional, Tuple
+
+
+def predict_with_tie_report(
+    scores: torch.Tensor,
+    seed: int = 42,
+    atol: float = 1e-9,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Pick the best option per row, breaking exact ties at random rather than by index.
+
+    ``torch.argmax`` resolves a tie to the *lowest* index. Every row of the NegBench
+    MCQ CSVs carries ``correct_answer = 0`` -- the options are never shuffled -- so
+    index 0 is always the right answer. A scorer that emits identical scores for all
+    options therefore reads as **100% accurate** under plain argmax, when the correct
+    reading is "this scorer produced no information".
+
+    That is not hypothetical. Zeroing the image embedding makes CosineScorer,
+    WeightedCosineScorer and BilinearScorer tie on 100% of rows (each is linear in
+    the image vector with no bias), which is where the reported "zero vision = 100.00%"
+    came from. Breaking ties at random puts such a scorer at chance instead, and the
+    returned mask lets a caller report how much of a number rests on ties.
+
+    Args:
+        scores: (B, K) option scores.
+        seed: RNG seed for tie-breaking, so a run is reproducible.
+        atol: absolute tolerance for treating two scores as tied.
+
+    Returns:
+        (predictions, tie_mask), both length-B numpy arrays. ``tie_mask[i]`` is True
+        when row i had more than one option at the maximum.
+    """
+    s = scores.detach().cpu().numpy() if isinstance(scores, torch.Tensor) else np.asarray(scores)
+    if s.ndim != 2:
+        raise ValueError(f"expected (B, K) scores, got shape {s.shape}")
+
+    is_max = np.isclose(s, s.max(axis=1, keepdims=True), rtol=0.0, atol=atol)
+    tie_mask = is_max.sum(axis=1) > 1
+
+    # Rank only among the tied maxima: non-maxima get 0, maxima get a value in (1, 2).
+    rng = np.random.default_rng(seed)
+    preds = np.argmax(is_max * (rng.random(s.shape) + 1.0), axis=1)
+    return preds.astype(int), tie_mask
+
 
 class BaseScorer(nn.Module):
     """Abstract base class for image-text candidate scoring models."""

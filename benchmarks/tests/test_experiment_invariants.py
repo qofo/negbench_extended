@@ -171,3 +171,62 @@ class TestPairedProbeCrossValidation:
         opted_out = fit_linear_probe(X_pos, X_neg, seed=0, paired=False)
         assert default[0] != opted_out[0]
         assert opted_out[0] == opted_out[4], "paired=False must report the stratified score"
+
+
+class TestTieAwarePrediction:
+    """A tie at the maximum must not be resolved to option 0.
+
+    Every row of the NegBench MCQ CSVs carries ``correct_answer = 0`` -- the options
+    are never shuffled -- so ``torch.argmax``'s lowest-index tie-break scores a
+    scorer that ranks nothing at exactly 100%. Zeroing the image embedding does
+    exactly that to the three image-linear heads, which is where the reported
+    "zero vision = 100.00%" came from.
+    """
+
+    def test_all_tied_row_is_flagged_and_not_forced_to_zero(self):
+        import torch
+        from benchmarks.src.evaluation.scoring_heads import predict_with_tie_report
+
+        scores = torch.zeros(400, 4)
+        preds, ties = predict_with_tie_report(scores, seed=0)
+        assert ties.all(), "an all-equal row must be reported as a tie"
+        assert len(set(preds.tolist())) > 1, "ties must not all collapse onto option 0"
+        assert (preds == 0).mean() < 0.5, "tie-breaking must not be biased toward index 0"
+
+    def test_unique_maximum_is_untouched(self):
+        import torch
+        from benchmarks.src.evaluation.scoring_heads import predict_with_tie_report
+
+        scores = torch.tensor([[0.1, 0.9, 0.2, 0.3], [0.7, 0.1, 0.2, 0.0]])
+        preds, ties = predict_with_tie_report(scores, seed=0)
+        assert list(preds) == [1, 0]
+        assert not ties.any()
+
+    def test_same_seed_gives_the_same_tie_break(self):
+        import torch
+        from benchmarks.src.evaluation.scoring_heads import predict_with_tie_report
+
+        scores = torch.zeros(50, 4)
+        a, _ = predict_with_tie_report(scores, seed=7)
+        b, _ = predict_with_tie_report(scores, seed=7)
+        assert np.array_equal(a, b)
+
+    @pytest.mark.parametrize("head", ["cosine", "weighted_cosine", "bilinear"])
+    def test_zeroed_vision_reads_as_chance_not_perfect(self, head):
+        """The regression itself: these three heads tie on every row without an image."""
+        import torch
+        from benchmarks.src.evaluation.scoring_heads import build_scorer, predict_with_tie_report
+
+        torch.manual_seed(0)
+        n, k, d = 400, 4, 32
+        imgs = torch.zeros(n, d)
+        texts = torch.randn(n, k, d)
+        targets = np.zeros(n, dtype=int)  # NegBench MCQ: the answer is always option 0
+
+        with torch.no_grad():
+            scores = build_scorer(head, d).eval()(imgs, texts)
+
+        preds, ties = predict_with_tie_report(scores, seed=0)
+        assert ties.mean() == 1.0, f"{head} should tie on every row when the image is zeroed"
+        acc = float((preds == targets).mean())
+        assert acc < 0.5, f"{head} scored {acc:.0%} on pure ties; the old argmax gave 100%"
