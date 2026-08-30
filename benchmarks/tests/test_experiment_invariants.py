@@ -1361,3 +1361,98 @@ class TestEmbeddingWidthIsRead:
             v, t = torch.randn(2, dim), torch.randn(2, 3, dim)
             with torch.no_grad():
                 assert scorer(v, t).shape == (2, 3), f"{name} at dim={dim}"
+
+
+class TestSingleWGeneralization:
+    """
+    The 67.43% main-effect ablation is a per-pair projection, i.e. a different W per
+    pair, while a retriever uses one. `eval_single_w_generalization` asks how far a
+    single shared W gets on concepts held out of its fit. Three things have to hold
+    for that number to mean anything.
+    """
+
+    @staticmethod
+    def _quads(n=40, dim=16, seed=0):
+        import torch
+
+        g = torch.Generator().manual_seed(seed)
+        return tuple(torch.randn(n, dim, generator=g) for _ in range(4))
+
+    def test_identity_rung_reproduces_plain_cosine(self):
+        """The 0-parameter rung must *be* the baseline, or the ladder has no zero point."""
+        import torch
+        from benchmarks.src.evaluation.eval_single_w_generalization import (
+            IdentityMatcher, joint_correct,
+        )
+
+        v_pos, v_neg, t_pos, t_neg = self._quads()
+        ok = joint_correct(IdentityMatcher(), (v_pos, v_neg, t_pos, t_neg))
+
+        s_pp = torch.sum(v_pos * t_pos, dim=-1)
+        s_mm = torch.sum(v_neg * t_neg, dim=-1)
+        s_pm = torch.sum(v_pos * t_neg, dim=-1)
+        s_mp = torch.sum(v_neg * t_pos, dim=-1)
+        expected = (torch.minimum(s_pp, s_mm) > torch.maximum(s_pm, s_mp)).numpy()
+        assert np.array_equal(ok, expected)
+
+    def test_shared_bias_cancels_in_2x2(self):
+        """
+        Why the experiment reports no `--no_bias` variant: a bias shared by all four
+        scores shifts min and max equally, so Delta(S) -- and therefore 2x2 accuracy --
+        cannot move. Stated in the module docstring; checked here.
+        """
+        import torch
+        import torch.nn as nn
+        from benchmarks.src.evaluation.eval_single_w_generalization import (
+            FullMatcher, joint_correct,
+        )
+
+        quads = self._quads(dim=8)
+        base = FullMatcher(8)
+        with torch.no_grad():
+            base.W.normal_(generator=torch.Generator().manual_seed(1))
+
+        class Biased(nn.Module):
+            def __init__(self, inner, b):
+                super().__init__()
+                self.inner, self.b = inner, b
+
+            def forward(self, v, t):
+                return self.inner(v, t) + self.b
+
+        for b in (-3.0, 0.25, 7.5):
+            assert np.array_equal(joint_correct(base, quads),
+                                  joint_correct(Biased(base, b), quads)), b
+
+    def test_folds_never_share_a_concept(self):
+        """A concept in both train and test would make this a memorisation test."""
+        from sklearn.model_selection import GroupKFold
+
+        groups = np.repeat([f"c{i}" for i in range(33)], 20)
+        for tr, te in GroupKFold(n_splits=5).split(np.zeros(len(groups)), groups=groups):
+            assert not (set(groups[tr]) & set(groups[te]))
+
+    def test_untrainable_families_are_left_alone(self):
+        """identity and random carry no free parameters; training must be a no-op."""
+        import copy
+        import torch
+        from benchmarks.src.evaluation.eval_single_w_generalization import (
+            build_family, train_matcher,
+        )
+
+        for name in ("identity", "random"):
+            net, n_params = build_family(name, 8, seed=0)
+            assert n_params == 0
+            before = copy.deepcopy(net.state_dict())
+            train_matcher(net, self._quads(dim=8), epochs=3)
+            after = net.state_dict()
+            assert set(before) == set(after)
+            for k in before:
+                assert torch.equal(before[k], after[k]), f"{name}.{k} moved"
+
+    def test_parameter_counts_match_the_families(self):
+        from benchmarks.src.evaluation.eval_single_w_generalization import build_family
+
+        assert build_family("diagonal", 512, 0)[1] == 512
+        assert build_family("lowrank_2", 512, 0)[1] == 2 * 512 * 2
+        assert build_family("full", 512, 0)[1] == 512 * 512
