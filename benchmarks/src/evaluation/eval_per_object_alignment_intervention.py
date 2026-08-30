@@ -66,19 +66,18 @@ import matplotlib.pyplot as plt
 
 import open_clip
 
-from benchmarks.src.analysis.cli import (
-    add_model_args, add_run_args, add_data_args, add_cache_args,
-    add_restriction_args, add_concept_args, add_bias_args,
-)
-
 # Reuse existing verified infrastructure (robust to module vs standalone execution)
 try:
+    from benchmarks.src.analysis.model_loader import load_clip_for_eval
+    from benchmarks.src.analysis.cli import (
+    add_model_args, add_run_args, add_data_args, add_cache_args,
+    add_restriction_args, add_concept_args, add_bias_args,
+    )
     from benchmarks.src.analysis.config import (
         get_layer_features as _get_feats, coerce_bool_column, set_seed,
     )
     from benchmarks.src.analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
     from benchmarks.src.analysis.beaf.vision_mechanisms import extract_vision_features_unified
-    from benchmarks.src.analysis.model_loader import load_clip_for_eval
     from benchmarks.src.analysis.feature_cache import (
         cached_encode, build_provenance, load_object_restriction, DEFAULT_CACHE_DIR,
     )
@@ -87,6 +86,13 @@ try:
         compute_hadamard_coordinates, compute_main_effect_ablation,
     )
 except ImportError:
+    from analysis.import_compat import reraise_unless_standalone
+    reraise_unless_standalone()
+    from analysis.model_loader import load_clip_for_eval
+    from analysis.cli import (
+    add_model_args, add_run_args, add_data_args, add_cache_args,
+    add_restriction_args, add_concept_args, add_bias_args,
+    )
     from analysis.config import (
         get_layer_features as _get_feats, coerce_bool_column, set_seed,
     )

@@ -46,6 +46,8 @@ try:
         build_provenance, inherit_upstream_provenance, resolve_upstream_artifact)
     from benchmarks.src.analysis.config import set_seed
 except ImportError:
+    from analysis.import_compat import reraise_unless_standalone
+    reraise_unless_standalone()
     from analysis.feature_cache import (
         build_provenance, inherit_upstream_provenance, resolve_upstream_artifact)
     from analysis.config import set_seed

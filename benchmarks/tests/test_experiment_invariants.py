@@ -7,9 +7,16 @@ eval-time image transform, the fold splitters, and the counterfactual pairing
 contract.
 """
 
+import pathlib
+
 import numpy as np
 import pandas as pd
 import pytest
+
+# `make test` runs pytest from benchmarks/, other invocations from the repo root.
+# Resolve the tree to scan from this file instead, so cwd cannot silently empty it.
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+SRC_ROOT = REPO_ROOT / "benchmarks" / "src"
 
 from analysis.beaf.vision_mechanisms import _group_kfold
 from benchmarks.src.evaluation.eval_e2_hadamard_decomposition import compute_hadamard_coordinates
@@ -741,17 +748,16 @@ class TestPackageLayering:
     @staticmethod
     def _imports(pkg):
         import io
-        import pathlib
         import re
 
-        root = pathlib.Path("benchmarks/src") / pkg
         out = []
-        for f in root.rglob("*.py"):
+        for f in (SRC_ROOT / pkg).rglob("*.py"):
             src = io.open(f, encoding="utf-8").read()
             for m in re.finditer(
                     r"from\s+(?:benchmarks\.src\.)?(\w+)[\w\.]*\s+import|"
                     r"import\s+(?:benchmarks\.src\.)?(\w+)\.", src):
-                out.append((str(f), m.group(1) or m.group(2)))
+                out.append((str(f.relative_to(REPO_ROOT)), m.group(1) or m.group(2)))
+        assert out, f"no imports found under {SRC_ROOT / pkg}; the scan root is wrong"
         return out
 
     def test_analysis_never_imports_evaluation(self):
@@ -767,3 +773,91 @@ class TestPackageLayering:
             f"only {len(set(good))} evaluation modules import analysis; the shared primitives "
             "should be reused, not re-implemented"
         )
+
+
+class TestDualPathImports:
+    """
+    Some entrypoints are importable two ways -- ``benchmarks.src.evaluation.x``
+    from the repo root, or ``evaluation.x`` via the editable install -- and carry
+    a try/except pair of import blocks for it. A bare ``except ImportError``
+    catches far more than that: a typo, a name renamed on one side, a circular
+    import. The two branches had in fact drifted, so several names existed only
+    in the first block and a standalone run died on NameError.
+    """
+
+    @staticmethod
+    def _dual_blocks(path):
+        """Yield (try_names, except_names) for each try/except ImportError pair."""
+        import ast
+        import io
+
+        tree = ast.parse(io.open(path, encoding="utf-8").read())
+
+        def bound(stmts):
+            out = set()
+            for st in ast.walk(ast.Module(body=list(stmts), type_ignores=[])):
+                if isinstance(st, (ast.Import, ast.ImportFrom)):
+                    for a in st.names:
+                        out.add(a.asname or a.name.split(".")[0])
+            return out
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Try):
+                continue
+            for h in node.handlers:
+                name = getattr(h.type, "id", None)
+                if name == "ImportError":
+                    yield bound(node.body), bound(h.body)
+
+    @staticmethod
+    def _dual_path_files():
+        import io
+
+        out = []
+        for f in SRC_ROOT.rglob("*.py"):
+            if "open_clip" in f.parts or "training" in f.parts:
+                continue
+            s = io.open(f, encoding="utf-8").read()
+            if "except ImportError:" in s and "benchmarks.src." in s:
+                out.append(str(f))
+        assert out, f"no dual-path modules found under {SRC_ROOT}; the scan root is wrong"
+        return sorted(out)
+
+    def test_both_branches_bind_the_same_names(self):
+        drifted = []
+        for f in self._dual_path_files():
+            for tnames, enames in self._dual_blocks(f):
+                # the guard helper is expected only in the fallback branch
+                enames = enames - {"reraise_unless_standalone"}
+                if tnames != enames:
+                    drifted.append((f, sorted(tnames ^ enames)))
+        assert not drifted, (
+            "a name is bound in only one import branch, so one invocation "
+            "convention will fail at runtime: " + repr(drifted)
+        )
+
+    def test_fallback_branches_are_guarded(self):
+        unguarded = []
+        for f in self._dual_path_files():
+            for _, enames in self._dual_blocks(f):
+                if "reraise_unless_standalone" not in enames:
+                    unguarded.append(f)
+        assert not unguarded, (
+            "a bare except ImportError swallows real failures; call "
+            "reraise_unless_standalone() first in: " + repr(sorted(set(unguarded)))
+        )
+
+    def test_guard_reraises_when_benchmarks_is_importable(self):
+        from analysis.import_compat import reraise_unless_standalone
+
+        with pytest.raises(ImportError):
+            try:
+                from benchmarks.src.analysis.no_such_module import thing  # noqa: F401
+            except ImportError:
+                reraise_unless_standalone()
+
+        with pytest.raises(ImportError):
+            try:
+                from benchmarks.src.analysis.feature_cache import no_such_name  # noqa: F401
+            except ImportError:
+                reraise_unless_standalone()

@@ -25,8 +25,14 @@ import matplotlib.pyplot as plt
 
 import open_clip
 
-from benchmarks.src.analysis.config import PipelineStep
-from benchmarks.src.analysis.extractor import extract_all_features_unified
+try:
+    from benchmarks.src.analysis.config import PipelineStep
+    from benchmarks.src.analysis.extractor import extract_all_features_unified
+except ImportError:
+    from analysis.import_compat import reraise_unless_standalone
+    reraise_unless_standalone()
+    from analysis.config import PipelineStep
+    from analysis.extractor import extract_all_features_unified
 
 
 def extract_layerwise_feature_dict(
