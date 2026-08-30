@@ -972,3 +972,119 @@ class TestPipelineStepsAreRequired:
 
         message = str(excinfo.value)
         assert "Step3_Projected_Unnorm" in message and "Step4_Final_L2Norm" in message
+
+
+class TestHeadlessPlotting:
+    """
+    These scripts run on GPU nodes with no display. pyplot picks its backend at
+    import time, so the backend has to be selected *before* the import -- which is
+    why every plotting module carries `matplotlib.use("Agg")`. Four modules carried
+    only the pyplot line and worked by luck: pyplot falls back to Agg when DISPLAY
+    is unset, but under X11 forwarding it would try to open a window instead.
+    """
+
+    @staticmethod
+    def _pyplot_modules():
+        import ast
+        import io
+
+        out = []
+        for f in SRC_ROOT.rglob("*.py"):
+            if "open_clip" in f.parts:
+                continue
+            src = io.open(f, encoding="utf-8").read()
+            if "matplotlib.pyplot" not in src:
+                continue
+            out.append((f, ast.parse(src)))
+        return out
+
+    def test_every_pyplot_import_is_preceded_by_a_backend_selection(self):
+        import ast
+
+        offenders = []
+        for path, tree in self._pyplot_modules():
+            pyplot_line = backend_line = None
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for a in node.names:
+                        if a.name == "matplotlib.pyplot" and pyplot_line is None:
+                            pyplot_line = node.lineno
+                elif isinstance(node, ast.ImportFrom):
+                    # `from analysis.plotting import plt` -- the module that owns the
+                    # backend; importing plt from it is already ordered correctly.
+                    if node.module and node.module.endswith("analysis.plotting"):
+                        backend_line = 0
+                elif isinstance(node, ast.Call):
+                    fn = node.func
+                    if (isinstance(fn, ast.Attribute) and fn.attr == "use"
+                            and isinstance(fn.value, ast.Name) and fn.value.id == "matplotlib"):
+                        backend_line = min(node.lineno, backend_line if backend_line is not None else node.lineno)
+            if pyplot_line is not None and (backend_line is None or backend_line > pyplot_line):
+                offenders.append(str(path.relative_to(REPO_ROOT)))
+        assert not offenders, (
+            'select the backend before importing pyplot -- matplotlib.use("Agg") first, '
+            "or import plt from analysis.plotting: " + ", ".join(sorted(offenders))
+        )
+
+    def test_shared_module_selects_agg(self):
+        import matplotlib
+
+        from analysis.plotting import plt  # noqa: F401
+
+        assert matplotlib.get_backend().lower() == "agg"
+
+
+class TestTopObjectsGridHasOneBody:
+    """
+    Three modules defined `render_top_objects_grid` with the same body -- 95%
+    identical by normalized AST -- differing only in title, filename, and, in one
+    copy, where the legend sat. The drawing lives in `analysis.plotting` now and
+    the three keep only their own title and path.
+    """
+
+    CALLERS = [
+        "benchmarks/src/evaluation/eval_negation_existence_probe.py",
+        "benchmarks/src/analysis/run_beaf_train_val_per_object.py",
+        "benchmarks/src/analysis/run_beaf_flexible_probing.py",
+    ]
+
+    def test_callers_delegate_instead_of_drawing(self):
+        import ast
+        import io
+
+        redrawn = []
+        for rel in self.CALLERS:
+            tree = ast.parse(io.open(REPO_ROOT / rel, encoding="utf-8").read())
+            for node in tree.body:
+                if not (isinstance(node, ast.FunctionDef) and node.name == "render_top_objects_grid"):
+                    continue
+                body = ast.dump(node)
+                if "subplots" in body or "savefig" in body:
+                    redrawn.append(rel)
+        assert not redrawn, (
+            "these still draw the grid themselves instead of calling "
+            "analysis.plotting.render_top_objects_grid: " + ", ".join(redrawn)
+        )
+
+    def test_shared_renderer_writes_the_requested_path(self, tmp_path):
+        from analysis.plotting import render_top_objects_grid
+
+        rng = np.random.default_rng(0)
+        layers = ["Embedding"] + [f"Layer {i}" for i in range(1, 13)]
+        df = pd.DataFrame([
+            dict(object_name=o, layer_name=L, n_pairs=40 - 3 * k,
+                 train_acc_pct=float(rng.uniform(70, 99)),
+                 val_acc_pct=float(rng.uniform(45, 85)))
+            for k, o in enumerate(["dog", "cat", "car", "tree", "boat"])
+            for L in layers
+        ])
+        out = tmp_path / "nested" / "grid.png"
+        assert render_top_objects_grid(df, str(out), "title", top_k=4) == str(out)
+        assert out.exists() and out.stat().st_size > 0
+
+    def test_empty_frame_is_skipped_not_crashed(self):
+        from analysis.plotting import render_top_objects_grid
+
+        empty = pd.DataFrame(columns=["object_name", "layer_name", "n_pairs",
+                                      "train_acc_pct", "val_acc_pct"])
+        assert render_top_objects_grid(empty, "/nonexistent/x.png", "t") is None

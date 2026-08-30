@@ -1,4 +1,6 @@
 import argparse
+import matplotlib
+matplotlib.use("Agg")  # these run on headless GPU nodes
 import matplotlib.pyplot as plt
 import pandas as pd
 from PIL import Image

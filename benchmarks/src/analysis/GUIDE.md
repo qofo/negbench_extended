@@ -15,11 +15,11 @@
 
 ---
 
-### 2. 파일별 상세 설명 (14개 파일)
+### 2. 파일별 상세 설명 (19개 파일)
 
 #### `__init__.py`
 - **역할**: 분석 패키지 공개 API 정의
-- **Export**: `PipelineStep`, `MetadataKey`, `AnalysisConfig`, `RetrievalConfig`, `to_bool`, `get_layer_features`, `l2_normalize`, `batch_cosine_similarity`, `batch_dot_product`, `batch_l2_distance`, `set_seed`, `DEFAULT_TUNING_GRIDS`, `filter_vision_dict`
+- **Export**: `PipelineStep`, `MetadataKey`, `AnalysisConfig`, `RetrievalConfig`, `to_bool`, `layer_key`, `get_layer_features`, `l2_normalize`, `batch_cosine_similarity`, `batch_dot_product`, `batch_l2_distance`, `set_seed`, `DEFAULT_TUNING_GRIDS`, `filter_vision_dict`
 
 #### `config.py`
 - **역할**: 설정, 열거형, 기하학 연산 유틸리티의 단일 소스
@@ -30,6 +30,10 @@
   - `RetrievalConfig`: 크로스모달 검색 설정
   - 기하 연산: `l2_normalize()`, `batch_cosine_similarity()`, `batch_dot_product()`, `batch_l2_distance()`
   - `to_bool(v)`: 4개 파일에서 중복 구현되어 있던 불리언 파서 통합본
+  - `layer_key(idx)`: Transformer 블록 이름을 만드는 유일한 함수 — 0은 `"Embedding"`, 나머지는 `"Layer <idx>"`.
+    이전에는 세 곳이 각자 만들어 서로 어긋나 있었고(`layers`의 `"Layer 1"`, **같은 배열**을 담은 `pipeline`의 `"Layer1"`,
+    그 주변 단계를 가리키는 `PipelineStep`), `get_layer_features`가 모르는 키에 최종 임베딩을 돌려주기 때문에
+    불일치가 예외가 아니라 **평평한 "레이어별" 곡선**으로 나타났다.
   - `get_layer_features(vis, key)`: 3개 파일에서 중복 구현되어 있던 레이어 특징 추출 함수 통합본
   - `set_seed(seed=42)`: Python/NumPy/PyTorch 일괄 시드 제어
   - `DEFAULT_TUNING_GRIDS`: 프로브 하이퍼파라미터 튜닝 그리드 (logistic, ridge, svm_linear, svm_rbf, mlp, bilinear_lowrank)
@@ -46,6 +50,47 @@
     - Step 4 (L2Norm): 최종 정규화
   - `assert_embedding_consistency(...)`: 수동 forward pass 출력과 `model.encode_text()` 결과의 동치성 검증
 - **반환값**: `{"layers": {layer_name: ndarray}, "pipeline": {step_name: ndarray}, "final_l2norm": ndarray}`
+  - `layers`의 키는 `layer_key(i)`(`i`는 `0..12`), `pipeline`은 `PipelineStep` 5개 값만 담는다. 이전에는
+    `pipeline`이 블록 1–11을 `"Layer1"`이라는 두 번째 표기로 **한 벌 더** 들고 있었고, 그 배열은 `layers`와
+    비트 단위로 동일했다. 블록은 `layers`에서 읽는다.
+
+#### `paths.py`
+- **역할**: CSV의 상대 이미지 경로를 실제 경로로 바꾸는 단 하나의 규칙
+- **주요 함수**: `resolve_image_path()` — E1/E2 엔트리포인트 4개가 각자 복사본을 들고 있던 것을 통합
+
+#### `feature_cache.py`
+- **역할**: 디스크 특징 캐시와 실행 출처(provenance) 기록
+- **주요 함수**:
+  - `cached_encode(...)`: `(model, pretrained, kind, 항목 목록)` 해시로 인코더 호출을 메모이즈. 두 실험이
+    "같은 임베딩"을 본다고 주장할 때 실제로 같음을 보장한다
+  - `build_provenance(...)` / `inherit_upstream_provenance(...)`: 요약 JSON에 백본·시드·git 커밋·UTC 기록
+  - `resolve_upstream_artifact(path, produced_by=...)`: 상류 산출물이 없을 때 **그것을 만드는 명령**을 이름으로 알려주는 에러
+  - `load_object_restriction(...)`: `--restrict_objects` 개념 집합 로딩
+
+#### `model_loader.py`
+- **역할**: 평가용 CLIP 백본을 여는 단 한 곳
+- **주요 함수**: `load_clip_for_eval(model_name, pretrained, device)` → `(model, preprocess_val, tokenizer)`.
+  `create_model_and_transforms`는 `(model, preprocess_train, preprocess_val)`을 돌려주는데, 엔트리포인트 4개가
+  두 번째(확률적 RandomResizedCrop)를 집어 임베딩이 매번 달라지고 있었다. 학습용 변환은 여기서 아예 도달 불가능하다
+
+#### `cli.py`
+- **역할**: 33개 `main()`이 각자 재발명하던 표준 플래그 선언
+- **주요 함수**: `add_model_args`, `add_run_args`, `add_data_args`, `add_cache_args`,
+  `add_restriction_args`, `add_concept_args(parser, min_pairs)`, `add_bias_args`.
+  `min_pairs`는 스크립트마다 값이 달라야 하므로 **기본값 없이 필수 인자**로 둔다
+
+#### `plotting.py`
+- **역할**: 헤드리스 백엔드 선택과, 두 개 이상의 실험이 그리는 그림
+- **주요 구성 요소**:
+  - `plt`: `matplotlib.use("Agg")`를 먼저 실행한 뒤 내보내는 pyplot. pyplot은 import 시점에 백엔드를 고르므로
+    순서가 의미를 가진다
+  - `render_top_objects_grid(raw_df, output_path, title, top_k)`: 세 모듈이 각자 정의하던(정규화 AST 95% 동일)
+    객체별 레이어 Train/Val 정확도 그리드
+
+#### `import_compat.py`
+- **역할**: 이중 경로 import의 fallback 분기 보호
+- **주요 함수**: `reraise_unless_standalone()` — `benchmarks` 패키지가 실제로 import 불가능할 때만 fallback으로
+  넘어가고, 그 외의 진짜 ImportError(오타·누락 의존성·사라진 이름)는 다시 던진다
 
 #### `metrics.py` (566줄)
 - **역할**: 6가지 분석 차원에 걸친 기하 메트릭 계산 엔진
@@ -162,7 +207,7 @@ The `benchmarks/src/analysis/` package is the **representation analysis core** t
 
 ---
 
-### 2. File-by-File Details (14 files)
+### 2. File-by-File Details (19 files)
 
 #### `__init__.py`
 - **Role**: Public API for the analysis package
@@ -200,6 +245,46 @@ The `benchmarks/src/analysis/` package is the **representation analysis core** t
   - `layers` is keyed by `layer_key(i)` for `i` in `0..12`; `pipeline` holds exactly the five `PipelineStep`
     values. `pipeline` used to *also* carry blocks 1–11 under a second spelling (`"Layer1"`), holding arrays
     bit-identical to `layers`. Read a block from `layers`.
+
+#### `paths.py`
+- **Role**: The one rule for turning a CSV's relative image path into a real one
+- **Key Function**: `resolve_image_path()` — the four E1/E2 entrypoints each carried a copy
+
+#### `feature_cache.py`
+- **Role**: On-disk feature cache and run provenance
+- **Key Functions**:
+  - `cached_encode(...)`: memoizes an encoder call keyed on `(model, pretrained, kind, exact item list)`,
+    so two experiments claiming to share embeddings provably do
+  - `build_provenance(...)` / `inherit_upstream_provenance(...)`: backbone, seed, git commit and UTC for summary JSONs
+  - `resolve_upstream_artifact(path, produced_by=...)`: a missing upstream artifact raises an error naming
+    **the command that produces it**
+  - `load_object_restriction(...)`: loads the `--restrict_objects` concept set
+
+#### `model_loader.py`
+- **Role**: The single place an evaluation backbone is opened
+- **Key Function**: `load_clip_for_eval(model_name, pretrained, device)` → `(model, preprocess_val, tokenizer)`.
+  `create_model_and_transforms` returns `(model, preprocess_train, preprocess_val)` and four entrypoints took the
+  second — a stochastic RandomResizedCrop, making every embedding a different sample of the same image. The train
+  transform is not reachable from here.
+
+#### `cli.py`
+- **Role**: The standard flags 33 `main()` functions each reinvented
+- **Key Functions**: `add_model_args`, `add_run_args`, `add_data_args`, `add_cache_args`,
+  `add_restriction_args`, `add_concept_args(parser, min_pairs)`, `add_bias_args`.
+  `min_pairs` is a required argument with no default, because its value legitimately differs per script.
+
+#### `plotting.py`
+- **Role**: Headless backend selection, and the figures more than one experiment draws
+- **Key Components**:
+  - `plt`: pyplot re-exported after `matplotlib.use("Agg")`. pyplot picks its backend at import time, so the order matters
+  - `render_top_objects_grid(raw_df, output_path, title, top_k)`: the per-object layerwise train/val accuracy grid
+    that three modules each defined (95% identical by normalized AST)
+
+#### `import_compat.py`
+- **Role**: Guards the fallback branch of a dual-path import
+- **Key Function**: `reraise_unless_standalone()` — falls through to the fallback only when the `benchmarks`
+  package genuinely is not importable, and re-raises any other ImportError (a typo, a missing dependency, a
+  name that no longer exists)
 
 #### `metrics.py` (566 lines)
 - **Role**: Geometric metric computation engine across 6 analytical dimensions

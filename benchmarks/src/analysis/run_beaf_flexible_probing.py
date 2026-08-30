@@ -7,7 +7,6 @@ and Bilinear (Full, Low-Rank) probing algorithms per object and per layer.
 
 import os
 import json
-import math
 import argparse
 from typing import Dict, Any, List
 
@@ -15,7 +14,7 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.model_selection import GroupKFold
-import matplotlib.pyplot as plt
+from analysis.plotting import plt, render_top_objects_grid as _render_top_objects_grid
 
 import open_clip
 from analysis.config import get_layer_features as _get_feats
@@ -180,50 +179,13 @@ def render_probe_summary_plot(raw_df: pd.DataFrame, probe_type: str, output_dir:
 
 
 def render_top_objects_grid(raw_df: pd.DataFrame, probe_type: str, output_dir: str, top_k: int = 16) -> None:
-    """Render a grid of subplots showing Train vs Val Accuracy per layer for top-k objects by sample count."""
-    obj_counts = raw_df.groupby("object_name")["n_pairs"].first().sort_values(ascending=False)
-    top_objects = obj_counts.head(top_k).index.tolist()
-
-    cols = 4
-    rows = math.ceil(len(top_objects) / cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(18, 3.5 * rows), sharex=True, sharey=True)
-    axes = axes.flatten()
-
-    layer_names = raw_df["layer_name"].unique().tolist()
-    x = np.arange(len(layer_names))
-
-    for i, obj in enumerate(top_objects):
-        ax = axes[i]
-        sub = raw_df[raw_df["object_name"] == obj].set_index("layer_name").reindex(layer_names)
-        n_pairs = int(sub["n_pairs"].iloc[0])
-
-        ax.plot(x, sub["train_acc_pct"], "o-", color="#1f77b4", lw=2, ms=5, label="Train Acc")
-        ax.plot(x, sub["val_acc_pct"], "s--", color="#d62728", lw=2, ms=5, label="Val Acc")
-
-        ax.set_title(f"{obj} (N={n_pairs} pairs)", fontsize=11, fontweight="bold")
-        ax.grid(True, ls="--", alpha=0.3)
-        ax.set_ylim(35, 105)
-
-        if i % cols == 0:
-            ax.set_ylabel("Accuracy (%)", fontsize=10)
-        if i >= (rows - 1) * cols:
-            ax.set_xticks(x)
-            ax.set_xticklabels(layer_names, rotation=45, ha="right", fontsize=8)
-
-    # Hide unused axes
-    for j in range(len(top_objects), len(axes)):
-        fig.delaxes(axes[j])
-
-    handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 1.02), ncol=2, fontsize=12)
-
-    fig.suptitle(f"Per-Object Layerwise Probing: Train vs Val Accuracy ({probe_type.upper()})", fontsize=15, fontweight="bold", y=1.05)
-    plt.tight_layout()
-
-    out_path = os.path.join(output_dir, f"beaf_{probe_type}_train_val_top_grid.png")
-    plt.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close()
-    print(f"  Saved: {out_path}")
+    """Render per-layer train/val accuracy for the top-k best-sampled objects."""
+    _render_top_objects_grid(
+        raw_df,
+        os.path.join(output_dir, f"beaf_{probe_type}_train_val_top_grid.png"),
+        f"Per-Object Layerwise Probing: Train vs Val Accuracy ({probe_type.upper()})",
+        top_k=top_k,
+    )
 
 
 def main():
