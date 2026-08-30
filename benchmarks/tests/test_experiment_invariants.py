@@ -1310,7 +1310,9 @@ class TestEmbeddingWidthIsRead:
     error partway through a run.
     """
 
-    BACKBONES = [("ViT-B-32", 512), ("ViT-B-16", 512), ("ViT-L-14", 768)]
+    # ViT-B-16-SigLIP is a CustomTextCLIP: separate towers, no visual.output_dim.
+    BACKBONES = [("ViT-B-32", 512), ("ViT-B-16", 512), ("ViT-L-14", 768),
+                 ("ViT-B-16-SigLIP", 768)]
 
     @pytest.mark.parametrize("model_name,expected", BACKBONES)
     def test_helper_reads_the_real_width(self, model_name, expected):

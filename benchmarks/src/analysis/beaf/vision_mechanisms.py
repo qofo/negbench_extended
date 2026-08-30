@@ -115,6 +115,21 @@ def extract_vision_features_unified(
     else:
         print(f"All {len(image_paths)} image files found successfully on disk.")
 
+    # The walk below reconstructs an OpenAI-style ViT by hand -- patchify with conv1,
+    # prepend a class token, run the residual blocks, pool position 0. A tower without
+    # conv1 has a different layout entirely (SigLIP patchifies under another name and
+    # has no class token to pool), and the old code let that fall through to
+    # `x = stacked`, which then raised on `permute` with the raw 4-D image batch.
+    # Where the walk does not apply, return the final embedding from the model's own
+    # forward instead of guessing a layout: the coefficient experiments need only that,
+    # and a layerwise consumer gets an empty `layers` dict plus a visible notice rather
+    # than a fabricated residual stream.
+    if conv1 is None:
+        print(f"[NOTICE] {type(visual).__name__} has no conv1 patch embedding; the layerwise "
+              f"residual walk does not apply to this tower. Falling back to model.encode_image "
+              f"-- 'final_l2norm' and 'final_unnorm' are returned, 'layers' is empty.")
+        return _encode_final_only(model, preprocess, image_paths, device, batch_size)
+
     for start in range(0, len(image_paths), batch_size):
         batch_paths = image_paths[start : start + batch_size]
         tensors = []
@@ -238,6 +253,63 @@ def extract_vision_features_unified(
         "pre_proj":     np.concatenate(pre_proj_batches, axis=0),
         "final_l2norm": np.concatenate(final_l2_batches, axis=0),
         "loaded_flags": loaded_flags,
+        "layerwise_available": True,
+    }
+
+
+def _encode_final_only(
+    model: nn.Module,
+    preprocess: Any,
+    image_paths: List[str],
+    device: str,
+    batch_size: int,
+) -> Dict[str, Any]:
+    """
+    Final image embeddings via the model's own forward, for towers the manual walk
+    cannot reconstruct.
+
+    Unreadable images still occupy a zero row so the arrays stay aligned with
+    ``image_paths``; callers filter on ``loaded_flags`` exactly as before.
+    """
+    norm_batches, raw_batches, loaded_flags = [], [], []
+    width = None
+    for start in range(0, len(image_paths), batch_size):
+        batch_paths = image_paths[start : start + batch_size]
+        tensors, valid_idx = [], []
+        for j, p in enumerate(batch_paths):
+            try:
+                tensors.append(preprocess(Image.open(p).convert("RGB")))
+                valid_idx.append(j)
+                loaded_flags.append(True)
+            except Exception:
+                loaded_flags.append(False)
+
+        if tensors:
+            with torch.no_grad():
+                raw = model.encode_image(torch.stack(tensors, dim=0).to(device))
+                raw = raw.float().cpu()
+            norm = F.normalize(raw, dim=-1).numpy()
+            raw = raw.numpy()
+            width = raw.shape[1]
+        if width is None:
+            raise RuntimeError(
+                "no image in the first batch could be read, so the embedding width is "
+                "unknown; check --image_root and the CSV image_path values")
+
+        n_arr = np.zeros((len(batch_paths), width))
+        r_arr = np.zeros((len(batch_paths), width))
+        for vi, j in enumerate(valid_idx):
+            n_arr[j] = norm[vi]
+            r_arr[j] = raw[vi]
+        norm_batches.append(n_arr)
+        raw_batches.append(r_arr)
+
+    return {
+        "layers": {},
+        "final_l2norm": np.concatenate(norm_batches, axis=0),
+        "final_unnorm": np.concatenate(raw_batches, axis=0),
+        "loaded_flags": loaded_flags,
+        "layerwise_available": False,
     }
 
 

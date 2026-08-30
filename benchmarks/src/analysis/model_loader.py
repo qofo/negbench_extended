@@ -75,6 +75,12 @@ def get_embed_dim(model: Any) -> int:
       never touched and the run *succeeds*; one unreadable file turns it into a confusing
       concatenation error partway through.
 
+    Two model layouts are covered: the standard ``CLIP``, where ``visual.output_dim``
+    holds the joint width, and ``CustomTextCLIP`` (SigLIP among others), where the towers
+    are separate modules, ``visual`` carries no ``output_dim``, and the text tower states
+    it instead. SigLIP is what surfaced the second case -- and it surfaced as the intended
+    exception rather than as a silent 512.
+
     Args:
         model: An OpenCLIP model (or any object exposing the width; see below).
 
@@ -86,6 +92,13 @@ def get_embed_dim(model: Any) -> int:
     """
     visual = getattr(model, "visual", None)
     width = getattr(visual, "output_dim", None)
+    if isinstance(width, int):
+        return width
+
+    # SigLIP and friends are ``CustomTextCLIP``: the towers are separate modules and
+    # ``visual`` carries no output_dim, but the text tower states the joint width.
+    text_tower = getattr(model, "text", None)
+    width = getattr(text_tower, "output_dim", None)
     if isinstance(width, int):
         return width
 
