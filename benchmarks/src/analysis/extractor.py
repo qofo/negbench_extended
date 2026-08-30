@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .config import PipelineStep
+from .config import PipelineStep, layer_key
 
 
 def extract_all_features_unified(
@@ -62,7 +62,6 @@ def extract_all_features_unified(
         PipelineStep.PROJECTED_UNNORM.value: [],
         PipelineStep.FINAL_L2NORM.value: []
     }
-    inter_layer_batches = {f"Layer{i}": [] for i in range(1, len(resblocks))}
 
     for start in range(0, len(texts), batch_size):
         end = min(start + batch_size, len(texts))
@@ -98,9 +97,6 @@ def extract_all_features_unified(
                 else:
                     feat = hs_cpu[batch_idx, eot_indices].numpy()
                 layer_batches[l_idx].append(feat)
-
-                if 1 <= l_idx < len(resblocks):
-                    inter_layer_batches[f"Layer{l_idx}"].append(feat)
 
             # Extract 5 pipeline transformation steps on compute device
             def extract_step_token(tensor_b_l_d):
@@ -150,12 +146,12 @@ def extract_all_features_unified(
 
     layer_dict = {}
     for l_idx, feats in enumerate(layer_batches):
-        name = "Embedding" if l_idx == 0 else f"Layer {l_idx}"
-        layer_dict[name] = np.concatenate(feats, axis=0)
+        layer_dict[layer_key(l_idx)] = np.concatenate(feats, axis=0)
 
+    # ``pipeline`` used to also carry blocks 1..N-1 under a second spelling
+    # ("Layer1", no space) holding arrays bit-identical to ``layers``. The copies
+    # are gone; consumers that want a block read it from ``layers``.
     pipeline_dict = {k: np.concatenate(v, axis=0) for k, v in pipeline_batches.items()}
-    for k, v in inter_layer_batches.items():
-        pipeline_dict[k] = np.concatenate(v, axis=0)
 
     return {
         "layers": layer_dict,

@@ -18,6 +18,7 @@ from typing import List, Optional, Dict
 from PIL import Image
 
 from transformers import LlavaNextProcessor, LlavaNextForConditionalGeneration
+from analysis.config import layer_key
 from .utils import build_text_prompts, build_img_prompts
 
 
@@ -205,8 +206,10 @@ class E5VWrapper(torch.nn.Module):
         For each layer, extracts the last token's hidden state.
 
         Returns:
-            Dict mapping layer name (e.g. "Layer 0", "Layer 31") to
-            Tensor of shape (len(texts), hidden_dim) on CPU.
+            Dict mapping layer name to Tensor of shape (len(texts), hidden_dim)
+            on CPU. Names come from :func:`analysis.config.layer_key`, so index 0 --
+            the embedding output, as in the CLIP extractors -- is "Embedding" and the
+            decoder blocks are "Layer 1".."Layer N".
         """
         all_layer_feats = None  # Will be initialized on first batch
 
@@ -239,7 +242,6 @@ class E5VWrapper(torch.nn.Module):
         # Concatenate and build named dict
         layer_dict = {}
         for layer_idx, feats in enumerate(all_layer_feats):
-            name = f"Layer {layer_idx}"
-            layer_dict[name] = torch.cat(feats, dim=0)
+            layer_dict[layer_key(layer_idx)] = torch.cat(feats, dim=0)
 
         return layer_dict

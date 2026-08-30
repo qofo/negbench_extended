@@ -62,18 +62,24 @@ def extract_layerwise_feature_dict(
     for name, feats in res["layers"].items():
         feature_dict[name] = feats
 
-    # Post-Layer 12 pipeline transformation steps
+    # Post-Layer 12 pipeline transformation steps. These used to be looked up with
+    # a fallback to a legacy spelling and then added only ``if key in pipeline_dict``,
+    # so a step the extractor stopped emitting would drop out of the probe report and
+    # its figure without a word. The extractor is the contract: demand the steps.
     pipeline_dict = res["pipeline"]
-    ln_key = PipelineStep.LAYER12_LN.value if PipelineStep.LAYER12_LN.value in pipeline_dict else "Layer 12 + LN"
-    proj_key = PipelineStep.PROJECTED_UNNORM.value if PipelineStep.PROJECTED_UNNORM.value in pipeline_dict else "Projected (Unnorm)"
-    final_key = PipelineStep.FINAL_L2NORM.value if PipelineStep.FINAL_L2NORM.value in pipeline_dict else "Final (L2 Normed)"
-
-    if ln_key in pipeline_dict:
-        feature_dict["Layer 12 + LN"] = pipeline_dict[ln_key]
-    if proj_key in pipeline_dict:
-        feature_dict["Projected (Unnorm)"] = pipeline_dict[proj_key]
-    if final_key in pipeline_dict:
-        feature_dict["Final (L2 Normed)"] = pipeline_dict[final_key]
+    post_steps = [
+        (PipelineStep.LAYER12_LN.value, "Layer 12 + LN"),
+        (PipelineStep.PROJECTED_UNNORM.value, "Projected (Unnorm)"),
+        (PipelineStep.FINAL_L2NORM.value, "Final (L2 Normed)"),
+    ]
+    missing = [k for k, _ in post_steps if k not in pipeline_dict]
+    if missing:
+        raise KeyError(
+            f"extract_all_features_unified did not return pipeline step(s) {missing}. "
+            f"Available: {sorted(pipeline_dict)}"
+        )
+    for key, label in post_steps:
+        feature_dict[label] = pipeline_dict[key]
 
     return feature_dict
 

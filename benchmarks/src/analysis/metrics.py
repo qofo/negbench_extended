@@ -31,7 +31,8 @@ from .config import (
     l2_normalize,
     batch_cosine_similarity,
     batch_dot_product,
-    batch_l2_distance
+    batch_l2_distance,
+    layer_key,
 )
 
 
@@ -53,25 +54,32 @@ def compute_pipeline_and_layer_breakdown(
     Returns:
         Dict[str, Any]: Step-wise multi-metric and layer-wise similarity statistics.
     """
-    full_step_keys = [PipelineStep.EMBEDDING.value] + [f"Layer{i}" for i in range(1, 12)] + [
-        PipelineStep.LAYER12_RAW.value,
-        PipelineStep.LAYER12_LN.value,
-        PipelineStep.PROJECTED_UNNORM.value,
-        PipelineStep.FINAL_L2NORM.value
-    ]
+    # The 16 steps come from two dicts: blocks 1..11 live in "layers", the five
+    # named transformation steps in "pipeline". They used to be read from
+    # "pipeline" alone, which held a second copy of the blocks under a different
+    # spelling; the copies are gone, so each step names the dict it comes from.
+    n_blocks = 11
+    full_step_keys = (
+        [("pipeline", PipelineStep.EMBEDDING.value)]
+        + [("layers", layer_key(i)) for i in range(1, n_blocks + 1)]
+        + [("pipeline", PipelineStep.LAYER12_RAW.value),
+           ("pipeline", PipelineStep.LAYER12_LN.value),
+           ("pipeline", PipelineStep.PROJECTED_UNNORM.value),
+           ("pipeline", PipelineStep.FINAL_L2NORM.value)]
+    )
 
     labels_map = {PipelineStep.EMBEDDING.value: "Step 0: Embed"}
-    for i in range(1, 12):
-        labels_map[f"Layer{i}"] = f"Layer {i}"
+    for i in range(1, n_blocks + 1):
+        labels_map[layer_key(i)] = layer_key(i)
     labels_map[PipelineStep.LAYER12_RAW.value] = "Layer 12 Raw"
     labels_map[PipelineStep.LAYER12_LN.value] = "Layer 12+LN"
     labels_map[PipelineStep.PROJECTED_UNNORM.value] = "+Projection"
     labels_map[PipelineStep.FINAL_L2NORM.value] = "+Final L2Norm"
 
     pipeline_results = []
-    for idx, sname in enumerate(full_step_keys):
-        pos_f = pos_features["pipeline"][sname]
-        neg_f = neg_features["pipeline"][sname]
+    for idx, (source, sname) in enumerate(full_step_keys):
+        pos_f = pos_features[source][sname]
+        neg_f = neg_features[source][sname]
 
         cosine_sims = batch_cosine_similarity(pos_f, neg_f)
         dot_prods = batch_dot_product(pos_f, neg_f)

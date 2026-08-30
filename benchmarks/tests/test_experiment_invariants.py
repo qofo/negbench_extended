@@ -861,3 +861,114 @@ class TestDualPathImports:
                 from benchmarks.src.analysis.feature_cache import no_such_name  # noqa: F401
             except ImportError:
                 reraise_unless_standalone()
+
+
+class TestLayerKeyScheme:
+    """
+    A transformer block had three names. `extract_all_features_unified` returned
+    the very same array as ``layers["Layer 1"]`` and ``pipeline["Layer1"]``, and
+    `PipelineStep` supplied a third scheme for the steps around them. Nothing
+    crashed on the mismatch: `get_layer_features` answers an unknown key with the
+    final embedding, so a consumer holding the wrong spelling drew a flat
+    "layerwise" curve. `config.layer_key` is now the only producer of the name.
+    """
+
+    def test_formatter_covers_the_embedding_and_the_blocks(self):
+        from analysis.config import layer_key
+
+        assert layer_key(0) == "Embedding"
+        assert [layer_key(i) for i in (1, 9, 12)] == ["Layer 1", "Layer 9", "Layer 12"]
+
+    def test_extractor_emits_one_scheme_per_dict(self):
+        from analysis.config import PipelineStep, layer_key
+        from analysis.extractor import extract_all_features_unified
+        from analysis.model_loader import load_clip_for_eval
+
+        model, _, tokenizer = load_clip_for_eval("ViT-B-32", None, device="cpu")
+        res = extract_all_features_unified(
+            model, tokenizer, ["a photo of a cat", "a photo with no cat"],
+            device="cpu", batch_size=2)
+
+        n_blocks = len(model.transformer.resblocks)
+        assert list(res["layers"]) == [layer_key(i) for i in range(n_blocks + 1)]
+        assert set(res["pipeline"]) == {s.value for s in PipelineStep}, (
+            "pipeline carried a second spelling of the blocks; they belong to "
+            "'layers' and were bit-identical copies"
+        )
+
+    def test_no_module_spells_a_layer_name_inline(self):
+        import io
+        import re
+
+        # `layer_key` itself, and prose/labels, are exempt: only f-string or
+        # concatenated *construction* of the key from an index is a second producer.
+        pattern = re.compile(r'f"Layer ?\{|"Layer ?" ?\+ ?str\(')
+        offenders = []
+        for f in SRC_ROOT.rglob("*.py"):
+            if "open_clip" in f.parts or f.name == "config.py":
+                continue
+            for i, line in enumerate(io.open(f, encoding="utf-8"), 1):
+                if pattern.search(line):
+                    offenders.append(f"{f.relative_to(REPO_ROOT)}:{i}")
+        assert not offenders, (
+            "build layer names with analysis.config.layer_key, not inline: "
+            + ", ".join(offenders)
+        )
+
+
+class TestNestedFeatureMasking:
+    """
+    `filter_vision_dict` named ``"layers"`` as the one nested dict to mask. The
+    text extractor's dict nests ``"pipeline"`` the same way, and it fell to the
+    passthrough branch -- returned whole while every sibling array was subset, so
+    rows no longer lined up across the dict.
+    """
+
+    def test_every_nested_dict_is_masked(self):
+        from analysis.config import filter_vision_dict
+
+        vis = {
+            "layers": {"Layer 1": np.arange(20).reshape(10, 2)},
+            "pipeline": {"Step4_Final_L2Norm": np.arange(30).reshape(10, 3)},
+            "final_l2norm": np.arange(10).reshape(10, 1),
+            "loaded_flags": np.ones(10, dtype=bool),
+            "model_name": "ViT-B-32",
+        }
+        mask = np.zeros(10, dtype=bool)
+        mask[[1, 4, 7]] = True
+        out = filter_vision_dict(vis, mask)
+
+        assert out["layers"]["Layer 1"].shape == (3, 2)
+        assert out["pipeline"]["Step4_Final_L2Norm"].shape == (3, 3)
+        assert out["final_l2norm"].shape == (3, 1)
+        assert out["model_name"] == "ViT-B-32"
+        assert np.array_equal(out["pipeline"]["Step4_Final_L2Norm"],
+                              vis["pipeline"]["Step4_Final_L2Norm"][mask])
+
+
+class TestPipelineStepsAreRequired:
+    """
+    The layerwise probe looked each post-block step up with a fallback to a legacy
+    spelling and then added it only ``if key in pipeline_dict``. A step the
+    extractor stopped emitting would silently vanish from the report and its figure.
+    """
+
+    def test_missing_step_raises_instead_of_dropping_a_curve(self):
+        import benchmarks.src.evaluation.eval_layerwise_linear_probe as mod
+
+        def fake_extract(**kwargs):
+            return {
+                "layers": {"Embedding": np.zeros((2, 4))},
+                "pipeline": {"Step2_Layer12_LN": np.zeros((2, 4))},
+            }
+
+        original = mod.extract_all_features_unified
+        mod.extract_all_features_unified = fake_extract
+        try:
+            with pytest.raises(KeyError) as excinfo:
+                mod.extract_layerwise_feature_dict(None, None, ["x"], device="cpu")
+        finally:
+            mod.extract_all_features_unified = original
+
+        message = str(excinfo.value)
+        assert "Step3_Projected_Unnorm" in message and "Step4_Final_L2Norm" in message

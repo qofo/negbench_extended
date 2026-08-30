@@ -166,7 +166,7 @@ The `benchmarks/src/analysis/` package is the **representation analysis core** t
 
 #### `__init__.py`
 - **Role**: Public API for the analysis package
-- **Exports**: `PipelineStep`, `MetadataKey`, `AnalysisConfig`, `RetrievalConfig`, `to_bool`, `get_layer_features`, `l2_normalize`, `batch_cosine_similarity`, `batch_dot_product`, `batch_l2_distance`, `set_seed`, `DEFAULT_TUNING_GRIDS`, `filter_vision_dict`
+- **Exports**: `PipelineStep`, `MetadataKey`, `AnalysisConfig`, `RetrievalConfig`, `to_bool`, `layer_key`, `get_layer_features`, `l2_normalize`, `batch_cosine_similarity`, `batch_dot_product`, `batch_l2_distance`, `set_seed`, `DEFAULT_TUNING_GRIDS`, `filter_vision_dict`
 
 #### `config.py`
 - **Role**: Single source of truth for configuration, enumerations, and geometric operation utilities
@@ -177,6 +177,10 @@ The `benchmarks/src/analysis/` package is the **representation analysis core** t
   - `RetrievalConfig`: Cross-modal retrieval settings
   - Geometric ops: `l2_normalize()`, `batch_cosine_similarity()`, `batch_dot_product()`, `batch_l2_distance()`
   - `to_bool(v)`: Unified boolean parser (previously duplicated across 4 files)
+  - `layer_key(idx)`: The one producer of a transformer-block name — `"Embedding"` for 0, `"Layer <idx>"` otherwise.
+    Three producers had drifted apart (`"Layer 1"` in `layers`, `"Layer1"` for the *same array* in `pipeline`,
+    `PipelineStep` for the steps around them), and `get_layer_features` answers an unknown key with the final
+    embedding, so the mismatch drew a flat "layerwise" curve instead of raising.
   - `get_layer_features(vis, key)`: Unified layer feature extraction (previously duplicated across 3 files)
   - `set_seed(seed=42)`: Global Python/NumPy/PyTorch seed control
   - `DEFAULT_TUNING_GRIDS`: Hyperparameter tuning grids for probes (logistic, ridge, svm_linear, svm_rbf, mlp, bilinear_lowrank)
@@ -193,6 +197,9 @@ The `benchmarks/src/analysis/` package is the **representation analysis core** t
     - Step 4 (L2Norm): Final normalization
   - `assert_embedding_consistency(...)`: Validates equivalence between manual forward pass and `model.encode_text()`
 - **Returns**: `{"layers": {layer_name: ndarray}, "pipeline": {step_name: ndarray}, "final_l2norm": ndarray}`
+  - `layers` is keyed by `layer_key(i)` for `i` in `0..12`; `pipeline` holds exactly the five `PipelineStep`
+    values. `pipeline` used to *also* carry blocks 1–11 under a second spelling (`"Layer1"`), holding arrays
+    bit-identical to `layers`. Read a block from `layers`.
 
 #### `metrics.py` (566 lines)
 - **Role**: Geometric metric computation engine across 6 analytical dimensions

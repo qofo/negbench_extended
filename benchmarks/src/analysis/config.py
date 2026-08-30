@@ -160,6 +160,29 @@ def coerce_bool_column(df, column: str = "object_in_image", default: bool = Fals
 
 PRE_PROJECTION_KEY = "Pre-Projection"
 FINAL_L2NORM_KEY = "+Final L2Norm"
+EMBEDDING_KEY = "Embedding"
+
+
+def layer_key(idx: int) -> str:
+    """
+    Name transformer block ``idx`` the one way the whole codebase names it.
+
+    Layer names used to be spelled inline at each producer, and the spellings had
+    drifted: the text extractor returned ``"Layer 1"`` in its ``layers`` dict and
+    ``"Layer1"`` for the *same array* in its ``pipeline`` dict, while
+    :class:`PipelineStep` supplied a third scheme (``"Step1_Layer12_Raw"``) for the
+    steps around them. A consumer holding the wrong spelling did not crash --
+    :func:`get_layer_features` substituted the final embedding for it -- so the
+    disagreement surfaced as a flat "layerwise" curve rather than an error.
+
+    Args:
+        idx: Block index; 0 is the token+positional embedding, 1..N the residual blocks.
+
+    Returns:
+        str: ``"Embedding"`` for 0, otherwise ``"Layer <idx>"``.
+    """
+    return EMBEDDING_KEY if idx == 0 else f"Layer {idx}"
+
 
 _warned_layer_keys = set()
 
@@ -226,8 +249,9 @@ def filter_vision_dict(vis: dict, mask: np.ndarray) -> dict:
     """
     Apply a boolean mask to all arrays in a unified vision feature dictionary.
 
-    Filters all ndarray entries in 'layers', 'pre_proj', 'final_l2norm', and any
-    other ndarray values at the top level, so that new feature keys are never silently dropped.
+    Filters ndarray entries at the top level and inside any nested dict ('layers'
+    for the vision extractor, 'pipeline' for the text one), so that new feature
+    keys are never silently dropped.
 
     Args:
         vis (dict): Unified vision feature dictionary from extract_vision_features_unified.
@@ -238,8 +262,15 @@ def filter_vision_dict(vis: dict, mask: np.ndarray) -> dict:
     """
     result = {}
     for key, val in vis.items():
-        if key == "layers" and isinstance(val, dict):
-            result["layers"] = {k: v[mask] for k, v in val.items()}
+        if isinstance(val, dict):
+            # "layers" for the vision extractor, plus "pipeline" for the text one;
+            # naming only the first left a text dict's pipeline arrays unmasked and
+            # therefore misaligned against everything else in the same dict.
+            result[key] = {
+                k: (v[mask] if isinstance(v, np.ndarray) and v.ndim >= 1
+                    and v.shape[0] == mask.shape[0] else v)
+                for k, v in val.items()
+            }
         elif isinstance(val, np.ndarray) and val.ndim >= 1 and val.shape[0] == mask.shape[0]:
             result[key] = val[mask]
         else:

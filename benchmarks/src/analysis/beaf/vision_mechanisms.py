@@ -33,6 +33,7 @@ from analysis.config import (
     batch_cosine_similarity,
     batch_l2_distance,
     batch_dot_product,
+    layer_key,
 )
 from analysis.beaf.probe_factory import (
     ElementWiseNonLinearPyTorch,
@@ -230,8 +231,7 @@ def extract_vision_features_unified(
 
     layer_dict = {}
     for l_idx, feats in enumerate(layer_batches):
-        name = "Embedding" if l_idx == 0 else f"Layer {l_idx}"
-        layer_dict[name] = np.concatenate(feats, axis=0)
+        layer_dict[layer_key(l_idx)] = np.concatenate(feats, axis=0)
 
     return {
         "layers":       layer_dict,
