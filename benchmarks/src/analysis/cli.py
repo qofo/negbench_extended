@@ -13,8 +13,10 @@ flags it actually honors: an accepted flag that changes nothing is worse than an
 absent one, so nothing here adds a flag a caller does not implement.
 
 Defaults that genuinely differ between experiments (``--output_dir``,
-``--min_pairs``, ``--batch_size``) are parameters of these functions rather than
-constants, and ``--min_pairs`` has no default at all -- see ``add_concept_args``.
+``--batch_size``) are parameters of these functions rather than constants.
+``--min_pairs`` used to be one of them; it is now a single constant, because a
+threshold that differs per script silently means a different concept population
+per script -- see ``add_concept_args``.
 """
 
 import argparse
@@ -27,6 +29,7 @@ DEFAULT_PRETRAINED = "openai"
 DEFAULT_SEED = 42
 DEFAULT_IMAGE_ROOT = "benchmarks/data/images"
 DEFAULT_COUNTERFACTUAL_CSV = "benchmarks/data/images/beaf_counterfactual_6col.csv"
+DEFAULT_MIN_PAIRS = 20
 
 
 def add_model_args(parser: argparse.ArgumentParser,
@@ -90,17 +93,22 @@ def add_restriction_args(parser: argparse.ArgumentParser,
     return parser
 
 
-def add_concept_args(parser: argparse.ArgumentParser, min_pairs: int,
+def add_concept_args(parser: argparse.ArgumentParser,
+                     min_pairs: int = DEFAULT_MIN_PAIRS,
                      help_text: Optional[str] = None) -> argparse.ArgumentParser:
     """
     Minimum counterfactual pairs a concept needs to be evaluated.
 
-    ``min_pairs`` is required, with no fallback, because it silently selects the
-    population: the defaults in this repo range over 6, 10 and 20, and the paper's
-    33-concept set only appears at 20. Running the E2 decomposition on its own
-    default of 10 yields 53 concepts instead -- a different experiment wearing the
-    same name. Every caller therefore has to state its threshold, and provenance
-    records it.
+    This threshold silently selects the population, so a per-script default means a
+    per-script experiment. The defaults used to range over 6, 10 and 20: the paper's
+    33-concept set appears at 20, while running the E2 decomposition on its own
+    default of 10 yielded 53 concepts instead -- the same experiment name over a
+    different set. They are unified on ``DEFAULT_MIN_PAIRS`` and every summary's
+    provenance records the value actually used.
+
+    The parameter remains overridable for a deliberate sweep, but a call that pins a
+    different constant should say why in a comment; ``test_min_pairs_is_unified``
+    fails otherwise.
     """
     parser.add_argument(
         "--min_pairs", type=int, default=min_pairs,

@@ -296,7 +296,7 @@ def run_4condition_decomposition(
     output_dir: str = "logs/evaluation/4condition_decomposition",
     model_name: str = "ViT-B-32",
     pretrained: str = "openai",
-    min_pairs_per_obj: int = 6,
+    min_pairs_per_obj: int = 20,
     batch_size: int = 128,
 ):
     os.makedirs(output_dir, exist_ok=True)
@@ -458,7 +458,7 @@ def main():
     add_model_args(parser, "ViT-B-32", "openai")
     add_run_args(parser, "logs/evaluation/4condition_decomposition", seed=None, batch_size=128)
     add_data_args(parser, csv_path="benchmarks/data/images/beaf_counterfactual_6col.csv", image_root=None)
-    add_concept_args(parser, 6, "Minimum counterfactual pairs per object (default: 6)")
+    add_concept_args(parser, help_text="Minimum counterfactual pairs per object (default: 20)")
     args = parser.parse_args()
 
     run_4condition_decomposition(

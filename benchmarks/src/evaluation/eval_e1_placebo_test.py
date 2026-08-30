@@ -189,7 +189,7 @@ def compute_placebo_auc(
     feats_pres_all: np.ndarray,
     feats_abs_all: np.ndarray,
     concept_text_feats: Dict[str, np.ndarray],
-    min_pairs: int = 10,
+    min_pairs: int = 20,
     seed: int = 42,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
     """
@@ -495,7 +495,7 @@ def main():
     add_data_args(parser, csv_path="benchmarks/data/images/beaf_counterfactual_6col.csv", image_root="benchmarks/data/images")
     add_cache_args(parser)
     add_restriction_args(parser, "Comma list, or path to txt/csv/json, limiting the evaluated target concepts X. " "Distractors Y are still drawn from the full concept pool, so the placebo " "assignment is unchanged by this flag.")
-    add_concept_args(parser, 10, "Min pairs (with valid distractor) per concept (default: 10)")
+    add_concept_args(parser, help_text="Min pairs (with valid distractor) per concept (default: 20)")
     parser.add_argument("--prompt_template", type=str, default="a photo of a {}")
     parser.add_argument("--ensemble_prompts", action="store_true")
     args = parser.parse_args()

@@ -63,7 +63,7 @@ def main():
     add_data_args(parser, csv_path="benchmarks/data/images/beaf_counterfactual_6col.csv", image_root="benchmarks/data/images")
     add_cache_args(parser)
     add_restriction_args(parser, "Comma list, or path to txt/csv/json, limiting evaluation to an exact concept set")
-    add_concept_args(parser, 10)
+    add_concept_args(parser)
     parser.add_argument("--per_pair_csv", type=str, default="logs/evaluation/01_paper/2026-08-28_e2_final_gamma_resolution/e2_final_per_pair.csv")
     args = parser.parse_args()
 

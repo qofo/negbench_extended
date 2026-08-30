@@ -150,7 +150,14 @@
   - E2: 시각적 부재와 텍스트 부정이 의미적으로 정렬되는가
   - E3: 프로브 정렬이 코사인 정확도 마진을 예측하는가
   - E4: 코사인이 왜 실패하고 Bilinear가 무엇을 복원하는가 (대각 vs 비대각 절제)
-- **출력**: 4개 Figure PNG + CSV + JSON
+- **출력**: 4개 Figure PNG + CSV + JSON (JSON에 `seed`·`min_pairs_per_obj` 기록)
+- **⚠️ 기본 모집단이 바뀌었습니다 (2026-08-30)**: `--min_pairs` 기본값이 6 → **20**. 6에서는
+  68개 개념을 평가해 본문이 보고하는 33개 집합과 모집단이 달랐습니다. 20에서 나오는 값이
+  본문 수치와 일치합니다(이미지 프로브 62.65%, `*_stratified_leaky` 29.06%)
+- **`--seed`(기본 42)**: 이전에는 플래그 없이 내부 `seed=42`만 있었습니다. 이제 `set_seed`와
+  프로브·정렬 널테스트·Bilinear/LABCLIP 학습까지 전부 이 값을 받습니다. 42로 돌리면 종전 수치와
+  1,177개 값 전부 동일하고, 시드를 바꾸면 **학습형 조건과 `*_stratified_leaky`만** 움직입니다
+  (`GroupKFold` 기반 주 프로브와 닫힌형 절제는 결정적이라 불변)
 
 #### `eval_per_object_alignment_intervention.py` (872줄)
 - **역할**: 개념별 비전/텍스트 프로브 법선 $d_I^{(o)}, d_T^{(o)}$를 추출하고, 이를 정렬시키는 변환이
@@ -361,6 +368,14 @@ The `benchmarks/src/evaluation/` package is NegBench's **MCQ/Retrieval evaluatio
   - E2: Visual absence ↔ textual negation semantic alignment
   - E3: Probe alignment predicts cosine margin
   - E4: Cosine failure diagnosis via W = D + O (Diagonal vs Off-Diagonal ablation)
+- **Output**: 4 figure PNGs + CSV + JSON (the JSON records `seed` and `min_pairs_per_obj`)
+- **⚠️ The default population changed (2026-08-30)**: `--min_pairs` now defaults to **20**, not 6. At 6
+  this script evaluated 68 concepts — a different population from the 33-concept set the write-up
+  reports. The values at 20 are the ones that match it (image probe 62.65%, `*_stratified_leaky` 29.06%).
+- **`--seed` (default 42)**: previously there was no flag, only a hard-coded internal `seed=42`. It now
+  drives `set_seed` plus the probes, the alignment null test, and both bilinear trainers. Run at 42 and
+  all 1,177 reported values are unchanged; change it and only the **trained conditions and the
+  `*_stratified_leaky` probes** move (the `GroupKFold` probes and the closed-form ablations are deterministic).
 
 #### `eval_per_object_alignment_intervention.py` (872 lines)
 - **Role**: Extract per-concept vision/text probe normals $d_I^{(o)}, d_T^{(o)}$ and test **causally**

@@ -362,7 +362,7 @@ def main():
     add_data_args(parser, csv_path="benchmarks/data/images/beaf_counterfactual_6col.csv", image_root="benchmarks/data/images")
     add_cache_args(parser)
     add_restriction_args(parser, "Comma list, or path to txt/csv/json, limiting evaluation to an exact concept set " "(use to share E2's concept set verbatim)")
-    add_concept_args(parser, 20, "Minimum counterfactual pairs per concept (default: 20)")
+    add_concept_args(parser, help_text="Minimum counterfactual pairs per concept (default: 20)")
     parser.add_argument("--prompt_template", type=str, default="a photo of a {}")
     parser.add_argument("--ensemble_prompts", action="store_true", help="Ensemble multiple atomic prompt templates")
     args = parser.parse_args()

@@ -1105,7 +1105,7 @@ def main():
     add_data_args(parser, csv_path=None, image_root="benchmarks/data/images")
     add_cache_args(parser)
     add_restriction_args(parser, "Comma list, or path to txt/csv/json, limiting evaluation to an exact " "concept set (use to share E1/E2's concept set verbatim)")
-    add_concept_args(parser, 20, "Minimum counterfactual pairs per object (default: 20)")
+    add_concept_args(parser, help_text="Minimum counterfactual pairs per object (default: 20)")
     add_bias_args(parser, "Disable bias/intercept in linear probes (default: bias enabled)")
     parser.add_argument("--vision_csv", type=str, default="benchmarks/data/images/beaf_counterfactual_6col.csv")
     parser.add_argument("--text_csv", type=str, default="benchmarks/data/images/beaf_counterfactual_ab_swap_diverse.csv")

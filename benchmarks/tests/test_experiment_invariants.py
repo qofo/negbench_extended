@@ -704,23 +704,23 @@ class TestSharedCLIGroups:
             )
         assert "from benchmarks.src.analysis.cli import" in src
 
-    def test_min_pairs_has_no_hidden_default(self):
+    def test_min_pairs_comes_from_one_constant(self):
         """
-        min_pairs silently selects the population: the defaults across this repo are
-        6, 10 and 20, and the paper's 33-concept set only appears at 20 -- the E2
-        decomposition's own default of 10 yields 53 concepts instead. So the shared
-        group refuses to supply one.
+        min_pairs silently selects the population -- the defaults were once 6, 10 and
+        20, and the paper's 33-concept set only appears at 20 -- so the shared group
+        supplies the one value and a caller has to override it deliberately.
         """
         import argparse
         import inspect
-        from analysis.cli import add_concept_args
+        from analysis.cli import DEFAULT_MIN_PAIRS, add_concept_args
 
         assert inspect.signature(add_concept_args).parameters["min_pairs"].default \
-            is inspect.Parameter.empty, "min_pairs must stay a required argument"
+            == DEFAULT_MIN_PAIRS
 
         p = argparse.ArgumentParser()
-        add_concept_args(p, 20)
-        assert p.parse_args([]).min_pairs == 20
+        add_concept_args(p)
+        assert p.parse_args([]).min_pairs == DEFAULT_MIN_PAIRS
+        assert p.parse_args(["--min_pairs", "7"]).min_pairs == 7, "still overridable for a sweep"
         assert "33-concept set requires 20" in p.format_help()
 
     def test_groups_can_skip_flags_a_script_does_not_honor(self):
@@ -1196,3 +1196,105 @@ class TestScorerCheckpointRoundTrip:
         v, t = self._inputs(self.DIM)
         with torch.no_grad():
             assert torch.equal(a(v, t), b(v, t))
+
+
+class TestConceptThresholdIsUnified:
+    """
+    `--min_pairs` silently selects the concept population, so a per-script default
+    is a per-script experiment. The defaults ranged over 6, 10 and 20: the paper's
+    33-concept set appears at 20, while `eval_unary_mechanistic_analysis` defaulted
+    to 6 and evaluated 68 concepts -- a different population under the same name.
+    They are unified on `cli.DEFAULT_MIN_PAIRS`.
+    """
+
+    ENTRYPOINTS = [
+        "eval_e1_minimal_pair_auc",
+        "eval_e1_placebo_test",
+        "eval_e2_hadamard_decomposition",
+        "eval_e2_final_gamma_resolution",
+        "eval_e2_sanity_check_and_grounding",
+        "eval_unary_mechanistic_analysis",
+        "eval_per_object_alignment_intervention",
+        "eval_4condition_decomposition",
+        "eval_probe_failure_inspector",
+    ]
+
+    @staticmethod
+    def _parse_defaults(module_name):
+        """Rebuild a module's parser from its source, without importing torch weights."""
+        import argparse
+        import ast
+        import io
+
+        from analysis import cli
+
+        groups = {n: getattr(cli, n) for n in dir(cli) if n.startswith("add_") and n.endswith("_args")}
+        path = SRC_ROOT / "evaluation" / f"{module_name}.py"
+        tree = ast.parse(io.open(path, encoding="utf-8").read())
+        parser = argparse.ArgumentParser()
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                continue
+            if node.func.id in groups:
+                args = [ast.literal_eval(a) for a in node.args[1:]]
+                kw = {k.arg: ast.literal_eval(k.value) for k in node.keywords}
+                groups[node.func.id](parser, *args, **kw)
+        return parser.parse_args([])
+
+    @pytest.mark.parametrize("module_name", ENTRYPOINTS)
+    def test_min_pairs_is_unified(self, module_name):
+        from analysis.cli import DEFAULT_MIN_PAIRS
+
+        ns = self._parse_defaults(module_name)
+        assert ns.min_pairs == DEFAULT_MIN_PAIRS, (
+            f"{module_name} defaults to --min_pairs {ns.min_pairs}, not {DEFAULT_MIN_PAIRS}; "
+            "a different threshold is a different concept population"
+        )
+
+    def test_the_unified_value_is_the_one_the_paper_reports(self):
+        from analysis.cli import DEFAULT_MIN_PAIRS
+
+        assert DEFAULT_MIN_PAIRS == 20
+
+
+class TestUnaryAnalysisSeedIsPlumbed:
+    """
+    `eval_unary_mechanistic_analysis` passed `seed=42` to LogisticRegression,
+    StratifiedKFold and both bilinear trainers, but declared no `--seed`, so the
+    one knob that moves its trained numbers could not be set from the command line.
+    A flag that is accepted and then ignored is worse than an absent one, so this
+    checks the value actually reaches every stochastic call.
+    """
+
+    def test_flag_exists_and_defaults_to_42(self):
+        ns = TestConceptThresholdIsUnified._parse_defaults("eval_unary_mechanistic_analysis")
+        assert ns.seed == 42
+
+    def test_seed_reaches_every_stochastic_call(self):
+        import ast
+        import io
+
+        path = SRC_ROOT / "evaluation" / "eval_unary_mechanistic_analysis.py"
+        tree = ast.parse(io.open(path, encoding="utf-8").read())
+        pipeline = next(n for n in tree.body
+                        if isinstance(n, ast.FunctionDef) and n.name == "run_unary_mechanistic_analysis")
+
+        seeded = {"fit_linear_probe", "compute_cross_modal_alignment",
+                  "train_bilinear_matcher", "train_labclip_matcher"}
+        unseeded = []
+        for node in ast.walk(pipeline):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                continue
+            if node.func.id not in seeded:
+                continue
+            passes_seed = any(
+                k.arg == "seed" and isinstance(k.value, ast.Name) and k.value.id == "seed"
+                for k in node.keywords
+            )
+            if not passes_seed:
+                unseeded.append(f"{node.func.id} (line {node.lineno})")
+        assert not unseeded, (
+            "these take a seed but were left on the hard-coded default, so --seed "
+            "would not reach them: " + ", ".join(unseeded)
+        )
+        assert "set_seed" in ast.dump(pipeline), "the pipeline must seed the global RNGs too"

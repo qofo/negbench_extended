@@ -688,7 +688,7 @@ def main():
     add_run_args(parser, "logs/evaluation/probe_failure_inspection", seed=42, batch_size=128)
     add_data_args(parser, csv_path=None, image_root="benchmarks/data/images")
     add_restriction_args(parser, "Comma list, or path to txt/csv/json, pinning both probes to an exact " "concept set (e.g. E2's 33-concept table, so probe accuracies and " "decomposition coefficients describe the same population)")
-    add_concept_args(parser, 20, "Minimum counterfactual pairs per object for vision probing (default: 20)")
+    add_concept_args(parser, help_text="Minimum counterfactual pairs per object for vision probing (default: 20)")
     parser.add_argument("--vision_csv", type=str, default="benchmarks/data/images/beaf_counterfactual_6col.csv")
     parser.add_argument("--text_csv", type=str, default="benchmarks/data/images/beaf_counterfactual_ab_swap_diverse.csv")
     parser.add_argument("--min_samples", type=int, default=20, help="Minimum samples per class for text probing (default: 20)")

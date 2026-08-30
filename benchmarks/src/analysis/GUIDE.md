@@ -76,8 +76,11 @@
 #### `cli.py`
 - **역할**: 33개 `main()`이 각자 재발명하던 표준 플래그 선언
 - **주요 함수**: `add_model_args`, `add_run_args`, `add_data_args`, `add_cache_args`,
-  `add_restriction_args`, `add_concept_args(parser, min_pairs)`, `add_bias_args`.
-  `min_pairs`는 스크립트마다 값이 달라야 하므로 **기본값 없이 필수 인자**로 둔다
+  `add_restriction_args`, `add_concept_args(parser, min_pairs=DEFAULT_MIN_PAIRS)`, `add_bias_args`.
+  `min_pairs`는 2026-08-30에 **`DEFAULT_MIN_PAIRS = 20`으로 통일**되었다. 이 임계값은 개념 모집단을
+  조용히 결정하므로 스크립트마다 기본값이 다르면 같은 이름의 다른 실험이 된다 — 실제로
+  `eval_unary_mechanistic_analysis`의 옛 기본값 6은 33개가 아니라 68개 개념을 평가하고 있었다.
+  스윕을 위해 인자로 덮어쓸 수는 있고, `test_min_pairs_is_unified`가 엔트리포인트 9개를 검사한다
 
 #### `plotting.py`
 - **역할**: 헤드리스 백엔드 선택과, 두 개 이상의 실험이 그리는 그림
@@ -270,8 +273,11 @@ The `benchmarks/src/analysis/` package is the **representation analysis core** t
 #### `cli.py`
 - **Role**: The standard flags 33 `main()` functions each reinvented
 - **Key Functions**: `add_model_args`, `add_run_args`, `add_data_args`, `add_cache_args`,
-  `add_restriction_args`, `add_concept_args(parser, min_pairs)`, `add_bias_args`.
-  `min_pairs` is a required argument with no default, because its value legitimately differs per script.
+  `add_restriction_args`, `add_concept_args(parser, min_pairs=DEFAULT_MIN_PAIRS)`, `add_bias_args`.
+  `min_pairs` was unified on **`DEFAULT_MIN_PAIRS = 20`** on 2026-08-30. The threshold silently selects the
+  concept population, so a per-script default is a per-script experiment — `eval_unary_mechanistic_analysis`
+  had been evaluating 68 concepts at its default of 6, not the reported 33. It stays overridable for a sweep,
+  and `test_min_pairs_is_unified` checks all nine entrypoints.
 
 #### `plotting.py`
 - **Role**: Headless backend selection, and the figures more than one experiment draws

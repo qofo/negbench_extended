@@ -49,6 +49,7 @@ from benchmarks.src.analysis.cli import (
     add_restriction_args, add_concept_args, add_bias_args,
 )
 
+from benchmarks.src.analysis.config import set_seed
 from benchmarks.src.analysis.model_loader import load_clip_for_eval
 from benchmarks.src.analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
 
@@ -476,11 +477,13 @@ def run_unary_mechanistic_analysis(
     model_name: str = "ViT-B-32",
     pretrained: str = "openai",
     target_objects: Optional[List[str]] = None,
-    min_pairs_per_obj: int = 8,
+    min_pairs_per_obj: int = 20,
     batch_size: int = 256,
     use_bias: bool = True,
+    seed: int = 42,
 ):
     os.makedirs(output_dir, exist_ok=True)
+    set_seed(seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     print("╔═══════════════════════════════════════════════════════════╗")
@@ -489,6 +492,8 @@ def run_unary_mechanistic_analysis(
     print(f"  Model       : {model_name} ({pretrained}) | Device: {device}")
     print(f"  Input CSV   : {csv_path}")
     print(f"  Output Dir  : {output_dir}")
+    print(f"  Min Pairs   : {min_pairs_per_obj}")
+    print(f"  Seed        : {seed}")
     print(f"  Use Bias    : {use_bias}\n")
 
     # Load dataset through the loader that enforces the BEAF pairing contract:
@@ -566,9 +571,9 @@ def run_unary_mechanistic_analysis(
 
         # ── Stage E1: Information Probing ──
         acc_v, std_v, w_I, b_I, acc_v_strat = fit_linear_probe(
-            v_pos.numpy(), v_neg.numpy(), fit_intercept=use_bias)
+            v_pos.numpy(), v_neg.numpy(), fit_intercept=use_bias, seed=seed)
         acc_t, std_t, w_T, b_T, acc_t_strat = fit_linear_probe(
-            t_pos.numpy(), t_neg.numpy(), fit_intercept=use_bias)
+            t_pos.numpy(), t_neg.numpy(), fit_intercept=use_bias, seed=seed)
 
         d_I = np.mean(v_pos.numpy(), axis=0) - np.mean(v_neg.numpy(), axis=0)
         d_T = np.mean(t_pos.numpy(), axis=0) - np.mean(t_neg.numpy(), axis=0)
@@ -578,7 +583,7 @@ def run_unary_mechanistic_analysis(
               f"text {acc_t_strat:5.1f}%)")
 
         # ── Stage E2: Cross-Modal Alignment ──
-        align_metrics = compute_cross_modal_alignment(w_I, w_T, d_I, d_T)
+        align_metrics = compute_cross_modal_alignment(w_I, w_T, d_I, d_T, seed=seed)
         print(f"  [E2 Align] A_normal  : {align_metrics['a_normal']:+.4f} (p={align_metrics['p_val_normal']:.3f}) | "
               f"A_centroid: {align_metrics['a_centroid']:+.4f} (p={align_metrics['p_val_centroid']:.3f})")
 
@@ -593,8 +598,8 @@ def run_unary_mechanistic_analysis(
         scatter_objects.append(obj)
 
         # ── Stage E4: Bilinear Ablation & LABCLIP (W = D + O) ──
-        W_learned = train_bilinear_matcher(v_pos, v_neg, t_pos, t_neg, use_bias=use_bias)
-        W_labclip = train_labclip_matcher(v_pos, v_neg, t_pos, t_neg, use_bias=use_bias)
+        W_learned = train_bilinear_matcher(v_pos, v_neg, t_pos, t_neg, use_bias=use_bias, seed=seed)
+        W_labclip = train_labclip_matcher(v_pos, v_neg, t_pos, t_neg, use_bias=use_bias, seed=seed)
         ablation_res = evaluate_bilinear_ablation(v_pos, v_neg, t_pos, t_neg, W_learned, W_labclip=W_labclip)
 
         print("  [E4 Ablation]")
@@ -654,6 +659,8 @@ def run_unary_mechanistic_analysis(
         "model": model_name,
         "pretrained": pretrained,
         "use_bias": use_bias,
+        "seed": seed,
+        "min_pairs_per_obj": min_pairs_per_obj,
         "n_objects_analyzed": len(analyzed_objects),
         "analyzed_objects": analyzed_objects,
         "e1_probing_mean": {
@@ -834,9 +841,9 @@ def _render_fig4_bilinear_ablation(ablation_accs: Dict[str, List[float]], output
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="4-Stage Unary Mechanistic Analysis")
     add_model_args(parser, "ViT-B-32", "openai")
-    add_run_args(parser, "logs/evaluation/unary_mechanistic_analysis", seed=None, batch_size=256)
+    add_run_args(parser, "logs/evaluation/unary_mechanistic_analysis", batch_size=256)
     add_data_args(parser, csv_path="benchmarks/data/images/beaf_counterfactual_6col.csv", image_root=None)
-    add_concept_args(parser, 6)
+    add_concept_args(parser)
     add_bias_args(parser, "Disable bias/intercept in linear probes and Bilinear matching head (default: bias enabled)")
     parser.add_argument("--target_objects", nargs="+", default=None)
     args = parser.parse_args()
@@ -850,4 +857,5 @@ if __name__ == "__main__":
         min_pairs_per_obj=args.min_pairs,
         batch_size=args.batch_size,
         use_bias=not args.no_bias,
+        seed=args.seed,
     )

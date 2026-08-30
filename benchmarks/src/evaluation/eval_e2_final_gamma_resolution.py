@@ -380,7 +380,7 @@ def main():
     add_data_args(parser, csv_path="benchmarks/data/images/beaf_counterfactual_6col.csv", image_root="benchmarks/data/images")
     add_cache_args(parser)
     add_restriction_args(parser, "Comma list, or path to txt/csv/json, limiting evaluation to an exact concept set")
-    add_concept_args(parser, 10)
+    add_concept_args(parser)
     parser.add_argument("--n_permutations", type=int, default=1000)
     parser.add_argument("--n_bootstraps", type=int, default=2000)
     args = parser.parse_args()
