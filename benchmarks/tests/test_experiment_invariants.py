@@ -1298,3 +1298,66 @@ class TestUnaryAnalysisSeedIsPlumbed:
             "would not reach them: " + ", ".join(unseeded)
         )
         assert "set_seed" in ast.dump(pipeline), "the pipeline must seed the global RNGs too"
+
+
+class TestEmbeddingWidthIsRead:
+    """
+    Three entrypoints wrote `embed_dim = 512` right after loading the model. That is
+    ViT-B/32's width and ViT-B/16's, so it survived every run so far -- ViT-L/14 is 768.
+    The two failure modes differ, and the quiet one is worse: where `embed_dim` only
+    shapes the zero row standing in for an unreadable image, a wrong value is never
+    touched while every image loads, and one bad file turns it into a concatenation
+    error partway through a run.
+    """
+
+    BACKBONES = [("ViT-B-32", 512), ("ViT-B-16", 512), ("ViT-L-14", 768)]
+
+    @pytest.mark.parametrize("model_name,expected", BACKBONES)
+    def test_helper_reads_the_real_width(self, model_name, expected):
+        from analysis.model_loader import get_embed_dim, load_clip_for_eval
+
+        model, _, _ = load_clip_for_eval(model_name, None, device="cpu")
+        assert get_embed_dim(model) == expected
+
+    def test_unreadable_model_raises_instead_of_guessing(self):
+        from analysis.model_loader import get_embed_dim
+
+        with pytest.raises(AttributeError, match="rather than assuming 512"):
+            get_embed_dim(object())
+
+    def test_no_entrypoint_assigns_a_literal_width(self):
+        import ast
+        import io
+
+        offenders = []
+        for f in SRC_ROOT.rglob("*.py"):
+            if "open_clip" in f.parts:
+                continue
+            tree = ast.parse(io.open(f, encoding="utf-8").read())
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Assign):
+                    continue
+                names = {t.id for t in node.targets if isinstance(t, ast.Name)}
+                if not names & {"embed_dim", "feature_dim", "dim"}:
+                    continue
+                if isinstance(node.value, ast.Constant) and isinstance(node.value.value, int):
+                    offenders.append(f"{f.relative_to(REPO_ROOT)}:{node.lineno}")
+        assert not offenders, (
+            "read the width from the model (analysis.model_loader.get_embed_dim) "
+            "instead of hard-coding it: " + ", ".join(offenders)
+        )
+
+    @pytest.mark.parametrize("dim", [512, 768])
+    def test_every_scoring_head_accepts_a_non_default_width(self, dim):
+        """The hidden widths inside DeepMLPScorer are 512/256/128; its *input* is 2*dim."""
+        import torch
+        from benchmarks.src.evaluation.scoring_heads import build_scorer
+
+        for name in ["cosine", "weighted_cosine", "bilinear", "logistic_regression",
+                     "shallow_mlp", "deep_mlp", "low_rank_bilinear",
+                     "nonlinear_biencoder", "dual_classifier_product"]:
+            scorer = build_scorer(name, dim)
+            scorer.eval()
+            v, t = torch.randn(2, dim), torch.randn(2, 3, dim)
+            with torch.no_grad():
+                assert scorer(v, t).shape == (2, 3), f"{name} at dim={dim}"

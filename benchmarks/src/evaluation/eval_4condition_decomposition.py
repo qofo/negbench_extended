@@ -54,7 +54,7 @@ from benchmarks.src.analysis.cli import (
     add_restriction_args, add_concept_args, add_bias_args,
 )
 
-from benchmarks.src.analysis.model_loader import load_clip_for_eval
+from benchmarks.src.analysis.model_loader import load_clip_for_eval, get_embed_dim
 
 from benchmarks.src.analysis.config import coerce_bool_column
 
@@ -323,7 +323,7 @@ def run_4condition_decomposition(
     print(f"\n  Loading CLIP model '{model_name}' ({pretrained})...")
     model, preprocess, tokenizer = load_clip_for_eval(
         model_name, pretrained, device)
-    embed_dim = 512
+    embed_dim = get_embed_dim(model)
 
     per_object_records = []
     analyzed_objects = []

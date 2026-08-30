@@ -56,3 +56,47 @@ def load_clip_for_eval(
     tokenizer = open_clip.get_tokenizer(model_name)
     model = model.to(dev).eval()
     return model, preprocess_val, tokenizer
+
+
+def get_embed_dim(model: Any) -> int:
+    """
+    Read the joint embedding width from the backbone instead of assuming it.
+
+    Three entrypoints wrote ``embed_dim = 512`` immediately after loading the model.
+    That is ViT-B/32's width, and ViT-B/16's, so it went unnoticed -- but ViT-L/14 is
+    768, and the two failure modes differ:
+
+    - ``eval_per_object_alignment_intervention`` builds ``np.eye(embed_dim)`` for the
+      baseline and the random-rotation control, so a wrong width raises at the first
+      matmul. Loud, but it blocks the run.
+    - ``eval_4condition_decomposition`` and ``eval_unary_mechanistic_analysis`` pass it
+      to ``encode_images_safely``, which only uses it to shape the zero row that stands
+      in for an image that failed to load. With every image loading, the wrong value is
+      never touched and the run *succeeds*; one unreadable file turns it into a confusing
+      concatenation error partway through.
+
+    Args:
+        model: An OpenCLIP model (or any object exposing the width; see below).
+
+    Returns:
+        int: Joint embedding dimension.
+
+    Raises:
+        AttributeError: When the width cannot be read, rather than guessing 512.
+    """
+    visual = getattr(model, "visual", None)
+    width = getattr(visual, "output_dim", None)
+    if isinstance(width, int):
+        return width
+
+    proj = getattr(model, "text_projection", None)
+    if proj is not None:
+        if hasattr(proj, "weight"):        # nn.Linear
+            return int(proj.weight.shape[0])
+        if hasattr(proj, "shape"):         # nn.Parameter (d_model, embed_dim)
+            return int(proj.shape[-1])
+
+    raise AttributeError(
+        f"cannot read the embedding width from {type(model).__name__}; "
+        "pass it explicitly rather than assuming 512"
+    )

@@ -68,7 +68,7 @@ import open_clip
 
 # Reuse existing verified infrastructure (robust to module vs standalone execution)
 try:
-    from benchmarks.src.analysis.model_loader import load_clip_for_eval
+    from benchmarks.src.analysis.model_loader import load_clip_for_eval, get_embed_dim
     from benchmarks.src.analysis.cli import (
     add_model_args, add_run_args, add_data_args, add_cache_args,
     add_restriction_args, add_concept_args, add_bias_args,
@@ -88,7 +88,7 @@ try:
 except ImportError:
     from analysis.import_compat import reraise_unless_standalone
     reraise_unless_standalone()
-    from analysis.model_loader import load_clip_for_eval
+    from analysis.model_loader import load_clip_for_eval, get_embed_dim
     from analysis.cli import (
     add_model_args, add_run_args, add_data_args, add_cache_args,
     add_restriction_args, add_concept_args, add_bias_args,
@@ -676,7 +676,7 @@ def run_per_object_alignment_intervention(
     print(f"Loading CLIP model '{model_name}' ({pretrained})...")
     model, preprocess, tokenizer = load_clip_for_eval(
         model_name, pretrained, device)
-    embed_dim = 512
+    embed_dim = get_embed_dim(model)
 
     # 2. Load Vision 1:1 Counterfactual Pairs
     print("\nLoading and verifying Vision 1:1 Counterfactual Pairs...")
