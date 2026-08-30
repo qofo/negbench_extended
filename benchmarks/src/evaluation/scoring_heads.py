@@ -17,7 +17,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 
 def predict_with_tie_report(
@@ -372,6 +372,7 @@ class DualClassifierProductScorer(BaseScorer):
         self.feature_dim = feature_dim
         self.vision_type = vision_type.lower()
         self.vision_rank = vision_rank
+        self.vision_hidden_dim = vision_hidden_dim
         self.use_hard_sign = use_hard_sign
 
         self.U_v = nn.Parameter(torch.zeros(feature_dim, vision_rank))
@@ -387,6 +388,67 @@ class DualClassifierProductScorer(BaseScorer):
 
         self.w_t = nn.Parameter(torch.zeros(feature_dim))
         self.b_t = nn.Parameter(torch.zeros(1))
+
+    # Parameters whose shape depends on vision_rank / vision_hidden_dim, i.e. on
+    # configuration a checkpoint has to carry rather than assume.
+    _CONFIGURED_PARAMS = ("U_v", "V_v", "mlp_fc1_w", "mlp_fc1_b", "mlp_fc2_w", "mlp_fc2_b")
+
+    def get_extra_state(self) -> Dict[str, Any]:
+        """
+        Persist the configuration that selects the forward branch.
+
+        ``vision_type`` picks which of three vision classifiers ``forward`` runs, and
+        it is set by :meth:`load_weights` rather than only by ``__init__``. It used to
+        live nowhere in ``state_dict``, so a round trip through ``build_scorer`` --
+        which constructs with the default ``vision_type="mlp"`` -- restored the tensors
+        and then ran the *wrong branch* over its zero-initialised weights. That does not
+        raise: every score comes out 0.0, the MCQ options tie, and the tie-break picks at
+        random. The rank and hidden dim are here for the same reason, one step earlier:
+        without them the shapes are a guess.
+        """
+        return {
+            "vision_type": self.vision_type,
+            "vision_rank": self.vision_rank,
+            "vision_hidden_dim": self.vision_hidden_dim,
+            "use_hard_sign": self.use_hard_sign,
+        }
+
+    def set_extra_state(self, state: Dict[str, Any]) -> None:
+        """Restore the branch selector and shape configuration saved above."""
+        self.vision_type = state["vision_type"]
+        self.vision_rank = state["vision_rank"]
+        self.vision_hidden_dim = state["vision_hidden_dim"]
+        self.use_hard_sign = state.get("use_hard_sign", self.use_hard_sign)
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        """
+        Adopt the checkpoint's vision shapes, and tolerate checkpoints predating the extra state.
+
+        Resizing happens here rather than after the load because ``set_extra_state``
+        runs *last*: by then the copy into the old, wrongly-shaped parameters has
+        already failed.
+        """
+        extra_key = prefix + "_extra_state"
+        if extra_key not in state_dict:
+            # Written before the configuration was persisted. Every such checkpoint
+            # comes from eval_scoring_heads.py, which trains a scorer built by
+            # build_scorer and therefore left at the constructor's vision_type -- but
+            # say so, because assuming it is exactly the failure this state exists for.
+            print(f"[WARNING] {type(self).__name__}: checkpoint carries no vision "
+                  f"configuration; assuming vision_type={self.vision_type!r}, "
+                  f"rank={self.vision_rank}, hidden_dim={self.vision_hidden_dim}")
+            state_dict = dict(state_dict)
+            state_dict[extra_key] = self.get_extra_state()
+
+        for name in self._CONFIGURED_PARAMS:
+            incoming = state_dict.get(prefix + name)
+            current = getattr(self, name, None)
+            if incoming is not None and current is not None and current.shape != incoming.shape:
+                setattr(self, name, nn.Parameter(torch.zeros_like(incoming)))
+
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict,
+                                      missing_keys, unexpected_keys, error_msgs)
 
     def load_weights(
         self,
@@ -409,7 +471,7 @@ class DualClassifierProductScorer(BaseScorer):
 
             if mlp_fc1_w is not None and mlp_fc2_w is not None:
                 self.vision_type = "mlp"
-                h_dim, f_dim = mlp_fc1_w.shape
+                self.vision_hidden_dim = int(mlp_fc1_w.shape[0])
                 if self.mlp_fc1_w.shape != mlp_fc1_w.shape:
                     self.mlp_fc1_w = nn.Parameter(torch.zeros_like(mlp_fc1_w))
                     self.mlp_fc1_b = nn.Parameter(torch.zeros_like(mlp_fc1_b))
@@ -422,7 +484,7 @@ class DualClassifierProductScorer(BaseScorer):
             elif U_v is not None and V_v is not None:
                 self.vision_type = "low_rank_bilinear"
                 self.b_v.copy_(torch.tensor([b_v], dtype=torch.float32))
-                rank = U_v.shape[1]
+                self.vision_rank = int(U_v.shape[1])
                 if self.U_v.shape != U_v.shape:
                     self.U_v = nn.Parameter(torch.zeros_like(U_v))
                     self.V_v = nn.Parameter(torch.zeros_like(V_v))

@@ -202,6 +202,13 @@ $$\text{Interaction Effect} = (A - B) - (C - D) \quad (\text{시각-텍스트 �
 1. **`DualClassifierProductScorer`의 무조건부(Unconditional) 모순**:
    * $f_V(v)$는 텍스트 입력이 없으므로 특정 이미지 $v$에 대해 단일 상수만 출력함.
    * MCQ 평가 시 객체가 없는 이미지에서도 부정 선택지가 무조건 음수가 되어 오답을 선택하는 이론적 모순 발생 $\rightarrow$ 조건부 결합(Bilinear $v^T W t$ 등) 사용 필수.
+   * (2026-08-30 수정) 이와 별개로 **체크포인트 왕복이 깨져 있었다**. `vision_type`은 `forward`가 세 비전
+     분류기 중 무엇을 실행할지 고르는 값인데 `load_weights`가 설정할 뿐 `state_dict`에는 없었다.
+     재로드는 `build_scorer`를 거치므로 기본값 `"mlp"`로 되돌아가고, 텐서는 복원되었는데 **0으로 초기화된
+     MLP 분기**가 돌아 모든 점수가 정확히 0.0이 되었다. 예외는 나지 않고 MCQ 선택지가 전부 동점이 되어
+     무작위 타이브레이크로 넘어간다. 이제 `get_extra_state`/`set_extra_state`가 `vision_type`·rank·
+     hidden_dim·`use_hard_sign`를 함께 저장하고, `_load_from_state_dict`가 체크포인트 형상에 맞춰
+     파라미터를 먼저 크기 조정한다. 옛 체크포인트는 경고를 찍고 생성자 설정을 가정한다.
 2. **Text Probe 99.9%의 Token-Presence 편향**:
    * Positive vs Negative 문장으로만 학습된 Linear Probe는 'not' 토큰 존재만 감지했을 가능성 $\rightarrow$ Word-Swap Counterfactual Pair(`eval_word_swap_probe.py`)로 대응.
 3. **BEAF Inpainting Artifacts 간섭 가능성**:
@@ -286,5 +293,12 @@ See Section 5 in Korean above for complete mathematical derivations and formulas
 ### 7. Limitations & Mitigation Strategies
 
 1. **Unconditional Product Scorer Paradox**: $f_V(v)$ outputs a static constant without text conditioning $\rightarrow$ Must use conditional interaction ($v^T W t$).
+   *(Fixed 2026-08-30, separately: the checkpoint round trip was broken.* `vision_type` selects which of three
+   vision classifiers `forward` runs and was set only by `load_weights`, never stored in `state_dict`. A reload
+   goes through `build_scorer`, which constructs the default `"mlp"`, so the tensors came back and the
+   **zero-initialised MLP branch** ran: every score exactly 0.0, all MCQ options tied, resolved by the random
+   tie-break. `get_extra_state`/`set_extra_state` now persist `vision_type`, rank, hidden dim and
+   `use_hard_sign`, and `_load_from_state_dict` resizes the parameters to the checkpoint first. Checkpoints
+   predating this warn and assume the constructor's configuration.)
 2. **Token-Presence Bias**: Addressed via Word-Swap counterfactual probes (`eval_word_swap_probe.py`).
 3. **Inpainting Artifacts**: Addressed via Priority 0 dataset audits (`audit_ab_swap_dataset.py`).

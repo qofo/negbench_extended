@@ -1088,3 +1088,111 @@ class TestTopObjectsGridHasOneBody:
         empty = pd.DataFrame(columns=["object_name", "layer_name", "n_pairs",
                                       "train_acc_pct", "val_acc_pct"])
         assert render_top_objects_grid(empty, "/nonexistent/x.png", "t") is None
+
+
+class TestScorerCheckpointRoundTrip:
+    """
+    `DualClassifierProductScorer.vision_type` selects which of three vision
+    classifiers `forward` runs, and `load_weights` sets it -- but it lived nowhere
+    in `state_dict`. `build_scorer` constructs with the default `"mlp"`, so
+    reloading a low-rank or linear checkpoint restored the tensors and then ran the
+    MLP branch over its zero-initialised weights. Nothing raises: every score comes
+    out 0.0, all MCQ options tie, and the tie-break picks at random.
+
+    The rank and hidden dim had the same problem one step earlier -- `load_weights`
+    swapped in differently shaped `nn.Parameter`s after construction, so the saved
+    shapes no longer matched what the constructor would build.
+    """
+
+    DIM = 16
+    NAMES = ["cosine", "weighted_cosine", "bilinear", "logistic_regression", "shallow_mlp",
+             "deep_mlp", "low_rank_bilinear", "nonlinear_biencoder", "dual_classifier_product"]
+
+    @staticmethod
+    def _inputs(dim, seed=0):
+        import torch
+
+        g = torch.Generator().manual_seed(seed)
+        return torch.randn(4, dim, generator=g), torch.randn(4, 3, dim, generator=g)
+
+    def _dual(self, **load_kwargs):
+        import torch
+        from benchmarks.src.evaluation.scoring_heads import DualClassifierProductScorer
+
+        torch.manual_seed(0)
+        ctor = {k: load_kwargs.pop(k) for k in ("vision_rank", "vision_hidden_dim", "use_hard_sign")
+                if k in load_kwargs}
+        s = DualClassifierProductScorer(feature_dim=self.DIM, **ctor)
+        s.load_weights(w_t=torch.randn(self.DIM), b_t=0.3, **load_kwargs)
+        return s
+
+    @pytest.mark.parametrize("label,kwargs", [
+        ("low_rank", dict(vision_rank=8, b_v=0.1)),
+        ("mlp", dict(vision_hidden_dim=32)),
+        ("linear", dict(b_v=0.1)),
+        ("hard_sign", dict(use_hard_sign=True, b_v=0.1)),
+    ])
+    def test_dual_classifier_branch_and_scores_survive(self, label, kwargs):
+        import torch
+        from benchmarks.src.evaluation.scoring_heads import build_scorer
+
+        if label == "low_rank":
+            kwargs.update(U_v=torch.randn(self.DIM, 8), V_v=torch.randn(self.DIM, 8),
+                          w_lin_v=torch.randn(self.DIM))
+        elif label == "mlp":
+            kwargs.update(mlp_fc1_w=torch.randn(32, self.DIM), mlp_fc1_b=torch.randn(32),
+                          mlp_fc2_w=torch.randn(1, 32), mlp_fc2_b=0.2)
+        else:
+            kwargs.update(w_v=torch.randn(self.DIM))
+
+        original = self._dual(**kwargs)
+        # build_scorer is how every reload site rebuilds it: defaults only.
+        reloaded = build_scorer("dual_classifier_product", self.DIM)
+        reloaded.load_state_dict(original.state_dict())
+
+        assert reloaded.vision_type == original.vision_type, (
+            f"{label}: reload ran the {reloaded.vision_type!r} branch, not {original.vision_type!r}"
+        )
+        assert reloaded.use_hard_sign == original.use_hard_sign
+
+        v, t = self._inputs(self.DIM)
+        with torch.no_grad():
+            assert torch.equal(original(v, t), reloaded(v, t))
+
+    def test_checkpoint_without_the_config_still_loads(self, capsys):
+        """Checkpoints written before the configuration was persisted must not break."""
+        import torch
+        from benchmarks.src.evaluation.scoring_heads import build_scorer
+
+        s = build_scorer("dual_classifier_product", self.DIM)
+        with torch.no_grad():
+            for p in s.parameters():
+                p.normal_()
+        legacy = {k: v for k, v in s.state_dict().items() if k != "_extra_state"}
+
+        reloaded = build_scorer("dual_classifier_product", self.DIM)
+        reloaded.load_state_dict(legacy)
+        assert "no vision configuration" in capsys.readouterr().out, (
+            "assuming a branch is the exact failure this state exists for; say so"
+        )
+        v, t = self._inputs(self.DIM)
+        with torch.no_grad():
+            assert torch.equal(s(v, t), reloaded(v, t))
+
+    @pytest.mark.parametrize("name", NAMES)
+    def test_every_head_round_trips(self, name):
+        import torch
+        from benchmarks.src.evaluation.scoring_heads import build_scorer
+
+        torch.manual_seed(0)
+        a = build_scorer(name, self.DIM)
+        with torch.no_grad():
+            for p in a.parameters():
+                p.normal_()
+        b = build_scorer(name, self.DIM)
+        b.load_state_dict(a.state_dict())
+
+        a.eval(); b.eval()  # the MLP heads carry Dropout
+        v, t = self._inputs(self.DIM)
+        with torch.no_grad():
+            assert torch.equal(a(v, t), b(v, t))
