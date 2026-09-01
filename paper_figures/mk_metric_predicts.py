@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np, pandas as pd
 from scipy import stats
 
-df = pd.read_csv("paper_figures/fig4_data.csv")
+df = pd.read_csv("paper_figures/fig_metric_data.csv")
 GROUP = {"OpenAI CLIP":"아키텍처", "ViT-B/16":"아키텍처", "ViT-L/14":"아키텍처",
          "LAION-2B":"데이터·목적함수", "SigLIP B/16":"데이터·목적함수",
          "NegCLIP":"부정 미세조정", "CoN-CLIP":"부정 미세조정",
@@ -57,5 +57,5 @@ axes[0].legend(fontsize=9.5, loc="lower right", title="모델 계열", title_fon
 fig.suptitle("9개 모델 — 아키텍처 3종 · 학습 데이터 3종 · 목적함수 2종 · 부정 미세조정 4종",
              fontsize=11, y=1.005, color="#444")
 plt.tight_layout()
-plt.savefig("paper_figures/fig4_metric_predicts.png", dpi=300, bbox_inches="tight")
+plt.savefig("paper_figures/fig_metric_predicts.png", dpi=300, bbox_inches="tight")
 print("saved")

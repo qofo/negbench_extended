@@ -4,7 +4,7 @@ matplotlib.rcParams["axes.unicode_minus"] = False
 import matplotlib.pyplot as plt
 import numpy as np, json
 
-S = json.load(open("logs/evaluation/01_paper/2026-08-30_i2_single_w_vitb32/single_w_summary.json"))
+S = json.load(open("logs/evaluation/01_paper/2026-09-01_single_w_abswap/single_w_summary.json"))
 F = {f["family"]: f for f in S["families"]}
 ORDER = ["identity", "diagonal", "lowrank_1", "lowrank_2", "lowrank_4",
          "lowrank_8", "lowrank_16", "lowrank_32", "full"]
@@ -54,5 +54,5 @@ ax.set_ylim(0, 84); ax.set_xlim(-.5, 8.5)
 ax.grid(True, axis="y", ls="--", alpha=.35); ax.set_axisbelow(True)
 ax.legend(fontsize=9.5, loc="upper left", framealpha=.95)
 plt.tight_layout()
-plt.savefig("paper_figures/fig3_single_w.png", dpi=300, bbox_inches="tight")
+plt.savefig("paper_figures/fig_single_w.png", dpi=300, bbox_inches="tight")
 print("saved; best =", ORDER[best], oof[best])

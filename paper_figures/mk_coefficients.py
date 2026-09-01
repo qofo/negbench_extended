@@ -6,15 +6,15 @@ import numpy as np, pandas as pd
 
 P = "logs/evaluation/01_paper/"
 SRC = [
- ("OpenAI CLIP","A", P+"2026-08-28_r6_main_effect_ablation_33concepts/e2_per_concept_decomposition.csv"),
- ("ViT-B/16","A",     P+"2026-08-30_r8_vitb16/e2_hadamard_decomposition/e2_per_concept_decomposition.csv"),
- ("ViT-L/14","A",     P+"2026-08-30_r8_vitl14/e2_hadamard_decomposition/e2_per_concept_decomposition.csv"),
- ("LAION-2B","B",     P+"2026-08-30_negfam_laion2b/e2/e2_per_concept_decomposition.csv"),
- ("SigLIP B/16","B",  P+"2026-08-30_negfam_siglip_b16/e2/e2_per_concept_decomposition.csv"),
- ("CoN-CLIP","C",     P+"2026-08-30_negfam_conclip/e2/e2_per_concept_decomposition.csv"),
- ("NegCLIP","C",      P+"2026-08-30_negfam_negclip/e2/e2_per_concept_decomposition.csv"),
- ("NegCLIP-NegFull","C", P+"2026-08-30_negfam_negclip_negfull/e2/e2_per_concept_decomposition.csv"),
- ("CLIP-NegFull","C", P+"2026-08-30_negfam_clip_negfull/e2/e2_per_concept_decomposition.csv"),
+ ("OpenAI CLIP","A", P+"2026-08-31_negfam_e2_abswap/vitb32_openai/e2_per_concept_decomposition.csv"),
+ ("ViT-B/16","A",     P+"2026-08-31_negfam_e2_abswap/vitb16_openai/e2_per_concept_decomposition.csv"),
+ ("ViT-L/14","A",     P+"2026-08-31_negfam_e2_abswap/vitl14_openai/e2_per_concept_decomposition.csv"),
+ ("LAION-2B","B",     P+"2026-08-31_negfam_e2_abswap/vitb32_laion2b/e2_per_concept_decomposition.csv"),
+ ("SigLIP B/16","B",  P+"2026-08-31_negfam_e2_abswap/vitb16_siglip/e2_per_concept_decomposition.csv"),
+ ("CoN-CLIP","C",     P+"2026-08-31_negfam_e2_abswap/conclip/e2_per_concept_decomposition.csv"),
+ ("NegCLIP","C",      P+"2026-08-31_negfam_e2_abswap/negclip/e2_per_concept_decomposition.csv"),
+ ("NegCLIP-NegFull","C", P+"2026-08-31_negfam_e2_abswap/negclip_negfull/e2_per_concept_decomposition.csv"),
+ ("CLIP-NegFull","C", P+"2026-08-31_negfam_e2_abswap/clip_negfull/e2_per_concept_decomposition.csv"),
 ]
 FAM = {"A": ("아키텍처 3종", "#4c72b0"),
        "B": ("학습 데이터 · 목적함수", "#55a868"),
@@ -90,5 +90,5 @@ ax2.grid(True, axis="y", ls="--", alpha=.35); ax2.set_axisbelow(True)
 ax2.legend(fontsize=9.2, loc="upper center", ncol=3, framealpha=.95,
            columnspacing=1.0, handlelength=1.3)
 plt.tight_layout()
-plt.savefig("paper_figures/fig2_coefficients.png", dpi=300, bbox_inches="tight")
+plt.savefig("paper_figures/fig_coefficients.png", dpi=300, bbox_inches="tight")
 print("saved", n_neg_tot)
