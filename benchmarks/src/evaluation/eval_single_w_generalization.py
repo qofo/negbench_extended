@@ -62,6 +62,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from sklearn.model_selection import GroupKFold
 
 try:
@@ -170,6 +171,23 @@ class RandomMatcher(nn.Module):
         return torch.sum(torch.matmul(v, self.W) * t, dim=-1)
 
 
+class RandomLowRankMatcher(nn.Module):
+    """A fixed random rank-r W (same parameterisation as LowRankMatcher), never trained."""
+
+    trainable = False
+
+    def __init__(self, embed_dim: int, rank: int, seed: int = 42):
+        super().__init__()
+        g = torch.Generator().manual_seed(seed)
+        proj_v = torch.randn(embed_dim, rank, generator=g) / np.sqrt(embed_dim)
+        proj_t = torch.randn(embed_dim, rank, generator=g) / np.sqrt(embed_dim)
+        self.register_buffer("proj_v", proj_v)
+        self.register_buffer("proj_t", proj_t)
+
+    def forward(self, v: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        return torch.sum(torch.matmul(v, self.proj_v) * torch.matmul(t, self.proj_t), dim=-1)
+
+
 def build_family(name: str, embed_dim: int, seed: int) -> Tuple[nn.Module, int]:
     """Return (module, trainable parameter count) for one rung of the ladder."""
     if name == "identity":
@@ -178,6 +196,14 @@ def build_family(name: str, embed_dim: int, seed: int) -> Tuple[nn.Module, int]:
         return RandomMatcher(embed_dim, seed=seed), 0
     if name == "diagonal":
         return DiagonalMatcher(embed_dim), embed_dim
+    if name.startswith("random_lowrank_"):
+        # Capacity-matched control for a specific lowrank_r rung: same rank, same
+        # parameterisation (two embed_dim x r projections), never trained. Answers
+        # "does the low-rank inductive bias alone do anything without fitting it?"
+        # -- as opposed to `random`, which is full-rank (more capacity than any
+        # lowrank_r rung) and so does not isolate rank as the matched quantity.
+        r = int(name.split("_")[2])
+        return RandomLowRankMatcher(embed_dim, r, seed=seed), 0
     if name.startswith("lowrank_"):
         r = int(name.split("_")[1])
         return LowRankMatcher(embed_dim, r), 2 * embed_dim * r
@@ -203,20 +229,57 @@ def train_matcher(
     lr: float = 0.01,
     weight_decay: float = 1e-4,
     margin: float = 0.1,
+    loss_kind: str = "margin4",
 ) -> nn.Module:
     """
-    Fit W with the four-term margin ranking loss the per-concept matchers use.
+    Fit W with one of two losses.
 
-    Keeping the objective, optimiser and schedule identical to
-    ``eval_per_object_alignment_intervention.train_bilinear_matcher`` is the point:
-    the only thing that differs between that experiment and this one is which pairs
-    the fit sees, so any gap is attributable to the fitting population.
+    ``margin4`` (default, unchanged): the four-term pairwise margin ranking loss
+    the per-concept matchers use. Keeping the objective, optimiser and schedule
+    identical to ``eval_per_object_alignment_intervention.train_bilinear_matcher``
+    is the point: the only thing that differs between that experiment and this one
+    is which pairs the fit sees, so any gap is attributable to the fitting
+    population. It imposes four independent constraints (each of the two correct
+    cells must beat each of the two incorrect cells by ``margin``) -- stricter
+    than the paper's own success condition.
+
+    ``delta``: derived directly from the identity Delta(S) = 2*gamma -
+    2*max(|alpha|,|beta|) that section 2's decomposition proves. Maximising
+    gamma - max(|alpha|,|beta|) is, by that identity, exactly maximising
+    (min(S++,S--) - max(S+-,S-+)) / 2 -- the paper's own success margin -- not a
+    proxy for it. This is a single hinge on that quantity rather than four
+    independent pairwise hinges; it does not need per-fold C or the four separate
+    comparisons ``margin4`` needs, since alpha, beta and gamma fall out of the
+    same four forward passes ``margin4`` already computes.
     """
     if not getattr(model, "trainable", True):
         return model
 
     v_pos, v_neg, t_pos, t_neg = quads
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+
+    if loss_kind == "delta":
+        model.train()
+        for _ in range(epochs):
+            optimizer.zero_grad()
+            s_pp = model(v_pos, t_pos)
+            s_mm = model(v_neg, t_neg)
+            s_pm = model(v_pos, t_neg)
+            s_mp = model(v_neg, t_pos)
+            gamma = (s_pp - s_pm - s_mp + s_mm) / 4.0
+            beta = (s_pp + s_pm - s_mp - s_mm) / 4.0   # image main effect
+            alpha = (s_pp - s_pm + s_mp - s_mm) / 4.0  # text main effect
+            main_effect = torch.maximum(alpha.abs(), beta.abs())
+            per_pair_margin = gamma - main_effect
+            loss = F.relu(margin - per_pair_margin).mean()
+            loss.backward()
+            optimizer.step()
+        model.eval()
+        return model
+
+    if loss_kind != "margin4":
+        raise ValueError(f"unknown loss_kind: {loss_kind}")
+
     criterion = nn.MarginRankingLoss(margin=margin)
     target = torch.ones(v_pos.shape[0], device=v_pos.device)
 
@@ -386,7 +449,8 @@ def run(args) -> Dict[str, Any]:
             q_tr = tuple(x[tr] for x in quads_all)
             q_te = tuple(x[te] for x in quads_all)
             net = train_matcher(net, q_tr, epochs=args.epochs, lr=args.lr,
-                                weight_decay=args.weight_decay, margin=args.margin)
+                                weight_decay=args.weight_decay, margin=args.margin,
+                                loss_kind=args.loss)
 
             ok_te = joint_correct(net, q_te)
             ok_tr = joint_correct(net, q_tr)
@@ -527,4 +591,8 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=0.01)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--margin", type=float, default=0.1)
+    parser.add_argument("--loss", choices=["margin4", "delta"], default="margin4",
+                        help="margin4: four-term pairwise margin loss (default, unchanged). "
+                             "delta: single hinge on gamma - max(|alpha|,|beta|), derived "
+                             "directly from the paper's own Delta(S) identity.")
     run(parser.parse_args())
