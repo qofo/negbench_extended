@@ -46,6 +46,7 @@ from src.evaluation.scoring_heads import (
     BilinearScorer,
     DeepMLPScorer,
     build_scorer,
+    predict_with_tie_report,
 )
 from src.evaluation.eval_scoring_heads import (
     extract_mcq_embeddings,
@@ -234,7 +235,18 @@ def evaluate_zero_shot_scorer(
     device: str = "cuda",
     batch_size: int = 64
 ) -> Dict[str, Any]:
-    """Run pure Zero-Shot inference on MCQ/Paired target dataset."""
+    """Run pure Zero-Shot inference on MCQ/Paired target dataset.
+
+    Uses predict_with_tie_report rather than plain argmax: NegBench's
+    COCO_val_mcq_llama3.1_rephrased.csv and VOC2007_mcq_llama3.1_rephrased.csv both
+    have correct_answer fixed at index 0 for every row (options are never shuffled),
+    so a scorer that ties across all options -- e.g. a vision-blind head on rows
+    where only the image differs -- reads as 100% accurate under plain argmax
+    (RESULTS.md Section 3.2 documents this exact artifact). Breaking ties at random
+    instead puts an information-free scorer at chance, and tie_rate reports how much
+    of the returned accuracy rests on ties so a non-zero rate can be caught rather
+    than silently trusted.
+    """
     scorer = scorer.to(device)
     scorer.eval()
 
@@ -242,17 +254,24 @@ def evaluate_zero_shot_scorer(
     loader = DataLoader(ds, batch_size=batch_size, shuffle=False)
 
     preds_list = []
+    tie_list = []
     with torch.no_grad():
         for imgs, texts, _ in loader:
             imgs, texts = imgs.to(device), texts.to(device)
             scores = scorer(imgs, texts)
-            preds = torch.argmax(scores, dim=1).cpu().numpy()
+            preds, tie_mask = predict_with_tie_report(scores)
             preds_list.append(preds)
+            tie_list.append(tie_mask)
 
     all_preds = np.concatenate(preds_list)
+    all_ties = np.concatenate(tie_list)
     targets_np = targets.numpy()
 
     metrics = compute_mcq_accuracy_breakdown(all_preds, targets_np, question_types)
+    metrics["tie_rate_pct"] = float(np.mean(all_ties)) * 100.0
+    if metrics["tie_rate_pct"] > 0:
+        print(f"  ⚠️ tie_rate = {metrics['tie_rate_pct']:.2f}% of rows had a tied max score "
+              f"(broken at random, not by index 0)")
     return metrics
 
 

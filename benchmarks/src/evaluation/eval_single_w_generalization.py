@@ -63,6 +63,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GroupKFold
 
 try:
@@ -127,17 +128,34 @@ class DiagonalMatcher(nn.Module):
 
 
 class LowRankMatcher(nn.Module):
-    """W = U V^T with U, V in R^(D x r). Initialised near identity via a scaled draw."""
+    """W = U V^T with U, V in R^(D x r). Initialised near identity via a scaled draw,
+    unless ``warm_start`` is given.
+
+    review6.md (block B) proposed warm-starting from the untrained probe-normal
+    outer product (w_I w_T^T, 24.96% on its own) rather than random init, as a fix
+    for the rank-1 delta-loss collapse (1.94%, worse than that untrained
+    baseline). Confirmed by diagnose_delta_loss_warmstart.py: pooled OOF at rank 1
+    goes from 1.94% (random) to 20.36% (warm-started), on par with margin4's ~20%.
+    Only the first component is warm-started; any remaining rank is random as
+    before, so this degrades gracefully to the old behaviour at rank 1 and adds a
+    single informed direction (not the whole basis) at higher rank.
+    """
 
     trainable = True
 
-    def __init__(self, embed_dim: int, rank: int):
+    def __init__(self, embed_dim: int, rank: int,
+                 warm_start: Optional[Tuple[np.ndarray, np.ndarray]] = None):
         super().__init__()
         self.rank = rank
         self.proj_v = nn.Linear(embed_dim, rank, bias=False)
         self.proj_t = nn.Linear(embed_dim, rank, bias=False)
         nn.init.normal_(self.proj_v.weight, std=0.02)
         nn.init.normal_(self.proj_t.weight, std=0.02)
+        if warm_start is not None:
+            w_I, w_T = warm_start
+            with torch.no_grad():
+                self.proj_v.weight[0].copy_(torch.from_numpy(w_I).float())
+                self.proj_t.weight[0].copy_(torch.from_numpy(w_T).float())
 
     def forward(self, v: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         return torch.sum(self.proj_v(v) * self.proj_t(t), dim=-1)
@@ -188,7 +206,22 @@ class RandomLowRankMatcher(nn.Module):
         return torch.sum(torch.matmul(v, self.proj_v) * torch.matmul(t, self.proj_t), dim=-1)
 
 
-def build_family(name: str, embed_dim: int, seed: int) -> Tuple[nn.Module, int]:
+def fit_global_direction(pos: np.ndarray, neg: np.ndarray, seed: int) -> np.ndarray:
+    """One global (concept-agnostic) logistic-regression normal, no intercept --
+    the `--warmstart` init for lowrank_* families. Matches the D-rung's
+    `v^T(w_I w_T^T)t` convention used elsewhere this session, except that rung's
+    probes are per-concept; this one is fit once on the whole training fold so it
+    stays concept-agnostic like every other family on this ladder."""
+    X = np.vstack([pos, neg])
+    y = np.array([1] * len(pos) + [0] * len(neg))
+    clf = LogisticRegression(max_iter=1000, C=1.0, random_state=seed, fit_intercept=False)
+    clf.fit(X, y)
+    w = clf.coef_[0]
+    return w / (np.linalg.norm(w) + 1e-12)
+
+
+def build_family(name: str, embed_dim: int, seed: int,
+                 warm_start: Optional[Tuple[np.ndarray, np.ndarray]] = None) -> Tuple[nn.Module, int]:
     """Return (module, trainable parameter count) for one rung of the ladder."""
     if name == "identity":
         return IdentityMatcher(), 0
@@ -206,7 +239,7 @@ def build_family(name: str, embed_dim: int, seed: int) -> Tuple[nn.Module, int]:
         return RandomLowRankMatcher(embed_dim, r, seed=seed), 0
     if name.startswith("lowrank_"):
         r = int(name.split("_")[1])
-        return LowRankMatcher(embed_dim, r), 2 * embed_dim * r
+        return LowRankMatcher(embed_dim, r, warm_start=warm_start), 2 * embed_dim * r
     if name == "full":
         return FullMatcher(embed_dim), embed_dim * embed_dim
     raise ValueError(f"unknown W family: {name}")
@@ -444,7 +477,11 @@ def run(args) -> Dict[str, Any]:
 
         for fold, (tr, te) in enumerate(splits):
             set_seed(args.seed + fold)
-            net, _ = build_family(family, embed_dim, args.seed)
+            warm_start = None
+            if args.warmstart and family.startswith("lowrank_"):
+                warm_start = (fit_global_direction(v_pos[tr], v_neg[tr], args.seed),
+                              fit_global_direction(t_pos[tr], t_neg[tr], args.seed))
+            net, _ = build_family(family, embed_dim, args.seed, warm_start=warm_start)
             net = net.to(device)
             q_tr = tuple(x[tr] for x in quads_all)
             q_te = tuple(x[te] for x in quads_all)
@@ -595,4 +632,9 @@ if __name__ == "__main__":
                         help="margin4: four-term pairwise margin loss (default, unchanged). "
                              "delta: single hinge on gamma - max(|alpha|,|beta|), derived "
                              "directly from the paper's own Delta(S) identity.")
+    parser.add_argument("--warmstart", action="store_true", default=False,
+                        help="Initialise lowrank_* families' first component from a global "
+                             "(concept-agnostic) probe-normal outer product instead of a "
+                             "random draw. Fixes the delta-loss rank-1 collapse "
+                             "(review6.md block B; see diagnose_delta_loss_warmstart.py).")
     run(parser.parse_args())
