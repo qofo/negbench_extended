@@ -392,13 +392,17 @@ class TestAlignmentInterventionOutOfFold:
         )
 
 
-class TestRotationZeroAlphaCondition:
+class TestRotationZeroMainEffectConditions:
     """
-    Conditions 8 and 9 test the "alignment + gap orthogonalisation" row of the
-    additive model: rotate the text so cos(d_I, R d_T) = 1, then project the text
-    polarity vector off the image mean so the text main effect alpha vanishes.
-    Condition 9 is the same projection without the rotation -- the control that makes
-    a gain attributable to the combination rather than to removing alpha alone.
+    Conditions 8-11 test the "alignment + gap orthogonalisation" row of the additive
+    model: rotate the text so cos(d_I, R d_T) = 1, then project one main effect out.
+    Conditions 9 and 11 are the same projections without the rotation -- the controls
+    that make a gain attributable to the combination rather than to the ablation alone.
+
+    The alpha and beta ablations have to be exact *and* independent: the success
+    condition gamma > max(|alpha|,|beta|) is decided by whichever main effect is
+    larger, so an ablation that leaked into the other coefficient would silently
+    change which condition wins.
     """
 
     @staticmethod
@@ -431,37 +435,52 @@ class TestRotationZeroAlphaCondition:
         assert np.allclose(C - b - a + g, S22)
 
     @pytest.mark.parametrize("rotate", [True, False])
-    def test_alpha_is_removed_exactly(self, rotate):
-        """Both conditions exist to zero the text main effect; verify they do."""
+    @pytest.mark.parametrize("ablate,zeroed,kept", [
+        ("perobj_alpha", "abs_alpha_mean", "abs_beta_mean"),
+        ("perobj_beta", "abs_beta_mean", "abs_alpha_mean"),
+    ])
+    def test_the_targeted_main_effect_is_removed_and_the_other_survives(
+        self, rotate, ablate, zeroed, kept
+    ):
+        """
+        Each condition exists to zero exactly one main effect. If the projection also
+        moved the other one, the alpha/beta comparison these conditions are run for
+        would be measuring two changes at once.
+        """
         from benchmarks.src.evaluation.eval_per_object_alignment_intervention import (
-            rotation_zero_alpha_scores, metrics_from_quad_scores,
+            rotation_zero_main_effect_scores, metrics_from_quad_scores,
         )
 
         v_p, v_m, t_p, t_m, d_I, d_T = self._quads()
-        scores, align = rotation_zero_alpha_scores(v_p, v_m, t_p, t_m, d_I, d_T, rotate=rotate)
+        scores, align = rotation_zero_main_effect_scores(
+            v_p, v_m, t_p, t_m, d_I, d_T, rotate=rotate, ablate=ablate)
         m = metrics_from_quad_scores(*scores, align)
 
-        assert m["abs_alpha_mean"] < 1e-9, (
-            f"alpha survived the projection at {m['abs_alpha_mean']:.3e}; the "
+        assert m[zeroed] < 1e-9, (
+            f"{ablate} left {zeroed} at {m[zeroed]:.3e}; the "
             "intervention's whole claim is that it does not"
+        )
+        assert m[kept] > 1e-6, (
+            f"{ablate} also collapsed {kept} to {m[kept]:.3e}; the two ablations have "
+            "to be independent or the comparison between them means nothing"
         )
 
     def test_rotation_reaches_perfect_alignment_and_the_control_does_not(self):
         from benchmarks.src.evaluation.eval_per_object_alignment_intervention import (
-            rotation_zero_alpha_scores,
+            rotation_zero_main_effect_scores,
         )
 
         v_p, v_m, t_p, t_m, d_I, d_T = self._quads()
-        _, rotated = rotation_zero_alpha_scores(v_p, v_m, t_p, t_m, d_I, d_T, rotate=True)
-        _, control = rotation_zero_alpha_scores(v_p, v_m, t_p, t_m, d_I, d_T, rotate=False)
+        _, rotated = rotation_zero_main_effect_scores(v_p, v_m, t_p, t_m, d_I, d_T, rotate=True)
+        _, control = rotation_zero_main_effect_scores(v_p, v_m, t_p, t_m, d_I, d_T, rotate=False)
 
         assert rotated == pytest.approx(1.0, abs=1e-6), "R is built so that R d_T = d_I"
         assert control == pytest.approx(float(np.dot(d_I, d_T)), abs=1e-6), (
             "the control applies no rotation, so alignment must stay at the raw value"
         )
 
-    def test_conditions_8_and_9_survive_the_oof_harness(self):
-        """Both are closed-form given the probe normals, so they must be OOF-scorable."""
+    def test_conditions_8_to_11_survive_the_oof_harness(self):
+        """All four are closed-form given the probe normals, so must be OOF-scorable."""
         from benchmarks.src.evaluation.eval_per_object_alignment_intervention import (
             evaluate_conditions_out_of_fold, CONDITION_NAMES,
         )
@@ -475,6 +494,8 @@ class TestRotationZeroAlphaCondition:
         assert set(oof) == set(CONDITION_NAMES), "every condition must reach the OOF column"
         for cond in ("8_Rotation_Zero_Alpha", "9_Zero_Alpha_Only"):
             assert oof[cond]["abs_alpha_mean"] < 1e-9, f"{cond} must zero alpha out of fold too"
+        for cond in ("10_Rotation_Zero_Beta", "11_Zero_Beta_Only"):
+            assert oof[cond]["abs_beta_mean"] < 1e-9, f"{cond} must zero beta out of fold too"
 
 
 class TestUpstreamArtifactResolution:

@@ -189,9 +189,15 @@ def compute_main_effect_ablation(
                           earlier run; it leaves a large alpha residual because
                           the per-pair mu_I differs from the global mean.
         ``perobj_alpha``  Project v against the pair's own mu_I. Removes alpha exactly.
-        ``both``          Also project u against the pair's own mu_T. Removes alpha
-                          and beta exactly, which is the intervention the success
-                          condition gamma > max(|alpha|,|beta|) reduces to gamma > 0.
+        ``perobj_beta``   The mirror image: project u against the pair's own mu_T,
+                          leaving v untouched. Removes beta exactly and keeps alpha.
+                          Together with ``perobj_alpha`` this says which of the two
+                          main effects is the binding one -- the success condition
+                          gamma > max(|alpha|,|beta|) is asymmetric in what each
+                          removal buys, and only the pair of ablations measures it.
+        ``both``          Project both. Removes alpha and beta exactly, which is the
+                          intervention the success condition
+                          gamma > max(|alpha|,|beta|) reduces to gamma > 0.
 
     Args:
         v_pres, v_abs: L2-normalized image embeddings, shape (N, D).
@@ -215,9 +221,12 @@ def compute_main_effect_ablation(
     else:
         hat_mu_I = _unit(mu_I)
 
-    v_perp = v_txt - np.sum(v_txt * hat_mu_I, axis=-1, keepdims=True) * hat_mu_I
+    if mode == "perobj_beta":
+        v_perp = v_txt
+    else:
+        v_perp = v_txt - np.sum(v_txt * hat_mu_I, axis=-1, keepdims=True) * hat_mu_I
 
-    if mode == "both":
+    if mode in ("both", "perobj_beta"):
         hat_mu_T = _unit(mu_T)
         u_perp = u_img - np.sum(u_img * hat_mu_T, axis=-1, keepdims=True) * hat_mu_T
     else:

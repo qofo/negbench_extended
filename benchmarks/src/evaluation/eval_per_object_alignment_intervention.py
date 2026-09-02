@@ -5,7 +5,7 @@ For each object o:
   1. Extracts vision probe normal vector d_I^(o) from 1:1 counterfactual image pairs (I_orig vs I_cf).
   2. Extracts text probe normal vector d_T^(o) from diverse counterfactual caption pairs (T_pos vs T_neg).
   3. Computes closed-form orthogonal rotation matrix R^(o) in SO(d) such that R^(o) d_T^(o) = d_I^(o) (cos = 1.0).
-  4. Evaluates 9 intervention conditions on 2x2 counterfactual matching:
+  4. Evaluates 11 intervention conditions on 2x2 counterfactual matching:
        - Baseline: Standard Cosine (A = I)
        - Intervention 1: Closed-Form 2D Rotation (A = R^(o))
        - Intervention 2: Rank-1 Polar Adapter (A = A_rank1^(o))
@@ -17,6 +17,11 @@ For each object o:
          text polarity vector off the pair's image mean so the text main effect vanishes)
        - Control: Zero-alpha only (the same projection with no rotation) -- the comparison
          condition 8 must beat for its gain to be attributable to the combination
+       - Intervention 7: Rotation + Zero-beta (the mirror image -- project the image
+         difference vector off the pair's text mean so the image main effect vanishes)
+       - Control: Zero-beta only. The alpha/beta pair is what says which main effect is
+         binding: gamma > max(|alpha|,|beta|) is decided by the larger one, so removing
+         the smaller buys nothing and only both ablations measure which is which.
   5. Measures whether aligning d_T to d_I, linear alignment (LABCLIP), or learning bilinear interaction causally fixes CLIP's negation matching failure.
   6. Reports the Hadamard coordinates (alpha, beta, gamma) of every condition, so the
      gamma amplification each intervention achieves can be read against the additive
@@ -117,14 +122,18 @@ CONDITION_NAMES = [
     "7_Control_Random_Rotation",
     "8_Rotation_Zero_Alpha",
     "9_Zero_Alpha_Only",
+    "10_Rotation_Zero_Beta",
+    "11_Zero_Beta_Only",
 ]
 
-# Conditions 1-7 are a single transform A; condition 8 is a two-step intervention
-# (rotate the text, then project the text polarity vector off the image mean), so it
-# is built and scored on its own path rather than through build_condition_matrices.
-MATRIX_CONDITIONS = CONDITION_NAMES[:-2]
+# Conditions 1-7 are a single transform A; conditions 8-11 are two-step interventions
+# (optionally rotate the text, then project one main effect out), so they are built and
+# scored on their own path rather than through build_condition_matrices.
+MATRIX_CONDITIONS = CONDITION_NAMES[:-4]
 ROTATION_ZERO_ALPHA = "8_Rotation_Zero_Alpha"
 ZERO_ALPHA_ONLY = "9_Zero_Alpha_Only"
+ROTATION_ZERO_BETA = "10_Rotation_Zero_Beta"
+ZERO_BETA_ONLY = "11_Zero_Beta_Only"
 
 
 # ============================================================
@@ -403,7 +412,7 @@ def build_condition_matrices(
     }
 
 
-def rotation_zero_alpha_scores(
+def rotation_zero_main_effect_scores(
     v_p: np.ndarray,
     v_m: np.ndarray,
     t_p: np.ndarray,
@@ -411,9 +420,20 @@ def rotation_zero_alpha_scores(
     d_I: np.ndarray,
     d_T: np.ndarray,
     rotate: bool = True,
+    ablate: str = "perobj_alpha",
 ) -> Tuple[Tuple[np.ndarray, ...], float]:
     """
-    Condition 8 -- the intervention §7's "alignment + gap orthogonalisation" row predicts.
+    Conditions 8-11 -- rotate the text, then remove one main effect exactly.
+
+    ``ablate="perobj_alpha"`` gives conditions 8/9 (the intervention §7's
+    "alignment + gap orthogonalisation" row predicts); ``ablate="perobj_beta"``
+    gives their mirror image, conditions 10/11.
+
+    The pair matters because the success condition gamma > max(|alpha|,|beta|) is
+    decided by whichever main effect is larger, and removing the smaller one buys
+    nothing. Only running both ablations says which one is binding -- and the
+    literature has no method that targets beta, because no benchmark scores the
+    image-selection direction it controls.
 
     Neither existing script computes this combination: the intervention script rotates
     only, and the E2 decomposition ablates main effects only. Here both are applied in
@@ -421,19 +441,20 @@ def rotation_zero_alpha_scores(
 
       1. Rotate the text embeddings by the concept's closed-form R^(o), so
          cos(d_I, R d_T) = 1 exactly.
-      2. Project the text polarity vector off the pair's own image mean, which removes
-         the text main effect alpha exactly (E2's ``perobj_alpha`` ablation).
+      2. Remove one main effect exactly: alpha by projecting the text polarity vector
+         off the pair's own image mean, beta by projecting the image difference vector
+         off the pair's own text mean.
 
-    Step 2 runs *after* the rotation on purpose: rotating moves the text polarity
-    vector, so the direction alpha must be removed along moves with it. Doing it in
-    the other order would remove alpha from a vector the rotation then turns.
+    Step 2 runs *after* the rotation on purpose: rotating moves the text vectors, so
+    the direction the main effect is removed along has to move with them. Doing it in
+    the other order would ablate against a vector the rotation then turns.
 
-    With ``rotate=False`` this is condition 9, the ablation-only control. It is the
-    comparison condition 8 has to beat: without it, a gain over the plain cosine
-    baseline cannot be attributed to the combination rather than to removing alpha.
-    The equivalent number in the E2 decomposition comes from a different text source
-    (its 2x2 baseline is 0.375%, this script's is 1.35%), so the two are not
-    interchangeable and the control has to be measured inside this run.
+    With ``rotate=False`` these are the ablation-only controls (conditions 9 and 11).
+    They are what the rotated conditions have to beat: without them, a gain over the
+    plain cosine baseline cannot be attributed to the combination rather than to the
+    ablation alone. The equivalent number in the E2 decomposition comes from a
+    different text source (its 2x2 baseline is 0.375%, this script's is 1.35%), so the
+    two are not interchangeable and the controls have to be measured inside this run.
 
     Returns:
         ((s_pp, s_pm, s_mp, s_mm), direction_alignment)
@@ -444,7 +465,7 @@ def rotation_zero_alpha_scores(
     coords = compute_main_effect_ablation(
         v_p, v_m, t_p_rot, t_m_rot,
         mu_I_global=np.zeros(v_p.shape[1], dtype=v_p.dtype),
-        mode="perobj_alpha",
+        mode=ablate,
     )
 
     # compute_main_effect_ablation returns coordinates, not scores; the map back is
@@ -478,8 +499,14 @@ def compute_all_condition_scores(
                compute_direction_alignment(A, d_I, d_T, is_lab))
         for cond, (A, is_lab) in A_matrices.items()
     }
-    out[ROTATION_ZERO_ALPHA] = rotation_zero_alpha_scores(v_p, v_m, t_p, t_m, d_I, d_T)
-    out[ZERO_ALPHA_ONLY] = rotation_zero_alpha_scores(v_p, v_m, t_p, t_m, d_I, d_T, rotate=False)
+    for cond, rotate, ablate in (
+        (ROTATION_ZERO_ALPHA, True, "perobj_alpha"),
+        (ZERO_ALPHA_ONLY, False, "perobj_alpha"),
+        (ROTATION_ZERO_BETA, True, "perobj_beta"),
+        (ZERO_BETA_ONLY, False, "perobj_beta"),
+    ):
+        out[cond] = rotation_zero_main_effect_scores(
+            v_p, v_m, t_p, t_m, d_I, d_T, rotate=rotate, ablate=ablate)
     return out
 
 
@@ -927,6 +954,8 @@ def generate_intervention_visualizations(
         "Random Rotation (Control)",
         "Rotation + Zero-α",
         "Zero-α only (control)",
+        "Rotation + Zero-β",
+        "Zero-β only (control)",
     ]
 
     mean_aligns = []
@@ -976,11 +1005,14 @@ def generate_intervention_visualizations(
                 "in_sample_minus_oof_pp": j_acc - oof_j,
             })
 
-    # ── Figure 1: 7-Condition Comparison Bar Chart ──
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 6))
+    # ── Figure 1: per-condition comparison bar chart ──
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(22, 6))
 
     x = np.arange(len(condition_names))
-    colors = ["#7f8c8d", "#2ecc71", "#3498db", "#9b59b6", "#e67e22", "#1abc9c", "#e74c3c", "#16a085", "#8e44ad"]
+    # The two zero-beta conditions share the hues of their zero-alpha mirrors so the
+    # pair that decides which main effect binds reads as a pair in the figure.
+    colors = ["#7f8c8d", "#2ecc71", "#3498db", "#9b59b6", "#e67e22", "#1abc9c", "#e74c3c",
+              "#16a085", "#8e44ad", "#c0392b", "#d35400"]
 
     # Subplot 1: 2x2 Joint Matching Accuracy
     bars1 = ax1.bar(x, mean_joint_accs, color=colors[:len(condition_names)], edgecolor="black", width=0.55)
