@@ -18,6 +18,16 @@ collapse:
                                (full narrow quads), summed every step, per
                                review7 block1's own proposed formula.
 
+2026-09-02 update (review7's own follow-up caution): at lam=1, InfoNCE
+(~2-6) and the delta hinge (~0.05-0.15) differ in scale by ~20-100x, so the
+delta term's gradient is negligible and "hybrid" silently collapses to
+infonce_only (RESULTS.md 8-V.12 point 3 -- rank32_hybrid == rank32_infonce_only
+to the decimal place, ||W||_F=1.29 both). --balance (default on) fixes this by
+rescaling the delta term at every step by the ratio of its own detached
+magnitude to InfoNCE's detached magnitude, so lam multiplies two losses that
+start out comparable rather than two losses 20-100x apart. Pass --no-balance
+to reproduce the old (broken) raw-sum behavior for comparison.
+
 Usage:
     python -m benchmarks.src.evaluation.train_rank32_loss_ablation \
         --output_dir logs/evaluation/01_paper/2026-09-02_rank32_loss_ablation
@@ -56,7 +66,7 @@ def delta_loss_term(net, quads, margin: float) -> torch.Tensor:
 def train_condition(condition: str, embed_dim: int, seed: int, device: str,
                      narrow_quads, broad_images_emb, broad_texts_emb,
                      epochs: int, batch_size: int, lr: float, margin: float,
-                     lam: float):
+                     lam: float, balance: bool = True):
     set_seed(seed)
     net, _ = build_family("lowrank_32", embed_dim, seed, warm_start=None)
     net = net.to(device)
@@ -76,15 +86,28 @@ def train_condition(condition: str, embed_dim: int, seed: int, device: str,
                 continue
             opt.zero_grad()
             loss = torch.tensor(0.0, device=device)
+            infonce_term = None
             if condition in ("infonce_only", "hybrid"):
                 v = broad_images_emb[idx]
                 t_raw = broad_texts_emb[idx]
                 zv = F.normalize(net.proj_v(v), dim=-1)
                 zt = F.normalize(net.proj_t(t_raw), dim=-1)
-                loss = loss + symmetric_infonce(zv, zt, logit_scale.exp())
+                infonce_term = symmetric_infonce(zv, zt, logit_scale.exp())
+                loss = loss + infonce_term
             if condition in ("delta_only", "hybrid"):
                 d_loss = delta_loss_term(net, narrow_quads, margin)
-                weight = lam if condition == "hybrid" else 1.0
+                if condition == "hybrid":
+                    if balance and d_loss.item() > 1e-8:
+                        # rescale delta to the same detached magnitude as
+                        # infonce before applying lam, so lam trades off two
+                        # comparable quantities instead of two ~20-100x
+                        # apart (review7's own diagnosed failure mode).
+                        scale = infonce_term.detach() / d_loss.detach()
+                        weight = lam * scale
+                    else:
+                        weight = lam
+                else:
+                    weight = 1.0
                 loss = loss + weight * d_loss
             loss.backward()
             opt.step()
@@ -110,6 +133,12 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--margin", type=float, default=0.1)
     ap.add_argument("--lam", type=float, default=1.0, help="hybrid weight on the delta term")
+    ap.add_argument("--balance", action="store_true", default=True,
+                     help="rescale delta to InfoNCE's detached magnitude before applying lam (default on)")
+    ap.add_argument("--no-balance", dest="balance", action="store_false")
+    ap.add_argument("--conditions", nargs="+", default=["hybrid"],
+                     choices=["infonce_only", "delta_only", "hybrid"])
+    ap.add_argument("--tag", default=None, help="suffix for the saved checkpoint name, e.g. 'lam1_balanced'")
     ap.add_argument("--min_pairs", type=int, default=20)
     ap.add_argument("--image_root", default="benchmarks/data/images")
     ap.add_argument("--restrict_objects", default=None)
@@ -138,16 +167,18 @@ def main():
     broad_texts_emb = broad_texts_emb.to(device)
     print(f"[data] broad pairs: {broad_images_emb.shape[0]}, narrow quads: {narrow_quads[0].shape[0]}")
 
-    for condition in ["infonce_only", "hybrid"]:
-        print(f"\n=== training condition: {condition} ===")
+    for condition in args.conditions:
+        print(f"\n=== training condition: {condition} "
+              f"(lam={args.lam}, balance={args.balance if condition == 'hybrid' else 'n/a'}) ===")
         W, history = train_condition(
             condition, embed_dim, args.seed, device, narrow_quads,
             broad_images_emb, broad_texts_emb, args.epochs, args.batch_size,
-            args.lr, args.margin, args.lam,
+            args.lr, args.margin, args.lam, args.balance,
         )
         drift = torch.norm(W).item()
         print(f"  ||W||_F = {drift:.2f}")
-        out_path = os.path.join(args.output_dir, f"rank32_{condition}.pt")
+        suffix = f"_{args.tag}" if args.tag else ""
+        out_path = os.path.join(args.output_dir, f"rank32_{condition}{suffix}.pt")
         torch.save({"model_name": "bilinear", "rank": 32,
                     "state_dict": {"W": W, "bias": torch.zeros(1)}}, out_path)
         print(f"  [saved] {out_path}")
