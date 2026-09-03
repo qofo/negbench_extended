@@ -95,6 +95,27 @@ def rowwise_cos(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return num / np.maximum(den, 1e-12)
 
 
+def image_plane_basis(m_I: np.ndarray, d_I: np.ndarray):
+    """
+    Row-wise orthonormal basis of span{m_I, d_I} -- the only part of the embedding
+    space the coefficients can see.
+
+    alpha = m_I . d_T and gamma = d_I . d_T are both inner products against a vector
+    in this plane, so every coefficient that involves d_T depends on d_T *only*
+    through its orthogonal projection here. Whatever a text-side intervention does to
+    the other D-2 directions is invisible to the 2x2 decision.
+    """
+    e1 = m_I / np.maximum(np.linalg.norm(m_I, axis=-1, keepdims=True), 1e-12)
+    r = d_I - np.sum(d_I * e1, axis=-1, keepdims=True) * e1
+    e2 = r / np.maximum(np.linalg.norm(r, axis=-1, keepdims=True), 1e-12)
+    return e1, e2
+
+
+def project_to_plane(x: np.ndarray, e1: np.ndarray, e2: np.ndarray) -> np.ndarray:
+    return (np.sum(x * e1, axis=-1, keepdims=True) * e1
+            + np.sum(x * e2, axis=-1, keepdims=True) * e2)
+
+
 def metrics(h: Dict[str, np.ndarray]) -> Dict[str, float]:
     cap = h["gamma"] > h["abs_alpha"]
     img = h["gamma"] > h["abs_beta"]
@@ -185,6 +206,59 @@ def run(args):
     print(f"    ||m_T'||/||m_T||   mean {lam_m.mean():6.3f}   median {np.median(lam_m):6.3f}")
     print(f"    cos(m_T', m_T)     mean {cos_m.mean():6.3f}   median {np.median(cos_m):6.3f}")
 
+    obs_cos_h = compute_hadamard_coordinates(*quad(m_I, d_I, m_T, d_T))
+    obs_ecn_h = compute_hadamard_coordinates(*quad(m_I, d_I, m_T2, d_T2))
+    obs_cap = float((obs_cos_h["gamma"] > obs_cos_h["abs_alpha"]).mean() * 100)
+    ecn_cap = float((obs_ecn_h["gamma"] > obs_ecn_h["abs_alpha"]).mean() * 100)
+    obs_img = float((obs_cos_h["gamma"] > obs_cos_h["abs_beta"]).mean() * 100)
+    ecn_img = float((obs_ecn_h["gamma"] > obs_ecn_h["abs_beta"]).mean() * 100)
+
+    # ── A2. Where did it change? The coefficients only see one plane. ────
+    e1, e2 = image_plane_basis(m_I, d_I)
+    P, P2 = project_to_plane(d_T, e1, e2), project_to_plane(d_T2, e1, e2)
+    share = np.linalg.norm(P, axis=-1) / np.maximum(np.linalg.norm(d_T, axis=-1), 1e-12)
+    share2 = np.linalg.norm(P2, axis=-1) / np.maximum(np.linalg.norm(d_T2, axis=-1), 1e-12)
+    cos_plane = rowwise_cos(P2, P)
+
+    print("\n  [A2] Where the change landed, relative to the image-side plane")
+    print(f"    ||P(d_T)||/||d_T||     mean {share.mean():6.3f}   (share of d_T the "
+          f"coefficients can see)")
+    print(f"    ||P(d_T')||/||d_T'||   mean {share2.mean():6.3f}")
+    print(f"    cos(d_T', d_T)  full space   {cos_d.mean():6.3f}")
+    print(f"    cos(P(d_T'), P(d_T))  in plane   {cos_plane.mean():6.3f}   "
+          f"median {np.median(cos_plane):6.3f}")
+    plane = dict(
+        share_dT=float(share.mean()), share_dT_ecn=float(share2.mean()),
+        cos_full=float(cos_d.mean()), cos_in_plane=float(cos_plane.mean()),
+        cos_in_plane_median=float(np.median(cos_plane)))
+
+    # ── A3. How wide is the wedge that wins? ────────────────────────────
+    # The in-plane angle is the only thing about d_T the caption criterion responds
+    # to, so ask what fraction of angles would satisfy it. If the winning wedge is
+    # about as wide as the observed accuracy, then re-drawing the angle -- which is
+    # what the ECN effectively did -- buys nothing, and no amount of representational
+    # change on the text side helps unless it aims at that wedge.
+    theta = np.linspace(0, 2 * np.pi, 721, endpoint=False)
+    u1, u2 = np.cos(theta), np.sin(theta)
+    a_e1 = np.linalg.norm(m_I, axis=-1)                      # alpha = ||m_I|| * u1
+    g_e1 = np.sum(d_I * e1, axis=-1)
+    g_e2 = np.sum(d_I * e2, axis=-1)                         # gamma = g_e1*u1 + g_e2*u2
+    alpha_t = a_e1[:, None] * u1[None, :]
+    gamma_t = g_e1[:, None] * u1[None, :] + g_e2[:, None] * u2[None, :]
+    wedge_cap = (gamma_t > np.abs(alpha_t)).mean(axis=1)
+    beta_fixed = np.sum(d_I * m_T, axis=-1)                  # beta does not involve d_T
+    wedge_img = (gamma_t > np.abs(beta_fixed)[:, None]).mean(axis=1)
+
+    print("\n  [A3] Fraction of in-plane directions that would satisfy each criterion")
+    print(f"    caption wedge  gamma > |alpha| : {wedge_cap.mean() * 100:6.2f}%  "
+          f"(observed: cosine {obs_cap:.2f}%, ECN {ecn_cap:.2f}%)")
+    print(f"    image wedge    gamma > |beta|  : {wedge_img.mean() * 100:6.2f}%  "
+          f"(observed: cosine {obs_img:.2f}%, ECN {ecn_img:.2f}%)")
+    print("    -> the caption wedge is the ceiling for any intervention that only")
+    print("       re-aims d_T without changing the image-side geometry.")
+    plane.update(wedge_caption=float(wedge_cap.mean() * 100),
+                 wedge_image=float(wedge_img.mean() * 100))
+
     obs_cos = compute_hadamard_coordinates(*quad(m_I, d_I, m_T, d_T))
     obs_ecn = compute_hadamard_coordinates(*quad(m_I, d_I, m_T2, d_T2))
     # The pure-rescale counterfactual: keep the ECN's growth of d_T, drop its rotation
@@ -240,6 +314,7 @@ def run(args):
         ecn_vector_change=dict(
             d_T_norm_ratio_mean=float(lam_d.mean()), d_T_cos_mean=float(cos_d.mean()),
             m_T_norm_ratio_mean=float(lam_m.mean()), m_T_cos_mean=float(cos_m.mean())),
+        image_plane=plane,
         coefficients=table,
         sweep=ds.to_dict(orient="records"),
         provenance=build_provenance(args, extra=dict(lambdas=list(LAMBDAS))),
