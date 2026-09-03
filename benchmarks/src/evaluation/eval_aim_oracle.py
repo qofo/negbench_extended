@@ -96,6 +96,57 @@ def caption_hits(v_p: np.ndarray, v_m: np.ndarray, w: np.ndarray) -> np.ndarray:
     return (v_p @ w > 0) & (v_m @ w < 0)
 
 
+def _unit(x):
+    return x / np.maximum(np.linalg.norm(x, axis=-1, keepdims=True), 1e-12)
+
+
+def _proj_out(x, direction):
+    """Remove the component of x along direction (row-wise)."""
+    u = _unit(direction)
+    return x - np.sum(x * u, axis=-1, keepdims=True) * u
+
+
+def aiming_rules(m_I, d_I, m_T, d_T) -> Dict[str, np.ndarray]:
+    """
+    Named ways of choosing the polarity direction, as replacements for d_T.
+
+    These place the earlier main-effect ablations on the same ladder as the oracle.
+    Zeroing alpha means m_I . d_T = 0, which is precisely d_T projected off the image
+    mean -- an aiming rule, not a separate kind of intervention. Aligning d_T with d_I
+    is the closed-form rotation. Both are listed with the image-side quantity they
+    need, because that is what a text-side objective would have to know to apply them.
+
+    Each rule keeps the observed ||d_T||, so only the aim changes.
+    """
+    n = np.linalg.norm(d_T, axis=-1, keepdims=True)
+    return {
+        "actual": d_T,
+        "zero-alpha": _unit(_proj_out(d_T, m_I)) * n,
+        "align d_I": _unit(d_I) * n,
+        "zero-alpha + align d_I": _unit(_proj_out(d_I, m_I)) * n,
+    }
+
+
+def score_rule(m_I, d_I, m_T, d_T) -> Tuple[np.ndarray, np.ndarray]:
+    """(caption hits, image hits) for a given polarity direction."""
+    a = np.sum(m_I * d_T, axis=-1)
+    b = np.sum(d_I * m_T, axis=-1)
+    g = np.sum(d_I * d_T, axis=-1)
+    return g > np.abs(a), g > np.abs(b)
+
+
+def caption_target(m_I, d_I, n_angles: int = 720) -> np.ndarray:
+    """Angular measure of directions satisfying gamma > |alpha|; image-side only."""
+    e1 = _unit(m_I)
+    e2 = _unit(d_I - np.sum(d_I * e1, axis=-1, keepdims=True) * e1)
+    norm_mI = np.linalg.norm(m_I, axis=-1)
+    g1, g2 = np.sum(d_I * e1, axis=-1), np.sum(d_I * e2, axis=-1)
+    th = np.linspace(0, 2 * np.pi, n_angles, endpoint=False)
+    u1, u2 = np.cos(th)[None, :], np.sin(th)[None, :]
+    hits = (g1[:, None] * u1 + g2[:, None] * u2) > np.abs(norm_mI[:, None] * u1)
+    return hits.mean(axis=1) * 100
+
+
 def run(args):
     set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -154,8 +205,22 @@ def run(args):
             else:
                 cap_cv[s] = cap_pc[s]
 
+        # Named aiming rules, and the one target-widening rule, on the same scale.
+        rules = {}
+        for label, dt in aiming_rules(m_I, d_I, m_T, d_T).items():
+            c, i = score_rule(m_I, d_I, m_T, dt)
+            rules[label] = (float(c.mean() * 100), float((c & i).mean() * 100))
+        # Zeroing beta edits d_I, not d_T, so it widens the target rather than aiming.
+        d_I_nb = _proj_out(d_I, m_T)
+        c_nb, i_nb = score_rule(m_I, d_I_nb, m_T, d_T)
+        rules["zero-beta"] = (float(c_nb.mean() * 100), float((c_nb & i_nb).mean() * 100))
+
         row = dict(
             name=name, family="intervention" if is_intervention else "backbone",
+            target_before=float(caption_target(m_I, d_I).mean()),
+            target_after_zero_beta=float(caption_target(m_I, d_I_nb).mean()),
+            **{f"cap::{k}": v[0] for k, v in rules.items()},
+            **{f"grp::{k}": v[1] for k, v in rules.items()},
             caption_actual=float(act_cap.mean() * 100),
             caption_global=float(cap_global.mean() * 100),
             caption_per_concept=float(cap_pc.mean() * 100),
@@ -184,6 +249,26 @@ def run(args):
               f"{r['caption_per_concept']:9.2f}{r['caption_per_concept_cv']:8.2f}"
               f"{r['image_actual']:9.2f}{r['image_per_concept']:9.2f}"
               f"{r['group_actual']:9.2f}{r['group_per_concept']:9.2f}")
+
+    # The ladder, ordered by how much image-side information each rule needs.
+    ladder = ["actual", "zero-alpha", "align d_I", "zero-alpha + align d_I"]
+    print("\n  === aiming ladder: caption % / group %, by image-side info required ===")
+    print(f"  {'model':<20}" + "".join(f"{k:>22}" for k in ladder)
+          + f"{'per-concept opt':>20}{'per-pair':>10}")
+    for _, r in d.iterrows():
+        line = f"  {r['name']:<20}"
+        for k in ladder:
+            line += f"{r['cap::' + k]:>11.2f}/{r['grp::' + k]:<10.2f}"
+        line += f"{r['caption_per_concept']:>13.2f}/{r['group_per_concept']:<6.2f}"
+        line += f"{r['caption_per_pair']:>10.2f}"
+        print(line)
+
+    print("\n  === zero-beta widens the target rather than aiming ===")
+    print(f"  {'model':<20}{'target before':>15}{'target after':>14}{'caption':>10}{'group':>8}")
+    for _, r in d.iterrows():
+        print(f"  {r['name']:<20}{r['target_before']:15.2f}"
+              f"{r['target_after_zero_beta']:14.2f}{r['cap::zero-beta']:10.2f}"
+              f"{r['grp::zero-beta']:8.2f}")
 
     b = d[d.name == "ViT-B/32 (OpenAI)"].iloc[0]
     best = d.loc[d.caption_actual.idxmax()]
