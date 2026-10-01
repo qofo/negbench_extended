@@ -58,7 +58,7 @@ try:
     from benchmarks.src.analysis.feature_cache import (
         cached_encode, build_provenance, load_object_restriction,
     )
-    from benchmarks.src.analysis.config import set_seed
+    from benchmarks.src.analysis.config import set_seed, COCO80
     from benchmarks.src.evaluation.eval_e1_minimal_pair_auc import (
         extract_normalized_image_features, extract_normalized_text_features,
     )
@@ -71,25 +71,11 @@ except ImportError:
     )
     from analysis.beaf.beaf_loader import load_and_verify_counterfactual_pairs
     from analysis.feature_cache import cached_encode, build_provenance, load_object_restriction
-    from analysis.config import set_seed
+    from analysis.config import set_seed, COCO80
     from evaluation.eval_e1_minimal_pair_auc import (
         extract_normalized_image_features, extract_normalized_text_features,
     )
 
-# COCO's 80 detection categories in the 0-indexed order the HF mirror's ClassLabel uses.
-COCO80 = [
-    'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
-    'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat',
-    'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack',
-    'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball',
-    'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket',
-    'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple',
-    'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair',
-    'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse',
-    'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
-    'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier',
-    'toothbrush',
-]
 
 _ID_RE = re.compile(r"COCO_val2014_0*(\d+)(?:_\d+)?\.\w+$")
 
