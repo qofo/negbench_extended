@@ -36,6 +36,15 @@ The editable install puts `benchmarks/src/` on `sys.path`, which has two consequ
 Optional extras: `pip install -r benchmarks/requirements-pca.txt` (scikit-learn/matplotlib/seaborn — required by
 almost all analysis scripts), `requirements-llava.txt`, `requirements-training.txt`.
 
+## Delegating sub-tasks to Gemini (`agy`)
+
+The user wants low-level sub-tasks (summarizing documents or papers, surveying formats and styles, extracting
+items from long logs) delegated to Gemini through the local `agy` CLI, so the orchestrating agent's tokens go to
+judgment and design. Numbers, argument structure and final wording stay with the orchestrating agent, and
+anything Gemini returns is checked against the source before use. The verified procedure is in
+`docs/AGY_DELEGATION.md`: read-only `--mode plan`, `--output-format json`, results returned in the response
+rather than written to files. Never pass `--dangerously-skip-permissions`; Claude Code's auto mode rejects it.
+
 ## Running things — three coexisting invocation conventions
 
 The codebase accreted three import styles. All three work **from the repo root** with the env active
