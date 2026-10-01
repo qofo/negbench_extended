@@ -54,10 +54,14 @@ def extract_mcq_embeddings(
     csv_file: str,
     device: str = "cuda",
     batch_size: int = 64,
-    image_root: str = ""
+    image_root: str = "",
+    cache_dir: str = "logs/evaluation/cached_embeddings",
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[str], List[List[str]]]:
     """
     Extract and cache frozen CLIP image and candidate text embeddings for MCQ dataset.
+
+    The cache file is keyed by the CSV name alone (not by model), so pass a fresh ``cache_dir``
+    to force re-encoding or when scoring a different backbone.
 
     Returns:
         img_embeds: (N, D)
@@ -84,7 +88,6 @@ def extract_mcq_embeddings(
     text_embed_list = []
     target_list = []
     # Check disk cache first
-    cache_dir = "logs/evaluation/cached_embeddings"
     os.makedirs(cache_dir, exist_ok=True)
     csv_basename = os.path.basename(csv_file).replace(".csv", "")
     cache_path = os.path.join(cache_dir, f"{csv_basename}_embeds.pt")
