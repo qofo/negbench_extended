@@ -19,7 +19,12 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "benchmarks" / "src"
 
 from analysis.beaf.vision_mechanisms import _group_kfold
-from benchmarks.src.evaluation.eval_e2_hadamard_decomposition import compute_hadamard_coordinates
+from benchmarks.src.evaluation.eval_e2_hadamard_decomposition import (
+    compute_hadamard_coordinates, compute_main_effect_ablation,
+)
+from benchmarks.src.evaluation.eval_main_effect_ablation_ladder import (
+    cosine_coordinates, score,
+)
 
 
 class TestHadamardIdentity:
@@ -46,6 +51,67 @@ class TestHadamardIdentity:
         c = compute_hadamard_coordinates(*(rng.normal(size=(4, 3000)) * 0.3))
         dominates = c["gamma"] > np.maximum(c["abs_alpha"], c["abs_beta"])
         assert np.array_equal(c["joint_correct"], dominates)
+
+
+class TestMainEffectAblationIdentity:
+    """With both main effects at zero the 2x2 condition is exactly `gamma > 0`.
+
+    RESULTS 8.14.1 turns on this: the 74.40% it reports is not an accuracy that happens
+    to be high, it is the sign statistic of the interaction. If a future change to
+    `compute_main_effect_ablation` leaves an alpha or beta residual, the two numbers
+    separate and this test says so before the figure does.
+    """
+
+    @staticmethod
+    def _block(seed=3, n=400, d=32):
+        rng = np.random.default_rng(seed)
+        unit = lambda x: x / np.linalg.norm(x, axis=1, keepdims=True)
+        return (unit(rng.normal(size=(n, d))), unit(rng.normal(size=(n, d))),
+                unit(rng.normal(size=(n, d))), unit(rng.normal(size=(n, d))))
+
+    def test_both_ablation_zeroes_both_main_effects(self):
+        v_p, v_a, t_p, t_n = self._block()
+        c = compute_main_effect_ablation(v_p, v_a, t_p, t_n, v_p.mean(0) + v_a.mean(0),
+                                         mode="both", renormalize=False)
+        # Projection round-off, not a residual effect: both are ~1e-10 against
+        # coefficients of order 1e-1 here and 1e-3 on the real block.
+        assert float(np.abs(c["alpha"]).max()) < 1e-8
+        assert float(np.abs(c["beta"]).max()) < 1e-8
+
+    def test_both_ablation_moves_gamma_only_slightly(self):
+        """gamma is not invariant under the ablation, only nearly so.
+
+        Removing alpha subtracts (v.mu_I)(u.mu_I) from gamma and removing beta subtracts
+        the mirror term, so the interaction does shift. Both corrections are products of
+        two small quantities, which is why the shift stays far below the change in
+        accuracy the ablation produces -- but asserting exact preservation would be wrong.
+        """
+        v_p, v_a, t_p, t_n = self._block()
+        before = cosine_coordinates(v_p, v_a, t_p, t_n)["gamma"]
+        after = compute_main_effect_ablation(
+            v_p, v_a, t_p, t_n, v_p.mean(0) + v_a.mean(0),
+            mode="both", renormalize=False)["gamma"]
+        assert not np.allclose(before, after, atol=1e-12)
+        rel = np.abs(after - before) / np.maximum(np.abs(before), 1e-12)
+        assert float(np.median(rel)) < 0.05
+
+    def test_accuracy_equals_fraction_of_positive_gamma(self):
+        v_p, v_a, t_p, t_n = self._block()
+        groups = np.array(["c%d" % (i % 7) for i in range(len(v_p))])
+        c = compute_main_effect_ablation(v_p, v_a, t_p, t_n, v_p.mean(0) + v_a.mean(0),
+                                         mode="both", renormalize=False)
+        s = score(c, groups)
+        assert abs(s["acc_pooled_pct"] - s["gamma_positive_pct"]) < 1e-9
+
+    def test_one_sided_ablation_leaves_the_other_binding(self):
+        v_p, v_a, t_p, t_n = self._block()
+        mu = v_p.mean(0) + v_a.mean(0)
+        groups = np.array(["c%d" % (i % 7) for i in range(len(v_p))])
+        acc = {m: score(compute_main_effect_ablation(v_p, v_a, t_p, t_n, mu, mode=m,
+                                                     renormalize=False), groups)
+               for m in ("perobj_alpha", "perobj_beta", "both")}
+        assert acc["both"]["acc_pooled_pct"] > acc["perobj_alpha"]["acc_pooled_pct"]
+        assert acc["both"]["acc_pooled_pct"] > acc["perobj_beta"]["acc_pooled_pct"]
 
 
 class TestGroupKFoldGuard:
@@ -1479,3 +1545,41 @@ class TestSingleWGeneralization:
         assert build_family("diagonal", 512, 0)[1] == 512
         assert build_family("lowrank_2", 512, 0)[1] == 2 * 512 * 2
         assert build_family("full", 512, 0)[1] == 512 * 512
+
+
+class TestCocoCategoryNamesAreResolved:
+    """The HF COCO mirror stores `objects["category"]` as an integer ClassLabel index.
+
+    The first build of `coco_natural_negation.csv` read those integers as if they were
+    names, so all 42,474 captions read "There is a 34 in this image, but no 56." and the
+    dataset was scored anyway. The two readers of that parquet must therefore share one
+    index-to-name table, and any paired CSV that reaches an encoder must carry words.
+    """
+
+    def test_readers_share_one_table(self):
+        from analysis.config import COCO80
+        import benchmarks.src.data_generation.build_coco_natural_negation as builder
+        import benchmarks.src.evaluation.eval_e1_verified_natural_absence as verified
+
+        assert len(COCO80) == 80
+        assert COCO80[0] == "person" and COCO80[-1] == "toothbrush"
+        # The dual-path import scheme (`analysis.*` and `benchmarks.src.analysis.*`) makes
+        # two module objects, so identity cannot hold; what must hold is that neither
+        # reader carries a private literal that can drift from the shared table.
+        assert builder.COCO80 == COCO80
+        assert verified.COCO80 == COCO80
+        for mod in (builder, verified):
+            src = pathlib.Path(mod.__file__).read_text(encoding="utf-8")
+            assert "'toothbrush'," not in src, f"{mod.__name__} redefines COCO80 locally"
+
+    def test_generated_captions_are_not_class_indices(self):
+        import re
+
+        csv_path = REPO_ROOT / "benchmarks" / "data" / "images" / "coco_natural_negation.csv"
+        if not csv_path.exists():
+            pytest.skip("coco_natural_negation.csv is gitignored data; build it first")
+        df = pd.read_csv(csv_path)
+        numeric = [n for n in df["object_name"].astype(str).unique()
+                   if re.fullmatch(r"\d+", n)]
+        assert not numeric, f"object_name still holds class indices: {numeric[:5]}"
+        assert not df["positive_caption"].str.contains(r"\ba \d+\b", regex=True).any()
